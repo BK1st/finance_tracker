@@ -61,7 +61,7 @@ def normalize_ticker(ticker, currency):
 
 @st.cache_data(ttl=3600 * 12)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
-    """모든 종목의 시세를 yf.download로 단 1회 요청하여 12시간 동안 캐싱"""
+    """모든 종목의 시세를 yf.download로 단 1회 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -87,13 +87,18 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
         return None
 
     try:
+        df_ticker = market_data
         if isinstance(market_data.columns, pd.MultiIndex):
             if ticker in market_data.columns.levels[0]:
                 df_ticker = market_data[ticker]
+            elif ticker in market_data.columns.levels[1]:
+                df_ticker = market_data.xs(ticker, axis=1, level=1)
             else:
                 return None
-        else:
-            df_ticker = market_data
+
+        # 시간대(tz-aware) 정보 제거하여 타겟 날짜 비교 오류(TypeError) 방지
+        if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
+            df_ticker.index = df_ticker.index.tz_localize(None)
 
         target_dt = pd.to_datetime(target_date_str)
         
@@ -166,7 +171,7 @@ def update_all_prices_and_rate_batch(curr_rate):
 
     today = datetime.now()
     start_date_str = (today - timedelta(days=10)).strftime("%Y-%m-%d")
-    end_date_str = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date_str = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
     market_data = fetch_batch_market_data(valid_tickers, start_date_str, end_date_str)
 
@@ -249,6 +254,7 @@ if menu == "자산 입력 및 관리":
 
     if st.button("🔄 전체 데이터 최신 시세로 무조건 일괄 업데이트"):
         with st.spinner("배치 일괄 시세 및 환율을 반영 중..."):
+            st.cache_data.clear()  # 수동 업데이트 시 캐시 강제 초기화
             if "실시간" in rate_option:
                 target_rate = fetch_live_exchange_rate()
                 st.session_state.live_rate_store = target_rate
@@ -310,9 +316,11 @@ if menu == "자산 입력 및 관리":
                 final_rate = ex_rate if is_usd else 1.0
                 if current_price == 0.0 and ticker:
                     f_ticker = normalize_ticker(ticker, curr_code)
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    start_str = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-                    m_data = fetch_batch_market_data((f_ticker,), start_str, today_str)
+                    today_dt = datetime.now()
+                    today_str = today_dt.strftime("%Y-%m-%d")
+                    start_str = (today_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+                    end_str = (today_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+                    m_data = fetch_batch_market_data((f_ticker,), start_str, end_str)
                     fetched = get_price_from_batch_data(m_data, f_ticker, today_str)
                     if fetched:
                         current_price = fetched
@@ -551,7 +559,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 
                 target_dt = pd.to_datetime(target_eval_date)
                 start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-                end_dt_str = (target_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+                end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
                 
                 m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
 
@@ -616,19 +624,17 @@ elif menu == "일별/시점별 보유 현황 분석":
         }
 
         col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-        # 요청사항 1: 기본 계층 지정 (1단계: 구분, 2단계: 금융사, 3단계: 보유항목, 4단계: 없음)
         with col_t1:
-            l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)  # 구분
+            l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
         with col_t2:
-            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=2)  # 금융사
+            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=2)
         with col_t3:
-            l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)  # 보유항목(ITEM)
+            l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
         with col_t4:
-            l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)  # 없음
+            l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)
 
         col_c1, col_c2 = st.columns([2, 1])
         with col_c1:
-            # 요청사항 2: 색상 기준 기본값(default)을 "일간 등락률 (1일)"로 변경 (index=1)
             color_option = st.selectbox(
                 "🗺️ 트리맵 색상 기준 선택",
                 [
@@ -680,7 +686,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
                 past_date_str = None
 
-            end_fetch_dt = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+            end_fetch_dt = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
             with st.spinner(f"[{color_option}] 배치 계산 중..."):
                 sub_df["formatted_ticker"] = sub_df.apply(
@@ -701,12 +707,23 @@ elif menu == "일별/시점별 보유 현황 분석":
                         continue
 
                     if isinstance(m_data.columns, pd.MultiIndex):
-                        df_ticker = m_data[f_ticker] if f_ticker in m_data.columns.levels[0] else pd.DataFrame()
+                        if f_ticker in m_data.columns.levels[0]:
+                            df_ticker = m_data[f_ticker]
+                        elif f_ticker in m_data.columns.levels[1]:
+                            df_ticker = m_data.xs(f_ticker, axis=1, level=1)
+                        else:
+                            df_ticker = pd.DataFrame()
                     else:
                         df_ticker = m_data
 
-                    if not df_ticker.empty and "Close" in df_ticker.columns:
-                        valid_series = df_ticker["Close"].dropna()
+                    if not df_ticker.empty:
+                        if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
+                            df_ticker.index = df_ticker.index.tz_localize(None)
+
+                        if "Close" in df_ticker.columns:
+                            valid_series = df_ticker["Close"].dropna()
+                        else:
+                            valid_series = df_ticker.dropna()
 
                         if color_option == "일간 등락률 (1일)":
                             if len(valid_series) >= 2:
@@ -717,9 +734,8 @@ elif menu == "일별/시점별 보유 현황 분석":
                         else:
                             p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
                             
-                            if p_price is None and not df_ticker.empty:
-                                if not valid_series.empty:
-                                    p_price = float(valid_series.iloc[0])
+                            if p_price is None and not valid_series.empty:
+                                p_price = float(valid_series.iloc[0])
 
                             if curr_p and p_price and float(p_price) > 0:
                                 rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
@@ -1063,7 +1079,7 @@ elif menu == "기간별 성과 및 추이 분석":
                 
                 sorted_dates = sorted(target_dates)
                 min_date = (pd.to_datetime(sorted_dates[0]) - timedelta(days=7)).strftime("%Y-%m-%d")
-                max_date = (pd.to_datetime(sorted_dates[-1]) + timedelta(days=1)).strftime("%Y-%m-%d")
+                max_date = (pd.to_datetime(sorted_dates[-1]) + timedelta(days=2)).strftime("%Y-%m-%d")
 
                 with st.spinner("🚀 모든 비교 날짜의 시세 데이터를 배치로 수집하는 중..."):
                     market_batch_data = fetch_batch_market_data(valid_tickers, min_date, max_date)
@@ -1138,7 +1154,7 @@ elif menu == "기간별 성과 및 추이 분석":
                 },
             )
 
-            # --- Y축 조절 슬라이더 영역 (수정 완료) ---
+            # --- Y축 조절 슬라이더 영역 ---
             st.markdown("### 🎚️ Y축 범위(스케일) 실시간 조절")
             
             min_val = float(summary_trend["평가액(원)"].min())
