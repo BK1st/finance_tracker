@@ -7,14 +7,14 @@ import plotly.express as px
 import streamlit as st
 import yfinance as yf
 
-# 👇 import 바로 밑에 이 줄을 추가하시면 됩니다.
+# ---------------------------------------------------------
+# 모바일 전용 페이지 설정 (상단 1회만 호출)
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="재정 관리 앱",
+    page_title="재정 관리 앱 (모바일)",
     layout="wide",
-    initial_sidebar_state="collapsed" # 모바일 화면을 위해 사이드바 기본 닫힘 설정
+    initial_sidebar_state="collapsed"  # 모바일 화면을 위해 사이드바 기본 닫힘
 )
-
-# 이 아래부터 기존 코드가 이어지면 됩니다.
 
 # ---------------------------------------------------------
 # 0. 배치 시세 수집 및 캐싱 함수
@@ -199,8 +199,6 @@ def update_all_prices_and_rate_batch(curr_rate):
 
 
 init_db()
-
-st.set_page_config(page_title="개인 주식 자산 관리 프로그램", layout="wide")
 
 st.markdown(
     """
@@ -607,28 +605,30 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
         cat_options = {
+            "구분": "account_type",
+            "금융사": "broker",
+            "보유항목(ITEM)": "item_name",
+            "계좌번호": "account_num",
             "분류1": "category1",
             "분류2": "category2",
             "분류3": "category3",
             "분류4": "category4",
-            "구분": "account_type",
-            "금융사": "broker",
-            "계좌번호": "account_num",
-            "보유항목(ITEM)": "item_name",
         }
 
         col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+        # 요청사항 1: 기본 계층 지정 (1단계: 구분, 2단계: 금융사, 3단계: 보유항목, 4단계: 없음)
         with col_t1:
-            l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
+            l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)  # 구분
         with col_t2:
-            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=list(cat_options.keys()).index("보유항목(ITEM)") + 1)
+            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=2)  # 금융사
         with col_t3:
-            l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=0)
+            l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)  # 보유항목(ITEM)
         with col_t4:
-            l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)
+            l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)  # 없음
 
         col_c1, col_c2 = st.columns([2, 1])
         with col_c1:
+            # 요청사항 2: 색상 기준 기본값(default)을 "일간 등락률 (1일)"로 변경 (index=1)
             color_option = st.selectbox(
                 "🗺️ 트리맵 색상 기준 선택",
                 [
@@ -640,6 +640,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     "연초 대비 등락률 (YTD)",
                     "특정 날짜 지정 등락률",
                 ],
+                index=1
             )
 
         custom_base_date = None
@@ -1137,7 +1138,7 @@ elif menu == "기간별 성과 및 추이 분석":
                 },
             )
 
-            # --- Y축 조절 슬라이더 영역 추가 ---
+            # --- Y축 조절 슬라이더 영역 (수정 완료) ---
             st.markdown("### 🎚️ Y축 범위(스케일) 실시간 조절")
             
             min_val = float(summary_trend["평가액(원)"].min())
@@ -1153,12 +1154,19 @@ elif menu == "기간별 성과 및 추이 분석":
 
             with col_sc1:
                 if not auto_scale:
+                    step_val = (s_max - s_min) / 100 if s_max > s_min else 1.0
+
+                    if "y_range_slider" not in st.session_state or st.session_state.get("last_s_min") != s_min or st.session_state.get("last_s_max") != s_max:
+                        st.session_state.y_range_slider = (min_val, max_val)
+                        st.session_state.last_s_min = s_min
+                        st.session_state.last_s_max = s_max
+
                     y_range = st.slider(
                         "Y축 평가액 표시 범위 (원)",
                         min_value=s_min,
                         max_value=s_max,
-                        value=(min_val, max_val),
-                        step=(s_max - s_min) / 100,
+                        key="y_range_slider",
+                        step=step_val,
                         format="₩%'.0f"
                     )
                     fig_trend.update_yaxes(range=[y_range[0], y_range[1]])
