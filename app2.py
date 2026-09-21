@@ -116,24 +116,29 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 
     return _fetch_yfinance_data(tuple(sorted(all_tickers)), start_date, end_date)
 
-# -----------------------------------------------------------------------------
-# 3. Streamlit 대시보드 메인
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="원금 대비 평가액 TREND 관리", layout="wide")
-st.title("📈 자산 평가액 및 수익률 분석 시스템")
-
-menu = st.sidebar.selectbox(
-    "메뉴 선택", 
-    ["트렌드 리포트", "연도별 수익률 리포트", "계좌 별칭 관리", "포트폴리오 업로드", "원금 및 입출금 관리", "등록 데이터 조회"]
-)
-
-alias_map = get_account_aliases()
-
-bm_ticker_map = {
-    "미국 SPY": "SPY",
-    "미국 QQQ": "QQQ",
-    "한국 KOSPI": "^KS11"
-}
+@st.cache_data(ttl=3600*12)
+def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
+    all_tickers = list(all_tickers_tuple)
+    try:
+        df = yf.download(all_tickers, start=start_date, end=end_date)
+        if df.empty:
+            return pd.DataFrame()
+        
+        # yfinance 최신버전의 MultiIndex/SingleIndex 처리 보완
+        if 'Close' in df.columns:
+            data = df['Close']
+        else:
+            data = df
+            
+        if isinstance(data, pd.Series):
+            data = data.to_frame()
+            
+        data = data.ffill().bfill()
+        return data
+    except Exception as e:
+        st.error(f"시세 데이터 수집 중 오류 발생: {e}")
+        return pd.DataFrame()
+        
 
 bm_styles = {
     "미국 SPY": dict(color='#7f7f7f', dash='dash'),
