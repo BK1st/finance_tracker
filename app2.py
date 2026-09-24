@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -82,7 +82,7 @@ def get_account_aliases():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 시세 수집 함수 (개선 및 보완)
+# 2. 티커 포맷팅 및 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
   if pd.isna(t) or str(t).strip() == '' or str(t).strip().lower() == 'nan':
@@ -95,7 +95,6 @@ def format_ticker(t):
   return t_str
 
 
-# TTL을 12시간에서 1시간(3600초)으로 축소하여 최신 시세 반영 지연 방지
 @st.cache_data(ttl=3600)
 def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
   all_tickers = list(all_tickers_tuple)
@@ -106,7 +105,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if df.empty:
       return pd.DataFrame()
 
-    # Adj Close(수정종가) 우선 수집, 없을 경우 Close 수집
     if 'Adj Close' in df:
       data = df['Adj Close']
     elif 'Close' in df:
@@ -117,7 +115,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    # 개별 누락 일자는 ffill() 보정
     data = data.ffill()
     return data
   except Exception as e:
@@ -212,6 +209,11 @@ if menu == '트렌드 리포트':
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
     max_rec_date = date.today()
 
+    # 지난달 말일 기본값 계산 (예: 9월 24일 기준 -> 8월 31일)
+    today = date.today()
+    first_day_of_curr_month = date(today.year, today.month, 1)
+    prev_month_end = first_day_of_curr_month - timedelta(days=1)
+
     freq_options = [
         '일간 (매일)',
         '일간 (주말 제외)',
@@ -220,6 +222,7 @@ if menu == '트렌드 리포트':
         '연간 (매년 말일)',
     ]
     bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI']
+    all_view_types = ['전체 합산', '계좌별', '증권사(Broker)별', '계좌유형별']
 
     with st.form('trend_control_form'):
       st.subheader('⚙️ 분석 조건 설정')
@@ -233,10 +236,8 @@ if menu == '트렌드 리포트':
         )
         view_types = st.multiselect(
             '표시할 트렌드 관점 선택',
-            options=['전체 합산', '계좌별', '증권사(Broker)별', '계좌유형별'],
-            default=st.session_state.get(
-                'trend_view_types', ['전체 합산', '계좌별']
-            ),
+            options=all_view_types,
+            default=st.session_state.get('trend_view_types', all_view_types),
         )
         selected_bm = st.multiselect(
             '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
@@ -263,7 +264,7 @@ if menu == '트렌드 리포트':
         with d_col1:
           start_date = st.date_input(
               '조회 시작일',
-              st.session_state.get('trend_start_date', min_rec_date),
+              st.session_state.get('trend_start_date', prev_month_end),
           )
         with d_col2:
           end_date = st.date_input(
@@ -277,7 +278,7 @@ if menu == '트렌드 리포트':
       with f_col3:
         mirae_eval_val = st.number_input(
             '🏦 미래에셋 계좌 평가금액 수동 입력 (원)',
-            value=st.session_state.get('trend_mirae_val', 0.0),
+            value=st.session_state.get('trend_mirae_val', 55500000.0),
             step=1000000.0,
             help=(
                 '미래에셋 증권 계좌는 수동 입력 가액이 전 분석 기간에 공통'
@@ -520,7 +521,7 @@ if menu == '트렌드 리포트':
       calc_df = st.session_state['trend_calc_df']
       bm_calc_dict = st.session_state.get('trend_bm_calc', {})
       active_views = st.session_state.get(
-          'trend_view_types', ['전체 합산', '계좌별']
+          'trend_view_types', all_view_types
       )
 
       st.write('---')
@@ -2281,7 +2282,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 포트폴리오 업로드 (데이터 보존 안전성 보완)
+# 메뉴 4: 포트폴리오 업로드
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📂 포트폴리오 엑셀 파일 업로드')
@@ -2313,7 +2314,6 @@ elif menu == '포트폴리오 업로드':
               '%Y-%m-%d'
           )
 
-          # 업로드 대상 일자의 포트폴리오만 선택 삭제 (기존 계좌 원금, 별칭 및 타 일자 데이터 유지)
           for r_date in df['record_date'].unique():
             c.execute(
                 'DELETE FROM portfolio WHERE record_date = ?', (r_date,)
@@ -2352,7 +2352,6 @@ elif menu == '포트폴리오 업로드':
               'portfolio', conn, if_exists='append', index=False
           )
 
-          # 포트폴리오 업로드 시 새로운 계좌가 있다면 initial_principal 및 account_alias에 기본값 자동 보충
           new_accs = save_df[['account_num', 'broker']].drop_duplicates()
           for _, acc_row in new_accs.iterrows():
             acc_num = acc_row['account_num']
