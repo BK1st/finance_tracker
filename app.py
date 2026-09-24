@@ -760,11 +760,16 @@ elif menu == "일별/시점별 보유 현황 분석":
                 if c_name not in group_cols:
                     group_cols.append(c_name)
 
+        # ---------------------------------------------------------
+        # TREEMAP용 데이터 집계 (현재가 및 통화 추가)
+        # ---------------------------------------------------------
         agg_dict = {
             "매입총액(원)": "sum",
             "평가액(원)": "sum",
             "평가손익(원)": "sum",
             "quantity": "sum",
+            "current_price": "mean",  # 현재 주식 가격
+            "currency": "first",       # 통화 정보
         }
         if color_col != "수익률(%)":
             agg_dict[color_col] = "mean"
@@ -817,13 +822,20 @@ elif menu == "일별/시점별 보유 현황 분석":
         else:
             dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
-        # TREEMAP 생성
+        # 현재가 표시용 텍스트 열 추가
+        tree_df["price_symbol"] = tree_df["currency"].apply(lambda c: "$" if c == "USD" else "₩")
+        tree_df["display_price"] = tree_df.apply(
+            lambda r: f"{r['price_symbol']}{r['current_price']:,.2f}" if r["currency"] == "USD" else f"{r['price_symbol']}{r['current_price']:,.0f}",
+            axis=1
+        )
+
+        # TREEMAP 생성 (custom_data에 [0]: 등락률, [1]: 현재가 포맷 텍스트 전달)
         fig_treemap = px.treemap(
             tree_df,
             path=group_cols,
             values="평가액(원)",
             color=color_col,
-            custom_data=[color_col],
+            custom_data=[color_col, "display_price"],
             color_continuous_scale=[
                 [0.0, "#D32F2F"],   # 음수: 선명한 빨간색
                 [0.5, "#455A64"],   # 0 부근: 회색빛 차콜
@@ -839,6 +851,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             texttemplate=(
                 "<b>%{label}</b><br>"
                 "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
+                "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
                 "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
                 "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
             ),
@@ -846,6 +859,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
                 "<span style='font-size: 15px;'>"
                 "• 평가금액: ₩%{value:,.0f}<br>"
+                "• 현재가: %{customdata[1]}<br>"
                 f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
                 "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
                 "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
