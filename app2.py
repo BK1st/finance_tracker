@@ -203,10 +203,10 @@ if menu == '트렌드 리포트':
           if alias
           else f"미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})"
       )
-      label = (
-          f"{row['broker']} | {display_alias} [{row['account_type'] if"
-          f" pd.notna(row['account_type']) else '미지정'}]"
+      acc_type_str = (
+          row['account_type'] if pd.notna(row['account_type']) else '미지정'
       )
+      label = f"{row['broker']} | {display_alias} [{acc_type_str}]"
       acc_options.append(label)
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
@@ -354,9 +354,6 @@ if menu == '트렌드 리포트':
       for t_date in target_dates:
         t_str = t_date.strftime('%Y-%m-%d')
 
-        # ---------------------------------------------------------
-        # [환율 수집 보완] 최신 유효 환율 종가 우선 적용
-        # ---------------------------------------------------------
         usd_krw = None
         if 'KRW=X' in market_data.columns and not market_data.empty:
           if pd.to_datetime(t_str) in market_data.index:
@@ -435,9 +432,6 @@ if menu == '트렌드 리포트':
                   price = base_price if base_price > 0 else 1.0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
-                    # ---------------------------------------------------------
-                    # [시차 보정] 당일 마감전/시차 오류 시 최근 마감가 적용
-                    # ---------------------------------------------------------
                     if pd.to_datetime(t_str) in market_data.index:
                       price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
                     else:
@@ -1401,10 +1395,10 @@ elif menu == '연도별 수익률 리포트':
           if alias
           else f"미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})"
       )
-      label = (
-          f"{row['broker']} | {display_alias} [{row['account_type'] if"
-          f" pd.notna(row['account_type']) else '미지정'}]"
+      acc_type_str = (
+          row['account_type'] if pd.notna(row['account_type']) else '미지정'
       )
+      label = f"{row['broker']} | {display_alias} [{acc_type_str}]"
       acc_options.append(label)
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
@@ -1556,9 +1550,6 @@ elif menu == '연도별 수익률 리포트':
       for t_date in target_dates:
         t_str = t_date.strftime('%Y-%m-%d')
 
-        # ---------------------------------------------------------
-        # [환율 수집 보완] 최신 유효 환율 종가 우선 적용
-        # ---------------------------------------------------------
         usd_krw = None
         if 'KRW=X' in market_data.columns and not market_data.empty:
           if pd.to_datetime(t_str) in market_data.index:
@@ -1650,9 +1641,6 @@ elif menu == '연도별 수익률 리포트':
                   price = base_price if base_price > 0 else 1.0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
-                    # ---------------------------------------------------------
-                    # [시차 보정] 당일 마감전/시차 오류 시 최근 마감가 적용
-                    # ---------------------------------------------------------
                     if pd.to_datetime(t_str) in market_data.index:
                       price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
                     else:
