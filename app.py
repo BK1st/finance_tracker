@@ -59,7 +59,8 @@ def normalize_ticker(ticker, currency):
     return t_str
 
 
-@st.cache_data(ttl=3600 * 12)
+# 캐시 유효 시간을 12시간에서 30분(1800초)으로 축소하여 최신 시세 반영 지연 방지
+@st.cache_data(ttl=1800)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
     """모든 종목의 시세를 yf.download로 단 1회 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
@@ -224,6 +225,12 @@ if "live_rate_store" not in st.session_state:
 current_rate = st.sidebar.number_input(
     "현재 원/달러 환율 (KRW/USD)", value=st.session_state.live_rate_store, step=1.0
 )
+
+# 사이드바에 즉시 캐시를 초기화하는 시세 강제 갱신 버튼 추가
+if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
+    st.cache_data.clear()
+    st.sidebar.success("시세 캐시가 초기화되었습니다!")
+    st.rerun()
 
 menu = st.sidebar.selectbox(
     "메뉴 선택",
@@ -1082,6 +1089,8 @@ elif menu == "기간별 성과 및 추이 분석":
                 max_date = (pd.to_datetime(sorted_dates[-1]) + timedelta(days=2)).strftime("%Y-%m-%d")
 
                 with st.spinner("🚀 모든 비교 날짜의 시세 데이터를 배치로 수집하는 중..."):
+                    # 계산 실행 시 최신 시세를 수집하도록 캐시 초기화
+                    st.cache_data.clear()
                     market_batch_data = fetch_batch_market_data(valid_tickers, min_date, max_date)
 
                 for port_date in selected_port_dates:
