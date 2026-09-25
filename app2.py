@@ -171,7 +171,7 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 🛠️ [공통 범주 설정 - 차트 하단으로 이동]
+# 🛠️ [공통 범주 설정 - 차트 하단 배치]
 COMMON_LEGEND_CONFIG = dict(
     orientation='h',
     yanchor='top',
@@ -236,7 +236,6 @@ if menu == '트렌드 리포트':
     ]
     bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI']
 
-    # 🛠️ [개선] 보유항목별, Category 4별 항목을 전체 트렌드 관점에 추가
     all_view_types = [
         '전체 합산',
         '계좌별',
@@ -433,7 +432,6 @@ if menu == '트렌드 리포트':
           principal = init_val + in_flow - out_flow
 
           if '미래에셋' in str(broker_name):
-            # 🛠️ 미래에셋 수동입력 계좌 레코드 추가 (카테고리/종목명 기본값 세팅)
             base_records.append({
                 'Date': t_str,
                 'account_num': acc_label,
@@ -514,7 +512,6 @@ if menu == '트렌드 리포트':
                 total_acc_eval += item_eval
                 item_eval_list.append((item_name, cat4, item_eval))
 
-              # 계좌 내 항목별 원금 안분 (평가금액 비율 기준)
               for item_name, cat4, item_eval in item_eval_list:
                 ratio = (
                     (item_eval / total_acc_eval) if total_acc_eval > 0 else 0
@@ -599,6 +596,12 @@ if menu == '트렌드 리포트':
             ],
             index=0,
             key='live_chart_layout',
+        )
+        # 🛠️ [신규 추가] 범주 전체 표시/숨기기 선택 옵션
+        show_legend = st.checkbox(
+            '🎨 범주(Legend) 표시 (체크 해제 시 범주 숨김 & 차트 확대)',
+            value=True,
+            key='live_show_legend',
         )
 
       with disp_col2:
@@ -740,7 +743,10 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(
+                t=100, b=40 if not show_legend else 80, l=10, r=10
+            ),  # 🛠️ 범주 숨길 시 여백 조정
+            showlegend=show_legend,  # 🛠️ 범주 표시 여부 반영
             legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
@@ -796,7 +802,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
@@ -855,7 +862,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
@@ -915,7 +923,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
@@ -1045,7 +1054,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
@@ -1082,7 +1092,8 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
@@ -1140,7 +1151,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
@@ -1215,7 +1227,8 @@ if menu == '트렌드 리포트':
             barmode='group',
             hovermode='x unified',
             height=540,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
@@ -1257,7 +1270,8 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
@@ -1290,7 +1304,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=80, l=10, r=10),
+            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
+            showlegend=show_legend,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
@@ -1444,7 +1459,6 @@ if menu == '트렌드 리포트':
               draw_single_chart(grp_df, f'{prefix} [{grp}]')
               st.write('---')
 
-      # 🛠️ [개선] 탭 생성 시 보유항목별 및 Category 4별 조건 분기 추가
       tabs = st.tabs(active_views)
       for i, v_type in enumerate(active_views):
         with tabs[i]:
@@ -1837,6 +1851,12 @@ elif menu == '연도별 수익률 리포트':
             index=0,
             key='ret_live_chart_layout',
         )
+        # 🛠️ [신규 추가] 범주 전체 표시/숨기기 선택 옵션
+        show_legend_ret = st.checkbox(
+            '🎨 범주(Legend) 표시 (체크 해제 시 범주 숨김 & 차트 확대)',
+            value=True,
+            key='ret_live_show_legend',
+        )
 
       with disp_col2:
         y_range_mode_ret = st.radio(
@@ -2052,7 +2072,10 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=560,
-              margin=dict(t=160, b=80, l=10, r=10),
+              margin=dict(
+                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+              ),
+              showlegend=show_legend_ret,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2135,7 +2158,10 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=560,
-              margin=dict(t=160, b=80, l=10, r=10),
+              margin=dict(
+                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+              ),
+              showlegend=show_legend_ret,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2266,7 +2292,10 @@ elif menu == '연도별 수익률 리포트':
               ),
               hovermode='x unified',
               height=540,
-              margin=dict(t=160, b=80, l=10, r=10),
+              margin=dict(
+                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+              ),
+              showlegend=show_legend_ret,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
