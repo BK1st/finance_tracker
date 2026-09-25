@@ -783,14 +783,13 @@ elif menu == "일별/시점별 보유 현황 분석":
         profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
         rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
-        # ✨ 수정 기능 2: 요약 현황 표 구분 기준 옵션 선택 (기본값: 구분)
         st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
         
-        # 구분 기준 선택 option 기능 추가
+        # 요약 현황표 구분 기준 선택 옵션 추가
         summary_group_by_label = st.selectbox(
             "📊 요약 현황표 구분 기준 선택",
             options=list(cat_options.keys()),
-            index=0,  # default: '구분' (일반/연금 등)
+            index=0,  # 기본값: '구분' (일반/연금 등)
             key="summary_table_group_select"
         )
         selected_summary_col = cat_options[summary_group_by_label]
@@ -900,7 +899,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             axis=1
         )
 
-        # ✨ 수정 기능 1: Treemap 호버 툴팁에 평가손익(원) 추가 (custom_data에 선택기준_평가손익(원) 포함)
+        # Treemap 생성 (custom_data에 선택기준_평가손익(원) 포함)
         fig_treemap = px.treemap(
             tree_df,
             path=group_cols,
@@ -926,7 +925,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
                 "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
             ),
-            # 호버 툴팁에 모든 단계별 평가 손익 금액 추가 표시
+            # 호버 툴팁에 선택 기준에 맞는 평가손익 원화 금액 표기
             hovertemplate=(
                 "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
                 "<span style='font-size: 15px;'>"
