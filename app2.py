@@ -169,6 +169,11 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
+# 공통 레전드 설정 (상단 가로 배치)
+COMMON_LEGEND_CONFIG = dict(
+    orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5
+)
+
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
 # -----------------------------------------------------------------------------
@@ -529,9 +534,9 @@ if menu == '트렌드 리포트':
       )
 
       st.write('---')
-      st.subheader('🖥️ 화면 디스플레이 및 Y축 범주 설정 (실시간 반영)')
+      st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
-      disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2, 2, 2, 3])
+      disp_col1, disp_col2, disp_col3 = st.columns([3, 3, 4])
 
       with disp_col1:
         layout_setting = st.selectbox(
@@ -541,19 +546,11 @@ if menu == '트렌드 리포트':
                 '2열 (좌우 2개 분할)',
                 '3열 (좌우 3개 분할)',
             ],
-            index=1,
+            index=0,  # default를 1열로 설정
             key='live_chart_layout',
         )
 
       with disp_col2:
-        y_scale_choice = st.selectbox(
-            '📏 Y축 Scale 타입',
-            options=['Linear (선형)', 'Logarithmic (로그)'],
-            index=0,
-            key='live_y_scale',
-        )
-
-      with disp_col3:
         y_range_mode = st.radio(
             '🎯 Y축 Range(범위) 지정',
             options=['자동 (Auto)', '수동 지정 (Manual)'],
@@ -562,7 +559,7 @@ if menu == '트렌드 리포트':
         )
 
       y_min_val, y_max_val = None, None
-      with disp_col4:
+      with disp_col3:
         if y_range_mode == '수동 지정 (Manual)':
           r_c1, r_c2 = st.columns(2)
           with r_c1:
@@ -586,12 +583,8 @@ if menu == '트렌드 리포트':
       elif '3열' in layout_setting:
         num_cols = 3
 
-      y_scale_setting = (
-          'log' if y_scale_choice == 'Logarithmic (로그)' else 'linear'
-      )
-
       def apply_y_axis_config(fig, axis_name='yaxis', is_money=True):
-        kwargs = dict(type=y_scale_setting, zeroline=True)
+        kwargs = dict(type='linear', zeroline=True)
         if (
             is_money
             and y_range_mode == '수동 지정 (Manual)'
@@ -699,6 +692,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
             type='category',
@@ -747,6 +741,7 @@ if menu == '트렌드 리포트':
             title=f'2. [{title_name}] 구간 손익 금액 추이',
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
             type='category',
@@ -798,6 +793,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
             type='category',
@@ -850,6 +846,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
             type='category',
@@ -998,6 +995,7 @@ if menu == '트렌드 리포트':
             title=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
             hovermode='x unified',
             height=450,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
             type='category',
@@ -1027,6 +1025,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
             type='category',
@@ -1077,6 +1076,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
             type='category',
@@ -1144,6 +1144,7 @@ if menu == '트렌드 리포트':
             barmode='group',
             hovermode='x unified',
             height=450,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
             type='category',
@@ -1178,6 +1179,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
             type='category',
@@ -1203,6 +1205,7 @@ if menu == '트렌드 리포트':
             title=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
             hovermode='x unified',
             height=430,
+            legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
             type='category',
@@ -1728,9 +1731,9 @@ elif menu == '연도별 수익률 리포트':
       )
 
       st.write('---')
-      st.subheader('🖥️ 화면 디스플레이 및 Y축 범주 설정 (실시간 반영)')
+      st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
-      disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2, 2, 2, 3])
+      disp_col1, disp_col2, disp_col3 = st.columns([3, 3, 4])
 
       with disp_col1:
         layout_setting_ret = st.selectbox(
@@ -1740,19 +1743,11 @@ elif menu == '연도별 수익률 리포트':
                 '2열 (좌우 2개 분할)',
                 '3열 (좌우 3개 분할)',
             ],
-            index=1,
+            index=0,  # default를 1열로 설정
             key='ret_live_chart_layout',
         )
 
       with disp_col2:
-        y_scale_choice_ret = st.selectbox(
-            '📏 Y축 Scale 타입 (수익률 축)',
-            options=['Linear (선형)', 'Logarithmic (로그)'],
-            index=0,
-            key='ret_live_y_scale',
-        )
-
-      with disp_col3:
         y_range_mode_ret = st.radio(
             '🎯 Y축 Range(범위) 지정',
             options=['자동 (Auto)', '수동 지정 (Manual)'],
@@ -1761,7 +1756,7 @@ elif menu == '연도별 수익률 리포트':
         )
 
       y_min_val_ret, y_max_val_ret = None, None
-      with disp_col4:
+      with disp_col3:
         if y_range_mode_ret == '수동 지정 (Manual)':
           r_c1, r_c2 = st.columns(2)
           with r_c1:
@@ -1785,12 +1780,8 @@ elif menu == '연도별 수익률 리포트':
       elif '3열' in layout_setting_ret:
         num_cols_ret = 3
 
-      y_scale_setting_ret = (
-          'log' if y_scale_choice_ret == 'Logarithmic (로그)' else 'linear'
-      )
-
       def apply_y_axis_config_ret(fig, axis_name='yaxis'):
-        kwargs = dict(type=y_scale_setting_ret, zeroline=True)
+        kwargs = dict(type='linear', zeroline=True)
         if (
             y_range_mode_ret == '수동 지정 (Manual)'
             and y_min_val_ret is not None
@@ -1964,6 +1955,7 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=520,
+              legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
               type='category',
@@ -2039,6 +2031,7 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=520,
+              legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
               type='category',
@@ -2162,6 +2155,7 @@ elif menu == '연도별 수익률 리포트':
               title=f'📈 [{grp}] 수익률 추이 (좌축) & 평가금액 (우측 보조축)',
               hovermode='x unified',
               height=450,
+              legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
               type='category',
