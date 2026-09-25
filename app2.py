@@ -101,7 +101,9 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
   if not all_tickers:
     return pd.DataFrame()
   try:
-    df = yf.download(all_tickers, start=start_date, end=end_date, progress=False)
+    df = yf.download(
+        all_tickers, start=start_date, end=end_date, progress=False
+    )
     if df.empty:
       return pd.DataFrame()
 
@@ -169,9 +171,14 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 공통 레전드 설정 (상단 가로 배치)
+# 공통 레전드 설정 개선 (상단 가로 배치 및 겹침 방지 보장)
 COMMON_LEGEND_CONFIG = dict(
-    orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5
+    orientation='h',
+    yanchor='bottom',
+    y=1.02,
+    xanchor='center',
+    x=0.5,
+    font=dict(size=10),
 )
 
 # -----------------------------------------------------------------------------
@@ -529,9 +536,7 @@ if menu == '트렌드 리포트':
     ):
       calc_df = st.session_state['trend_calc_df']
       bm_calc_dict = st.session_state.get('trend_bm_calc', {})
-      active_views = st.session_state.get(
-          'trend_view_types', all_view_types
-      )
+      active_views = st.session_state.get('trend_view_types', all_view_types)
 
       st.write('---')
       st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
@@ -546,7 +551,7 @@ if menu == '트렌드 리포트':
                 '2열 (좌우 2개 분할)',
                 '3열 (좌우 3개 분할)',
             ],
-            index=0,  # default를 1열로 설정
+            index=0,
             key='live_chart_layout',
         )
 
@@ -564,10 +569,7 @@ if menu == '트렌드 리포트':
           r_c1, r_c2 = st.columns(2)
           with r_c1:
             y_min_val = st.number_input(
-                'Y축 최소값 (원)',
-                value=0.0,
-                step=1000000.0,
-                key='live_ymin',
+                'Y축 최소값 (원)', value=0.0, step=1000000.0, key='live_ymin'
             )
           with r_c2:
             y_max_val = st.number_input(
@@ -630,15 +632,9 @@ if menu == '트렌드 리포트':
         total_cum_p_loss = sub_df['평가손익'].iloc[-1]
 
         c_m1, c_m2, c_m3 = st.columns(3)
-        c_m1.metric(
-            '📌 선택 구간 누적 평가손익', f'{selected_cum_p_loss:,.0f} 원'
-        )
-        c_m2.metric(
-            '🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원'
-        )
-        c_m3.metric(
-            '💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원"
-        )
+        c_m1.metric('📌 선택 구간 누적 평가손익', f'{selected_cum_p_loss:,.0f} 원')
+        c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
+        c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
 
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
@@ -688,10 +684,17 @@ if menu == '트렌드 리포트':
         )
 
         fig1.update_layout(
-            title=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
+            title=dict(
+                text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
+            ),
             barmode='relative',
             hovermode='x unified',
-            height=430,
+            height=460,
+            margin=dict(t=100, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
@@ -738,9 +741,16 @@ if menu == '트렌드 리포트':
         )
 
         fig2.update_layout(
-            title=f'2. [{title_name}] 구간 손익 금액 추이',
+            title=dict(
+                text=f'2. [{title_name}] 구간 손익 금액 추이',
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
+            ),
             hovermode='x unified',
-            height=430,
+            height=460,
+            margin=dict(t=100, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
@@ -787,12 +797,19 @@ if menu == '트렌드 리포트':
           )
 
         fig3a.update_layout(
-            title=(
-                f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
-                ' 비교)'
+            title=dict(
+                text=(
+                    f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
+                    ' 비교)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             hovermode='x unified',
-            height=430,
+            height=460,
+            margin=dict(t=100, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
@@ -840,12 +857,19 @@ if menu == '트렌드 리포트':
           )
 
         fig3b.update_layout(
-            title=(
-                f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
-                ' 비교)'
+            title=dict(
+                text=(
+                    f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
+                    ' 비교)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             hovermode='x unified',
-            height=430,
+            height=460,
+            margin=dict(t=100, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
@@ -864,76 +888,52 @@ if menu == '트렌드 리포트':
 
         if effective_cols == 1:
           st.plotly_chart(
-              fig1,
-              use_container_width=True,
-              key=f'trend_fig1_{title_name}',
+              fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
           )
           st.plotly_chart(
-              fig2,
-              use_container_width=True,
-              key=f'trend_fig2_{title_name}',
+              fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
           )
           st.plotly_chart(
-              fig3a,
-              use_container_width=True,
-              key=f'trend_fig3a_{title_name}',
+              fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
           )
           st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}',
+              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
             st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}',
+                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
             )
           with col_b:
             st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}',
+                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
             )
           col_c, col_d = st.columns(2)
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
+                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
             )
           with col_d:
             st.plotly_chart(
-                fig3b,
-                use_container_width=True,
-                key=f'trend_fig3b_{title_name}',
+                fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
             st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}',
+                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
             )
           with col_b:
             st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}',
+                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
             )
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
+                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
             )
           st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}',
+              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
           )
 
         return sub_df
@@ -956,9 +956,7 @@ if menu == '트렌드 리포트':
         date_order_list = sorted(grp_agg['Chart_Date'].unique().tolist())
 
         grp_agg['수익률'] = np.where(
-            grp_agg['원금'] > 0,
-            (grp_agg['평가손익'] / grp_agg['원금']) * 100,
-            0,
+            grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
         )
         grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)[
             '총평가금액'
@@ -992,9 +990,16 @@ if menu == '트렌드 리포트':
           )
 
         fig_sel_p.update_layout(
-            title=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
+            title=dict(
+                text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
+            ),
             hovermode='x unified',
-            height=450,
+            height=480,
+            margin=dict(t=120, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
@@ -1003,7 +1008,9 @@ if menu == '트렌드 리포트':
             categoryarray=date_order_list,
         )
         apply_y_axis_config(fig_sel_p, axis_name='yaxis', is_money=True)
-        fig_sel_p.update_yaxes(title_text='선택구간 누적손익 (원)', tickformat=',.0f')
+        fig_sel_p.update_yaxes(
+            title_text='선택구간 누적손익 (원)', tickformat=',.0f'
+        )
 
         fig_period_p = go.Figure()
         for grp in groups:
@@ -1012,19 +1019,24 @@ if menu == '트렌드 리포트':
           )
           fig_period_p.add_trace(
               go.Bar(
-                  x=sub['Chart_Date'],
-                  y=sub['주기별 평가손익'],
-                  name=str(grp),
+                  x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
               )
           )
         fig_period_p.update_layout(
-            title=(
-                f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
-                ' 막대)'
+            title=dict(
+                text=(
+                    f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
+                    ' 막대)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             barmode='relative',
             hovermode='x unified',
-            height=430,
+            height=480,
+            margin=dict(t=120, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
@@ -1070,12 +1082,19 @@ if menu == '트렌드 리포트':
           )
 
         fig_period_ret.update_layout(
-            title=(
-                f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
-                ' 벤치마크 포함)'
+            title=dict(
+                text=(
+                    f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
+                    ' 벤치마크 포함)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             hovermode='x unified',
-            height=430,
+            height=480,
+            margin=dict(t=120, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
@@ -1137,13 +1156,20 @@ if menu == '트렌드 리포트':
           )
 
         fig_cum_ret.update_layout(
-            title=(
-                f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) & 선택기간'
-                ' 누적평가 손익 (우측 보조축 그룹 막대)'
+            title=dict(
+                text=(
+                    f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
+                    ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             barmode='group',
             hovermode='x unified',
-            height=450,
+            height=500,
+            margin=dict(t=130, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
@@ -1172,13 +1198,20 @@ if menu == '트렌드 리포트':
               go.Bar(x=sub['Chart_Date'], y=sub['평가손익'], name=str(grp))
           )
         fig_p.update_layout(
-            title=(
-                f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
-                ' 막대)'
+            title=dict(
+                text=(
+                    f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
+                    ' 막대)'
+                ),
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
             ),
             barmode='relative',
             hovermode='x unified',
-            height=430,
+            height=480,
+            margin=dict(t=120, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
@@ -1202,9 +1235,16 @@ if menu == '트렌드 리포트':
               )
           )
         fig_r.update_layout(
-            title=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
+            title=dict(
+                text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
+                y=0.98,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
+            ),
             hovermode='x unified',
-            height=430,
+            height=480,
+            margin=dict(t=120, b=40, l=40, r=40),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
@@ -1327,6 +1367,10 @@ if menu == '트렌드 리포트':
           )
           draw_single_chart(agg_df, '전체 합산')
         else:
+          # [요청사항 반영] 전체 종합 비교 분석을 맨 위쪽으로 이동
+          draw_group_summary_charts(df, group_col, prefix)
+          st.write('---')
+
           groups = sorted(df[group_col].unique())
           if num_cols > 1 and group_col is not None:
             st.markdown(f'#### 📌 그룹별 상세 분석 ({prefix})')
@@ -1354,9 +1398,6 @@ if menu == '트렌드 리포트':
               st.markdown(f'#### 📌 {prefix}: {grp}')
               draw_single_chart(grp_df, f'{prefix} [{grp}]')
               st.write('---')
-
-          st.write('---')
-          draw_group_summary_charts(df, group_col, prefix)
 
       tabs = st.tabs(active_views)
       for i, v_type in enumerate(active_views):
@@ -1743,7 +1784,7 @@ elif menu == '연도별 수익률 리포트':
                 '2열 (좌우 2개 분할)',
                 '3열 (좌우 3개 분할)',
             ],
-            index=0,  # default를 1열로 설정
+            index=0,
             key='ret_live_chart_layout',
         )
 
@@ -1857,7 +1898,7 @@ elif menu == '연도별 수익률 리포트':
                     type='buttons',
                     direction='right',
                     x=0.0,
-                    y=1.15,
+                    y=1.18,
                     xanchor='left',
                     yanchor='top',
                     showactive=False,
@@ -1948,13 +1989,20 @@ elif menu == '연도별 수익률 리포트':
 
           add_toggle_controls(fig_period_comp)
           fig_period_comp.update_layout(
-              title=(
-                  f'🔹 [{prefix}] 선택 기간 주기별 수익률 (좌축) & 평가금액 그룹'
-                  ' 막대 (우측 보조축)'
+              title=dict(
+                  text=(
+                      f'🔹 [{prefix}] 선택 기간 주기별 수익률 (좌축) & 평가금액'
+                      ' 그룹 막대 (우측 보조축)'
+                  ),
+                  y=0.98,
+                  x=0.5,
+                  xanchor='center',
+                  yanchor='top',
               ),
               barmode='group',
               hovermode='x unified',
-              height=520,
+              height=540,
+              margin=dict(t=130, b=40, l=40, r=40),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2024,13 +2072,20 @@ elif menu == '연도별 수익률 리포트':
 
           add_toggle_controls(fig_cum_comp)
           fig_cum_comp.update_layout(
-              title=(
-                  f'🔹 [{prefix}] 선택 기간 누적 수익률 (좌축) & 평가금액 그룹'
-                  ' 막대 (우측 보조축)'
+              title=dict(
+                  text=(
+                      f'🔹 [{prefix}] 선택 기간 누적 수익률 (좌축) & 평가금액'
+                      ' 그룹 막대 (우측 보조축)'
+                  ),
+                  y=0.98,
+                  x=0.5,
+                  xanchor='center',
+                  yanchor='top',
               ),
               barmode='group',
               hovermode='x unified',
-              height=520,
+              height=540,
+              margin=dict(t=130, b=40, l=40, r=40),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2152,9 +2207,16 @@ elif menu == '연도별 수익률 리포트':
 
           add_toggle_controls(fig)
           fig.update_layout(
-              title=f'📈 [{grp}] 수익률 추이 (좌축) & 평가금액 (우측 보조축)',
+              title=dict(
+                  text=f'📈 [{grp}] 수익률 추이 (좌축) & 평가금액 (우측 보조축)',
+                  y=0.98,
+                  x=0.5,
+                  xanchor='center',
+                  yanchor='top',
+              ),
               hovermode='x unified',
-              height=450,
+              height=480,
+              margin=dict(t=120, b=40, l=40, r=40),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
@@ -2228,7 +2290,9 @@ elif menu == '계좌 별칭 관리':
   )
 
   conn = get_connection()
-  pf_df = pd.read_sql('SELECT DISTINCT broker, account_num FROM portfolio', conn)
+  pf_df = pd.read_sql(
+      'SELECT DISTINCT broker, account_num FROM portfolio', conn
+  )
   alias_df = pd.read_sql('SELECT * FROM account_alias', conn)
   conn.close()
 
@@ -2255,7 +2319,7 @@ elif menu == '계좌 별칭 관리':
           st.write(f"`{acc_str}`")
         with col3:
           new_alias = st.text_input(
-              f"별칭 ({acc_str})",
+              f'별칭 ({acc_str})',
               value=row['alias'],
               key=f'alias_{acc_str}',
           )
@@ -2305,7 +2369,6 @@ elif menu == '포트폴리오 업로드':
         st.error(f'엑셀 파일에 다음 필수 항목이 누락되었습니다: {missing_cols}')
       else:
         if st.button('DB에 포트폴리오 저장 (안전 업데이트)'):
-          # 데이터 정제 및 타입 일치
           df['record_date'] = pd.to_datetime(df['record_date']).dt.strftime(
               '%Y-%m-%d'
           )
@@ -2341,12 +2404,10 @@ elif menu == '포트폴리오 업로드':
               'currency',
           ]].copy()
 
-          # 안전한 트랜잭션 블록 적용
           conn = get_connection()
           try:
             with conn:
               c = conn.cursor()
-              # 업로드 대상 날짜 데이터 원자적 삭제 및 재삽입
               for r_date in save_df['record_date'].unique():
                 c.execute(
                     'DELETE FROM portfolio WHERE record_date = ?', (r_date,)
