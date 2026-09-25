@@ -171,17 +171,16 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 🛠️ [개선된 공통 레전드 설정]
-# 모바일 환경에서 범주가 여러 줄로 가로/세로 잘 맞춰지도록 entrywidth 및 줄바꿈 적용
+# 🛠️ [개선된 공통 범주 설정 - 차트 하단으로 이동]
 COMMON_LEGEND_CONFIG = dict(
     orientation='h',
-    yanchor='bottom',
-    y=1.02,
+    yanchor='top',
+    y=-0.2,  # 차트 하단 외부로 이동하여 상단 제목/모드바와의 겹침 방지
     xanchor='center',
     x=0.5,
     font=dict(size=10),
     entrywidthmode='fraction',
-    entrywidth=0.45,  # 한 행에 약 2개씩 범주가 균등 배치되도록 설정
+    entrywidth=0.45,
 )
 
 # -----------------------------------------------------------------------------
@@ -213,7 +212,7 @@ if menu == '트렌드 리포트':
       display_alias = (
           alias
           if alias
-          else f"미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})"
+          else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
       )
       acc_type_str = (
           row['account_type'] if pd.notna(row['account_type']) else '미지정'
@@ -326,7 +325,7 @@ if menu == '트렌드 리포트':
             m_display = (
                 m_alias
                 if m_alias
-                else f"미지정별칭({m_acc[-4:] if len(m_acc)>=4 else m_acc})"
+                else f'미지정별칭({m_acc[-4:] if len(m_acc)>=4 else m_acc})'
             )
             if m_display == alias_part:
               selected_accounts.append(m_acc)
@@ -478,7 +477,7 @@ if menu == '트렌드 리포트':
           acc_label = (
               acc_alias_val
               if acc_alias_val
-              else f"미지정별칭({acc[-4:] if len(acc)>=4 else acc})"
+              else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
           )
 
           base_records.append({
@@ -689,15 +688,15 @@ if menu == '트렌드 리포트':
         fig1.update_layout(
             title=dict(
                 text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             barmode='relative',
             hovermode='x unified',
-            height=480,
-            margin=dict(t=110, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
@@ -746,14 +745,14 @@ if menu == '트렌드 리포트':
         fig2.update_layout(
             title=dict(
                 text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=110, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
@@ -805,14 +804,14 @@ if menu == '트렌드 리포트':
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=110, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
@@ -865,14 +864,14 @@ if menu == '트렌드 리포트':
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=110, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
@@ -995,14 +994,14 @@ if menu == '트렌드 리포트':
         fig_sel_p.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=120, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
@@ -1031,15 +1030,15 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             barmode='relative',
             hovermode='x unified',
-            height=500,
-            margin=dict(t=120, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
@@ -1090,14 +1089,14 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
                     ' 벤치마크 포함)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=120, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
@@ -1164,15 +1163,15 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
                     ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             barmode='group',
             hovermode='x unified',
-            height=520,
-            margin=dict(t=130, b=40, l=10, r=10),
+            height=540,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
@@ -1206,15 +1205,15 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             barmode='relative',
             hovermode='x unified',
-            height=500,
-            margin=dict(t=120, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
@@ -1240,14 +1239,14 @@ if menu == '트렌드 리포트':
         fig_r.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=120, b=40, l=10, r=10),
+            height=520,
+            margin=dict(t=100, b=80, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
@@ -1440,7 +1439,7 @@ elif menu == '연도별 수익률 리포트':
       display_alias = (
           alias
           if alias
-          else f"미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})"
+          else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
       )
       acc_type_str = (
           row['account_type'] if pd.notna(row['account_type']) else '미지정'
@@ -1555,7 +1554,7 @@ elif menu == '연도별 수익률 리포트':
             m_display = (
                 m_alias
                 if m_alias
-                else f"미지정별칭({m_acc[-4:] if len(m_acc)>=4 else m_acc})"
+                else f'미지정별칭({m_acc[-4:] if len(m_acc)>=4 else m_acc})'
             )
             if m_display == alias_part:
               selected_accounts.append(m_acc)
@@ -1631,7 +1630,7 @@ elif menu == '연도별 수익률 리포트':
           acc_label = (
               acc_alias_val
               if acc_alias_val
-              else f"미지정별칭({acc[-4:] if len(acc)>=4 else acc})"
+              else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
           )
 
           if '미래에셋' in str(broker_name):
@@ -1894,7 +1893,7 @@ elif menu == '연도별 수익률 리포트':
         )
 
       # 🛠️ [개선된 토글 버튼 위치 설정]
-      # 버튼을 차트 상단 제목 위 영역(y=1.28)으로 이동시켜 제목과의 겹침을 완벽 교정
+      # 버튼을 차트 상단 내부 왼쪽(x=0.0, y=1.12)으로 위치를 재설정하여 차트 제목과 무관하게 동작
       def add_toggle_controls(fig):
         fig.update_layout(
             updatemenus=[
@@ -1902,7 +1901,7 @@ elif menu == '연도별 수익률 리포트':
                     type='buttons',
                     direction='right',
                     x=0.0,
-                    y=1.28,
+                    y=1.12,
                     xanchor='left',
                     yanchor='top',
                     showactive=False,
@@ -1998,17 +1997,17 @@ elif menu == '연도별 수익률 리포트':
                       f'🔹 [{prefix}] 선택 기간 주기별 수익률 (좌축) & 평가금액'
                       ' 그룹 막대 (우측 보조축)'
                   ),
-                  y=0.98,
+                  y=0.95,
                   x=0.5,
                   xanchor='center',
                   yanchor='top',
               ),
               barmode='group',
               hovermode='x unified',
-              height=540,
+              height=560,
               margin=dict(
-                  t=140, b=40, l=10, r=10
-              ),  # 🛠️ 상단 여백을 넓혀 겹침 현상 수정을 완벽하게 처리
+                  t=160, b=80, l=10, r=10
+              ),  # 🛠️ 상단 여백을 160px로 대폭 확장하여 차트 툴바/버튼/제목의 수직 공간 보장
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2083,17 +2082,17 @@ elif menu == '연도별 수익률 리포트':
                       f'🔹 [{prefix}] 선택 기간 누적 수익률 (좌축) & 평가금액'
                       ' 그룹 막대 (우측 보조축)'
                   ),
-                  y=0.98,
+                  y=0.95,
                   x=0.5,
                   xanchor='center',
                   yanchor='top',
               ),
               barmode='group',
               hovermode='x unified',
-              height=540,
+              height=560,
               margin=dict(
-                  t=140, b=40, l=10, r=10
-              ),  # 🛠️ 상단 여백 확보로 요소 간 격리 유지
+                  t=160, b=80, l=10, r=10
+              ),  # 🛠️ 상단 여백 160px 적용으로 레이아웃 간섭 무력화
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2217,14 +2216,14 @@ elif menu == '연도별 수익률 리포트':
           fig.update_layout(
               title=dict(
                   text=f'📈 [{grp}] 수익률 추이 (좌축) & 평가금액 (우측 보조축)',
-                  y=0.98,
+                  y=0.95,
                   x=0.5,
                   xanchor='center',
                   yanchor='top',
               ),
               hovermode='x unified',
-              height=500,
-              margin=dict(t=130, b=40, l=10, r=10),
+              height=540,
+              margin=dict(t=160, b=80, l=10, r=10),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
@@ -2324,7 +2323,7 @@ elif menu == '계좌 별칭 관리':
         with col1:
           st.write(f"**{row['broker']}**")
         with col2:
-          st.write(f"`{acc_str}`")
+          st.write(f'`{acc_str}`')
         with col3:
           new_alias = st.text_input(
               f'별칭 ({acc_str})',
