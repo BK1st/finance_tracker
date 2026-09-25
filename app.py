@@ -59,7 +59,6 @@ def normalize_ticker(ticker, currency):
     return t_str
 
 
-# 캐시 유효 시간을 12시간에서 30분(1800초)으로 축소하여 최신 시세 반영 지연 방지
 @st.cache_data(ttl=1800)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
     """모든 종목의 시세를 yf.download로 단 1회 요청하여 캐싱"""
@@ -97,7 +96,6 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
             else:
                 return None
 
-        # 시간대(tz-aware) 정보 제거하여 타겟 날짜 비교 오류(TypeError) 방지
         if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
             df_ticker.index = df_ticker.index.tz_localize(None)
 
@@ -226,7 +224,6 @@ current_rate = st.sidebar.number_input(
     "현재 원/달러 환율 (KRW/USD)", value=st.session_state.live_rate_store, step=1.0
 )
 
-# 사이드바에 즉시 캐시를 초기화하는 시세 강제 갱신 버튼 추가
 if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
     st.cache_data.clear()
     st.sidebar.success("시세 캐시가 초기화되었습니다!")
@@ -261,7 +258,7 @@ if menu == "자산 입력 및 관리":
 
     if st.button("🔄 전체 데이터 최신 시세로 무조건 일괄 업데이트"):
         with st.spinner("배치 일괄 시세 및 환율을 반영 중..."):
-            st.cache_data.clear()  # 수동 업데이트 시 캐시 강제 초기화
+            st.cache_data.clear()
             if "실시간" in rate_option:
                 target_rate = fetch_live_exchange_rate()
                 st.session_state.live_rate_store = target_rate
@@ -779,18 +776,48 @@ elif menu == "일별/시점별 보유 현황 분석":
                     group_cols.append(c_name)
 
         # ---------------------------------------------------------
-        # a. [단계별] 요약 현황 표 생성 (선택한 트리맵 색상 기준 및 모든 선택 단계 반영)
+        # a. [단계별 + 각 단계별 합계/전체총합] 요약 현황 표 생성
         # ---------------------------------------------------------
-        summary_group_df = (
-            sub_df.groupby(group_cols)
-            .agg({
+        col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
+        disp_group_cols = [col_rename_map[c] for c in group_cols]
+        
+        profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
+        rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
+
+        # 롤업(Rollup)을 통한 각 단계별 합계 데이터 집계
+        rollup_frames = []
+        
+        # 1. 최하위 및 중간 단계별 그룹 합계 계산
+        for i in range(1, len(group_cols) + 1):
+            sub_cols = group_cols[:i]
+            agg_df = sub_df.groupby(sub_cols).agg({
                 "매입총액(원)": "sum",
                 "평가액(원)": "sum",
                 "선택기준_평가손익(원)": "sum",
-            })
-            .reset_index()
-        )
+            }).reset_index()
+            
+            # 하위 단계 열 채우기
+            for c in group_cols[i:]:
+                if i < len(group_cols):
+                    agg_df[c] = f"[{col_rename_map[sub_cols[-1]]} 소계]"
+                
+            rollup_frames.append(agg_df)
 
+        # 2. 전체 총합 계산
+        total_df = pd.DataFrame([{
+            group_cols[0]: "🌐 전체 총합",
+            "매입총액(원)": sub_df["매입총액(원)"].sum(),
+            "평가액(원)": sub_df["평가액(원)"].sum(),
+            "선택기준_평가손익(원)": sub_df["선택기준_평가손익(원)"].sum(),
+        }])
+        for c in group_cols[1:]:
+            total_df[c] = "🌐 전체 총합"
+        
+        rollup_frames.append(total_df)
+
+        summary_group_df = pd.concat(rollup_frames, ignore_index=True)
+
+        # 수익률 및 등락률 독립 계산
         if color_option == "총 누적 수익률 (%)":
             summary_group_df["선택기준_수익률(%)"] = (
                 summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
@@ -805,12 +832,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
         )
 
-        col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
         summary_display_df = summary_group_df.rename(columns=col_rename_map)
-        disp_group_cols = [col_rename_map[c] for c in group_cols]
-
-        profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
-        rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
         summary_display_df = summary_display_df.rename(columns={
             "선택기준_평가손익(원)": profit_col_label,
@@ -825,10 +847,12 @@ elif menu == "일별/시점별 보유 현황 분석":
             "점유율(%)",
         ]
 
-        st.write(f"📌 **단계별 요약 현황 표 (선택 색상 기준: {color_option})**")
+        # 데이터 중복 제거 및 가독성 높은 순서 정렬
+        summary_display_df = summary_display_df.drop_duplicates(subset=disp_group_cols)
+
+        st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
         st.dataframe(
             summary_display_df[summary_final_cols]
-            .sort_values(by="평가액(원)", ascending=False)
             .style.format({
                 "매입총액(원)": "₩{:,.0f}",
                 "평가액(원)": "₩{:,.0f}",
@@ -841,15 +865,15 @@ elif menu == "일별/시점별 보유 현황 분석":
         st.markdown("")
 
         # ---------------------------------------------------------
-        # TREEMAP용 데이터 집계 (현재가 및 통화 추가)
+        # TREEMAP용 데이터 집계
         # ---------------------------------------------------------
         agg_dict = {
             "매입총액(원)": "sum",
             "평가액(원)": "sum",
             "평가손익(원)": "sum",
             "quantity": "sum",
-            "current_price": "mean",  # 현재 주식 가격
-            "currency": "first",       # 통화 정보
+            "current_price": "mean",
+            "currency": "first",
         }
         if color_col != "수익률(%)":
             agg_dict[color_col] = "mean"
@@ -878,14 +902,12 @@ elif menu == "일별/시점별 보유 현황 분석":
         else:
             dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
-        # 현재가 표시용 텍스트 열 추가
         tree_df["price_symbol"] = tree_df["currency"].apply(lambda c: "$" if c == "USD" else "₩")
         tree_df["display_price"] = tree_df.apply(
             lambda r: f"{r['price_symbol']}{r['current_price']:,.2f}" if r["currency"] == "USD" else f"{r['price_symbol']}{r['current_price']:,.0f}",
             axis=1
         )
 
-        # TREEMAP 생성 (custom_data에 [0]: 등락률, [1]: 현재가 포맷 텍스트 전달)
         fig_treemap = px.treemap(
             tree_df,
             path=group_cols,
@@ -893,9 +915,9 @@ elif menu == "일별/시점별 보유 현황 분석":
             color=color_col,
             custom_data=[color_col, "display_price"],
             color_continuous_scale=[
-                [0.0, "#D32F2F"],   # 음수: 선명한 빨간색
-                [0.5, "#455A64"],   # 0 부근: 회색빛 차콜
-                [1.0, "#2E7D32"],   # 양수: 선명한 초록색
+                [0.0, "#D32F2F"],
+                [0.5, "#455A64"],
+                [1.0, "#2E7D32"],
             ],
             color_continuous_midpoint=0,
             range_color=dynamic_range,
@@ -1201,7 +1223,6 @@ elif menu == "기간별 성과 및 추이 분석":
                 max_date = (pd.to_datetime(sorted_dates[-1]) + timedelta(days=2)).strftime("%Y-%m-%d")
 
                 with st.spinner("🚀 모든 비교 날짜의 시세 데이터를 배치로 수집하는 중..."):
-                    # 계산 실행 시 최신 시세를 수집하도록 캐시 초기화
                     st.cache_data.clear()
                     market_batch_data = fetch_batch_market_data(valid_tickers, min_date, max_date)
 
@@ -1245,9 +1266,6 @@ elif menu == "기간별 성과 및 추이 분석":
                 st.session_state.calculated_trend_df = pd.DataFrame(trend_records)
                 st.success("✅ 배치 시세 수집 및 Trend 연산 완료!")
 
-        # ---------------------------------------------------------
-        # TREND 연산 결과가 session_state에 존재하는 경우 차트 렌더링
-        # ---------------------------------------------------------
         if "calculated_trend_df" in st.session_state and not st.session_state.calculated_trend_df.empty:
             trend_df = st.session_state.calculated_trend_df
 
@@ -1275,7 +1293,6 @@ elif menu == "기간별 성과 및 추이 분석":
                 },
             )
 
-            # --- Y축 조절 슬라이더 영역 ---
             st.markdown("### 🎚️ Y축 범위(스케일) 실시간 조절")
             
             min_val = float(summary_trend["평가액(원)"].min())
