@@ -1026,19 +1026,13 @@ elif menu == "일별/시점별 보유 현황 분석":
             )
 
         with col_h2:
-            pie_tab1, pie_tab2 = st.tabs(["🥧 선택 계층별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
+            pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
 
             with pie_tab1:
                 # ---------------------------------------------------------
-                # 계층별 점유율 도너츠 구분 기준 선택 옵션 추가
+                # 도너츠 점유율 표시 분류 기준 옵션 (모든 후보 중 고를 수 있도록 수정)
                 # ---------------------------------------------------------
-                selected_display_names = [col_rename_map[c] for c in group_cols]
-                
-                group_mode_options = ["전체 계층 경로 (A > B > C)"]
-                for d_name in selected_display_names:
-                    group_mode_options.append(f"단일 기준: {d_name}")
-                if len(selected_display_names) > 1:
-                    group_mode_options.append(f"최하위 계층만: {selected_display_names[-1]}")
+                group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
 
                 pie_group_mode = st.selectbox(
                     "🎯 계층 도넛 그래프 구분 기준 선택",
@@ -1047,18 +1041,13 @@ elif menu == "일별/시점별 보유 현황 분석":
                     key="pie_hierarchy_mode_select"
                 )
 
-                # 선택한 기준에 따라 도넛 그래프용 라벨(Group) 생성
+                # 선택한 기준에 따라 도넛 그래프용 데이터프레임 집계
                 if pie_group_mode == "전체 계층 경로 (A > B > C)":
                     hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
                     pie_chart_df = hierarchy_summary.groupby("계층경로")["평가액(원)"].sum().reset_index()
                     names_col = "계층경로"
-                elif pie_group_mode.startswith("단일 기준: "):
-                    target_disp = pie_group_mode.replace("단일 기준: ", "")
-                    target_col = cat_options[target_disp]
-                    pie_chart_df = sub_df.groupby(target_col)["평가액(원)"].sum().reset_index()
-                    names_col = target_col
-                elif pie_group_mode.startswith("최하위 계층만: "):
-                    target_col = group_cols[-1]
+                else:
+                    target_col = cat_options[pie_group_mode]
                     pie_chart_df = sub_df.groupby(target_col)["평가액(원)"].sum().reset_index()
                     names_col = target_col
 
@@ -1078,7 +1067,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 st.plotly_chart(fig_pie_hierarchy, width="stretch")
 
             with pie_tab2:
-                # 보유 항목(ITEM)별 점유율 (기존 유지)
+                # 보유 항목(ITEM)별 점유율
                 item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
                 fig_pie_item = px.pie(
                     item_summary,
