@@ -666,8 +666,19 @@ elif menu == "일별/시점별 보유 현황 분석":
                 )
 
         today = datetime.now()
+        change_rates = []
+        period_profits = []
+
         if color_option == "총 누적 수익률 (%)":
             color_col = "수익률(%)"
+            for _, row in sub_df.iterrows():
+                buy_val = row["매입총액(원)"]
+                profit_val = row["평가손익(원)"]
+                rate_val = (profit_val / buy_val * 100) if buy_val != 0 else 0.0
+                change_rates.append(rate_val)
+                period_profits.append(profit_val)
+            sub_df[color_col] = change_rates
+            sub_df["선택기준_평가손익(원)"] = period_profits
         else:
             if color_option == "일간 등락률 (1일)":
                 start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
@@ -703,14 +714,17 @@ elif menu == "일별/시점별 보유 현황 분석":
                 
                 m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt)
 
-                change_rates = []
                 for _, row in sub_df.iterrows():
                     f_ticker = row["formatted_ticker"]
                     curr_p = row["current_price"]
+                    qty = row["quantity"]
+                    ex_r = row["rate_multiplier"]
                     rate = 0.0
+                    profit_amt = 0.0
 
                     if not f_ticker or m_data.empty:
                         change_rates.append(rate)
+                        period_profits.append(profit_amt)
                         continue
 
                     if isinstance(m_data.columns, pd.MultiIndex):
@@ -738,6 +752,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                                 prev_price = float(valid_series.iloc[-2])
                                 if prev_price > 0:
                                     rate = round(((latest_price - prev_price) / prev_price) * 100, 2)
+                                    profit_amt = (latest_price - prev_price) * qty * ex_r
                         else:
                             p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
                             
@@ -746,10 +761,13 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                             if curr_p and p_price and float(p_price) > 0:
                                 rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
+                                profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
 
                     change_rates.append(rate)
+                    period_profits.append(profit_amt)
 
                 sub_df[color_option] = change_rates
+                sub_df["선택기준_평가손익(원)"] = period_profits
             color_col = color_option
 
         selected_levels = [l1, l2, l3, l4]
@@ -759,6 +777,68 @@ elif menu == "일별/시점별 보유 현황 분석":
                 c_name = cat_options[lvl]
                 if c_name not in group_cols:
                     group_cols.append(c_name)
+
+        # ---------------------------------------------------------
+        # a. [단계별] 요약 현황 표 생성 (선택한 트리맵 색상 기준 및 모든 선택 단계 반영)
+        # ---------------------------------------------------------
+        summary_group_df = (
+            sub_df.groupby(group_cols)
+            .agg({
+                "매입총액(원)": "sum",
+                "평가액(원)": "sum",
+                "선택기준_평가손익(원)": "sum",
+            })
+            .reset_index()
+        )
+
+        if color_option == "총 누적 수익률 (%)":
+            summary_group_df["선택기준_수익률(%)"] = (
+                summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
+            ) * 100
+        else:
+            past_eval_s = summary_group_df["평가액(원)"] - summary_group_df["선택기준_평가손익(원)"]
+            summary_group_df["선택기준_수익률(%)"] = (
+                summary_group_df["선택기준_평가손익(원)"] / past_eval_s.replace(0, 1)
+            ) * 100
+
+        summary_group_df["점유율(%)"] = (
+            (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+        )
+
+        col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
+        summary_display_df = summary_group_df.rename(columns=col_rename_map)
+        disp_group_cols = [col_rename_map[c] for c in group_cols]
+
+        profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
+        rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
+
+        summary_display_df = summary_display_df.rename(columns={
+            "선택기준_평가손익(원)": profit_col_label,
+            "선택기준_수익률(%)": rate_col_label,
+        })
+
+        summary_final_cols = disp_group_cols + [
+            "매입총액(원)",
+            "평가액(원)",
+            profit_col_label,
+            rate_col_label,
+            "점유율(%)",
+        ]
+
+        st.write(f"📌 **단계별 요약 현황 표 (선택 색상 기준: {color_option})**")
+        st.dataframe(
+            summary_display_df[summary_final_cols]
+            .sort_values(by="평가액(원)", ascending=False)
+            .style.format({
+                "매입총액(원)": "₩{:,.0f}",
+                "평가액(원)": "₩{:,.0f}",
+                profit_col_label: "₩{:,.0f}",
+                rate_col_label: "{:+.2f}%",
+                "점유율(%)": "{:.2f}%"
+            }),
+            width="stretch"
+        )
+        st.markdown("")
 
         # ---------------------------------------------------------
         # TREEMAP용 데이터 집계 (현재가 및 통화 추가)
@@ -785,30 +865,6 @@ elif menu == "일별/시점별 보유 현황 분석":
         tree_df["수익률(%)"] = (
             tree_df["평가손익(원)"] / tree_df["매입총액(원)"].replace(0, 1)
         ) * 100
-
-        parent_cat = group_cols[0]
-        parent_cat_label = l1
-
-        parent_summary_metric = (
-            sub_df.groupby(parent_cat)
-            .agg({"평가액(원)": "sum"})
-            .reset_index()
-        )
-        if not parent_summary_metric.empty:
-            st.write(f"📌 **[{parent_cat_label}]별 요약 현황**")
-            metric_cols = st.columns(len(parent_summary_metric) if len(parent_summary_metric) <= 4 else 4)
-            for idx, row in parent_summary_metric.iterrows():
-                p_name = row[parent_cat]
-                p_val = row["평가액(원)"]
-                p_share = (p_val / total_eval * 100) if total_eval != 0 else 0
-                col_idx = idx % 4
-                with metric_cols[col_idx]:
-                    st.metric(
-                        label=f"{p_name}",
-                        value=f"₩{p_val:,.0f}",
-                        delta=f"점유율 {p_share:.2f}%"
-                    )
-            st.markdown("")
 
         tree_df[color_col] = tree_df[color_col].fillna(0)
 
@@ -878,6 +934,9 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         st.plotly_chart(fig_treemap, width="stretch")
 
+        # ---------------------------------------------------------
+        # b. 선택 계층별 상세 요약 및 점유율 원형 그래프(Pie Chart) 표현
+        # ---------------------------------------------------------
         st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
 
         hierarchy_summary = (
@@ -897,7 +956,6 @@ elif menu == "일별/시점별 보유 현황 분석":
             (hierarchy_summary["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
         )
 
-        col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
         display_df = hierarchy_summary.rename(columns=col_rename_map)
 
         display_hierarchy_cols = [col_rename_map[c] for c in group_cols]
@@ -909,18 +967,58 @@ elif menu == "일별/시점별 보유 현황 분석":
             "점유율(%)",
         ]
 
-        st.dataframe(
-            display_df[final_cols]
-            .sort_values(by="평가액(원)", ascending=False)
-            .style.format({
-                "매입총액(원)": "₩{:,.0f}",
-                "평가액(원)": "₩{:,.0f}",
-                "평가손익(원)": "₩{:,.0f}",
-                "수익률(%)": "{:.2f}%",
-                "점유율(%)": "{:.2f}%"
-            }),
-            width="stretch"
-        )
+        col_h1, col_h2 = st.columns([1.3, 1])
+
+        with col_h1:
+            st.dataframe(
+                display_df[final_cols]
+                .sort_values(by="평가액(원)", ascending=False)
+                .style.format({
+                    "매입총액(원)": "₩{:,.0f}",
+                    "평가액(원)": "₩{:,.0f}",
+                    "평가손익(원)": "₩{:,.0f}",
+                    "수익률(%)": "{:.2f}%",
+                    "점유율(%)": "{:.2f}%"
+                }),
+                width="stretch"
+            )
+
+        with col_h2:
+            pie_tab1, pie_tab2 = st.tabs(["🥧 선택 계층별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
+
+            with pie_tab1:
+                hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
+                fig_pie_hierarchy = px.pie(
+                    hierarchy_summary,
+                    values="평가액(원)",
+                    names="계층경로",
+                    title="선택 계층별 점유율",
+                    hole=0.35,
+                )
+                fig_pie_hierarchy.update_traces(
+                    textposition="inside",
+                    textinfo="percent+label",
+                    hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
+                )
+                fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
+                st.plotly_chart(fig_pie_hierarchy, width="stretch")
+
+            with pie_tab2:
+                item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
+                fig_pie_item = px.pie(
+                    item_summary,
+                    values="평가액(원)",
+                    names="item_name",
+                    title="보유 항목별 점유율",
+                    hole=0.35,
+                )
+                fig_pie_item.update_traces(
+                    textposition="inside",
+                    textinfo="percent+label",
+                    hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
+                )
+                fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
+                st.plotly_chart(fig_pie_item, width="stretch")
 
         st.markdown("---")
 
