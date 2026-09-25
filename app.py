@@ -4,6 +4,7 @@ import urllib.request
 from datetime import datetime, timedelta
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
@@ -785,23 +786,20 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
         
-        # 요약 현황표 구분 기준 선택 옵션 추가
         summary_group_by_label = st.selectbox(
             "📊 요약 현황표 구분 기준 선택",
             options=list(cat_options.keys()),
-            index=0,  # 기본값: '구분' (일반/연금 등)
+            index=0,
             key="summary_table_group_select"
         )
         selected_summary_col = cat_options[summary_group_by_label]
 
-        # 선택된 구분 기준으로 데이터 집계
         summary_group_df = sub_df.groupby(selected_summary_col).agg({
             "매입총액(원)": "sum",
             "평가액(원)": "sum",
             "선택기준_평가손익(원)": "sum",
         }).reset_index()
 
-        # 전체 총합 계산 및 행 추가
         total_summary_df = pd.DataFrame([{
             selected_summary_col: "🌐 전체 총합",
             "매입총액(원)": sub_df["매입총액(원)"].sum(),
@@ -811,7 +809,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         summary_group_df = pd.concat([summary_group_df, total_summary_df], ignore_index=True)
 
-        # 수익률/등락률 계산
         if color_option == "총 누적 수익률 (%)":
             summary_group_df["선택기준_수익률(%)"] = (
                 summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
@@ -855,37 +852,72 @@ elif menu == "일별/시점별 보유 현황 분석":
         st.markdown("")
 
         # ---------------------------------------------------------
-        # TREEMAP용 데이터 집계
+        # TREEMAP 데이터 구성 (go.Treemap 활용으로 상위 계층 NaN 해결)
         # ---------------------------------------------------------
-        agg_dict = {
-            "매입총액(원)": "sum",
-            "평가액(원)": "sum",
-            "평가손익(원)": "sum",
-            "선택기준_평가손익(원)": "sum",
-            "quantity": "sum",
-            "current_price": "mean",
-            "currency": "first",
-        }
-        if color_col != "수익률(%)":
-            agg_dict[color_col] = "mean"
+        ids, labels, parents, values = [], [], [], []
+        custom_rates, custom_prices, custom_profits = [], [], []
 
-        tree_df = (
-            sub_df.groupby(group_cols)
-            .agg(agg_dict)
-            .reset_index()
-        )
+        # 1. 최상위 루트 노드 추가 (전체 포트폴리오)
+        ids.append("Root")
+        labels.append("전체 포트폴리오")
+        parents.append("")
+        values.append(total_eval)
+        custom_rates.append(total_rate if color_option == "총 누적 수익률 (%)" else ((total_profit / (total_eval - total_profit)) * 100 if (total_eval - total_profit) != 0 else 0))
+        custom_prices.append("-")
+        custom_profits.append(sub_df["선택기준_평가손익(원)"].sum())
 
-        tree_df = tree_df[tree_df["평가액(원)"] > 0]
+        # 2. 선택된 계층별 그룹 연산 및 계층 노드 구축
+        built_nodes = set(["Root"])
 
-        tree_df["수익률(%)"] = (
-            tree_df["평가손익(원)"] / tree_df["매입총액(원)"].replace(0, 1)
-        ) * 100
+        for idx_row, row in sub_df.iterrows():
+            current_parent = "Root"
+            current_id_path = ""
+            
+            for depth, col in enumerate(group_cols):
+                val_str = str(row[col])
+                current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
+                
+                if current_id_path not in built_nodes:
+                    built_nodes.add(current_id_path)
+                    
+                    # 해당 계층 조건에 맞는 sub_df 필터링
+                    filter_mask = pd.Series(True, index=sub_df.index)
+                    for k in range(depth + 1):
+                        filter_mask &= (sub_df[group_cols[k]] == row[group_cols[k]])
+                    
+                    sub_grp = sub_df[filter_mask]
+                    
+                    grp_eval = sub_grp["평가액(원)"].sum()
+                    grp_buy = sub_grp["매입총액(원)"].sum()
+                    grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
+                    
+                    if color_option == "총 누적 수익률 (%)":
+                        grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
+                    else:
+                        grp_past_eval = grp_eval - grp_profit
+                        grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
 
-        tree_df[color_col] = tree_df[color_col].fillna(0)
+                    # 리프 노드(최하위)인 경우 가격 표시
+                    if depth == len(group_cols) - 1:
+                        price_sym = "$" if row["currency"] == "USD" else "₩"
+                        disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                    else:
+                        disp_price = "-"
 
-        c_vals = tree_df[color_col]
-        max_abs_val = max(abs(c_vals.min()), abs(c_vals.max()), 1.0)
-        
+                    ids.append(current_id_path)
+                    labels.append(val_str)
+                    parents.append(current_parent)
+                    values.append(grp_eval)
+                    custom_rates.append(grp_rate)
+                    custom_prices.append(disp_price)
+                    custom_profits.append(grp_profit)
+
+                current_parent = current_id_path
+
+        # 색상 범위 설정
+        c_rates_arr = [r for r in custom_rates if r is not None]
+        max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
+
         if color_option == "일간 등락률 (1일)":
             dynamic_range = [-min(max_abs_val, 3.0), min(max_abs_val, 3.0)]
         elif color_option in ["주간 등락률 (1주일)", "월간 등락률 (1개월)", "월초 대비 등락률 (Month to Date)"]:
@@ -893,59 +925,53 @@ elif menu == "일별/시점별 보유 현황 분석":
         else:
             dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
-        tree_df["price_symbol"] = tree_df["currency"].apply(lambda c: "$" if c == "USD" else "₩")
-        tree_df["display_price"] = tree_df.apply(
-            lambda r: f"{r['price_symbol']}{r['current_price']:,.2f}" if r["currency"] == "USD" else f"{r['price_symbol']}{r['current_price']:,.0f}",
-            axis=1
-        )
-
-        # Treemap 생성 (custom_data에 선택기준_평가손익(원) 포함)
-        fig_treemap = px.treemap(
-            tree_df,
-            path=group_cols,
-            values="평가액(원)",
-            color=color_col,
-            custom_data=[color_col, "display_price", "선택기준_평가손익(원)"],
-            color_continuous_scale=[
-                [0.0, "#D32F2F"],
-                [0.5, "#455A64"],
-                [1.0, "#2E7D32"],
-            ],
-            color_continuous_midpoint=0,
-            range_color=dynamic_range,
-            title="계층별 다단계 TREEMAP 자산 분포",
-            branchvalues="total",
-        )
-
-        fig_treemap.update_traces(
-            texttemplate=(
-                "<b>%{label}</b><br>"
-                "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
-                "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
-                "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
-                "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
-            ),
-            # 호버 툴팁에 선택 기준에 맞는 평가손익 원화 금액 표기
-            hovertemplate=(
-                "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
-                "<span style='font-size: 15px;'>"
-                "• 평가금액: ₩%{value:,.0f}<br>"
-                "• 현재가: %{customdata[1]}<br>"
-                f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
-                f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
-                "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
-                "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
-            ),
-            hoverlabel=dict(font_size=15),
-            textfont=dict(color="white"),
-            insidetextfont=dict(color="white"),
-            selector=dict(type="treemap"),
+        # go.Treemap 기반 차트 생성
+        fig_treemap = go.Figure(
+            go.Treemap(
+                ids=ids,
+                labels=labels,
+                parents=parents,
+                values=values,
+                branchvalues="total",
+                marker=dict(
+                    colors=custom_rates,
+                    colorscale=[
+                        [0.0, "#D32F2F"],
+                        [0.5, "#455A64"],
+                        [1.0, "#2E7D32"],
+                    ],
+                    cmid=0,
+                    cmin=dynamic_range[0],
+                    cmax=dynamic_range[1],
+                    colorbar=dict(title=color_option),
+                ),
+                customdata=list(zip(custom_rates, custom_prices, custom_profits)),
+                texttemplate=(
+                    "<b>%{label}</b><br>"
+                    "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
+                    "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
+                    "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
+                    "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
+                ),
+                hovertemplate=(
+                    "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
+                    "<span style='font-size: 15px;'>"
+                    "• 평가금액: ₩%{value:,.0f}<br>"
+                    "• 현재가: %{customdata[1]}<br>"
+                    f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
+                    f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
+                    "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
+                    "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
+                ),
+                hoverlabel=dict(font_size=15),
+                textfont=dict(color="white"),
+                insidetextfont=dict(color="white"),
+            )
         )
 
         fig_treemap.update_layout(
+            title="계층별 다단계 TREEMAP 자산 분포",
             margin=dict(t=30, l=10, r=10, b=10),
-            coloraxis_colorbar=dict(title=color_option),
-            treemapcolorway=["#455A64"]
         )
 
         st.plotly_chart(fig_treemap, width="stretch")
