@@ -171,22 +171,18 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 공통 레전드 및 모바일 대응 설정 개선
+# 🛠️ [개선된 공통 레전드 설정]
+# 모바일 환경에서 범주가 여러 줄로 가로/세로 잘 맞춰지도록 entrywidth 및 줄바꿈 적용
 COMMON_LEGEND_CONFIG = dict(
     orientation='h',
     yanchor='bottom',
-    y=1.12,  # 모바일에서 상단 여백 및 모드바와 겹치지 않도록 조정
+    y=1.02,
     xanchor='center',
     x=0.5,
     font=dict(size=10),
+    entrywidthmode='fraction',
+    entrywidth=0.45,  # 한 행에 약 2개씩 범주가 균등 배치되도록 설정
 )
-
-PLOTLY_CONFIG = {
-    'displayModeBar': True,
-    'displaylogo': False,
-    'scrollZoom': True,
-    'modeBarButtonsToRemove': ['select2d', 'lasso2d'],
-}
 
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
@@ -701,7 +697,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=480,
-            margin=dict(t=140, b=40, l=40, r=40),
+            margin=dict(t=110, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
@@ -757,7 +753,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=480,
-            margin=dict(t=140, b=40, l=40, r=40),
+            margin=dict(t=110, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
@@ -816,7 +812,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=480,
-            margin=dict(t=140, b=40, l=40, r=40),
+            margin=dict(t=110, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
@@ -876,7 +872,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=480,
-            margin=dict(t=140, b=40, l=40, r=40),
+            margin=dict(t=110, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
@@ -895,88 +891,52 @@ if menu == '트렌드 리포트':
 
         if effective_cols == 1:
           st.plotly_chart(
-              fig1,
-              use_container_width=True,
-              key=f'trend_fig1_{title_name}',
-              config=PLOTLY_CONFIG,
+              fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
           )
           st.plotly_chart(
-              fig2,
-              use_container_width=True,
-              key=f'trend_fig2_{title_name}',
-              config=PLOTLY_CONFIG,
+              fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
           )
           st.plotly_chart(
-              fig3a,
-              use_container_width=True,
-              key=f'trend_fig3a_{title_name}',
-              config=PLOTLY_CONFIG,
+              fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
           )
           st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}',
-              config=PLOTLY_CONFIG,
+              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
             st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
             )
           with col_b:
             st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
             )
           col_c, col_d = st.columns(2)
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
             )
           with col_d:
             st.plotly_chart(
-                fig3b,
-                use_container_width=True,
-                key=f'trend_fig3b_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
             st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
             )
           with col_b:
             st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
             )
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
-                config=PLOTLY_CONFIG,
+                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
             )
           st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}',
-              config=PLOTLY_CONFIG,
+              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
           )
 
         return sub_df
@@ -1042,7 +1002,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=500,
-            margin=dict(t=150, b=40, l=40, r=40),
+            margin=dict(t=120, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
@@ -1079,7 +1039,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=500,
-            margin=dict(t=150, b=40, l=40, r=40),
+            margin=dict(t=120, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
@@ -1137,7 +1097,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=500,
-            margin=dict(t=150, b=40, l=40, r=40),
+            margin=dict(t=120, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
@@ -1212,7 +1172,7 @@ if menu == '트렌드 리포트':
             barmode='group',
             hovermode='x unified',
             height=520,
-            margin=dict(t=160, b=40, l=40, r=40),
+            margin=dict(t=130, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
@@ -1254,7 +1214,7 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=500,
-            margin=dict(t=150, b=40, l=40, r=40),
+            margin=dict(t=120, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
@@ -1287,7 +1247,7 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=500,
-            margin=dict(t=150, b=40, l=40, r=40),
+            margin=dict(t=120, b=40, l=10, r=10),
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
@@ -1307,37 +1267,27 @@ if menu == '트렌드 리포트':
               fig_sel_p,
               use_container_width=True,
               key=f'trend_grp_sel_p_{prefix}',
-              config=PLOTLY_CONFIG,
           )
           st.plotly_chart(
               fig_period_p,
               use_container_width=True,
               key=f'trend_grp_period_p_{prefix}',
-              config=PLOTLY_CONFIG,
           )
           st.plotly_chart(
               fig_period_ret,
               use_container_width=True,
               key=f'trend_grp_period_ret_{prefix}',
-              config=PLOTLY_CONFIG,
           )
           st.plotly_chart(
               fig_cum_ret,
               use_container_width=True,
               key=f'trend_grp_cum_ret_{prefix}',
-              config=PLOTLY_CONFIG,
           )
           st.plotly_chart(
-              fig_p,
-              use_container_width=True,
-              key=f'trend_grp_p_{prefix}',
-              config=PLOTLY_CONFIG,
+              fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
           )
           st.plotly_chart(
-              fig_r,
-              use_container_width=True,
-              key=f'trend_grp_r_{prefix}',
-              config=PLOTLY_CONFIG,
+              fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
           )
         elif num_cols == 2:
           col1, col2 = st.columns(2)
@@ -1346,14 +1296,12 @@ if menu == '트렌드 리포트':
                 fig_sel_p,
                 use_container_width=True,
                 key=f'trend_grp_sel_p_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           with col2:
             st.plotly_chart(
                 fig_period_p,
                 use_container_width=True,
                 key=f'trend_grp_period_p_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           col3, col4 = st.columns(2)
           with col3:
@@ -1361,29 +1309,21 @@ if menu == '트렌드 리포트':
                 fig_period_ret,
                 use_container_width=True,
                 key=f'trend_grp_period_ret_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           with col4:
             st.plotly_chart(
                 fig_cum_ret,
                 use_container_width=True,
                 key=f'trend_grp_cum_ret_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           col5, col6 = st.columns(2)
           with col5:
             st.plotly_chart(
-                fig_p,
-                use_container_width=True,
-                key=f'trend_grp_p_{prefix}',
-                config=PLOTLY_CONFIG,
+                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
             )
           with col6:
             st.plotly_chart(
-                fig_r,
-                use_container_width=True,
-                key=f'trend_grp_r_{prefix}',
-                config=PLOTLY_CONFIG,
+                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
             )
         else:
           col1, col2, col3 = st.columns(3)
@@ -1392,21 +1332,18 @@ if menu == '트렌드 리포트':
                 fig_sel_p,
                 use_container_width=True,
                 key=f'trend_grp_sel_p_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           with col2:
             st.plotly_chart(
                 fig_period_p,
                 use_container_width=True,
                 key=f'trend_grp_period_p_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           with col3:
             st.plotly_chart(
                 fig_period_ret,
                 use_container_width=True,
                 key=f'trend_grp_period_ret_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           col4, col5, col6 = st.columns(3)
           with col4:
@@ -1414,21 +1351,14 @@ if menu == '트렌드 리포트':
                 fig_cum_ret,
                 use_container_width=True,
                 key=f'trend_grp_cum_ret_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           with col5:
             st.plotly_chart(
-                fig_p,
-                use_container_width=True,
-                key=f'trend_grp_p_{prefix}',
-                config=PLOTLY_CONFIG,
+                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
             )
           with col6:
             st.plotly_chart(
-                fig_r,
-                use_container_width=True,
-                key=f'trend_grp_r_{prefix}',
-                config=PLOTLY_CONFIG,
+                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
             )
 
       def render_separate_charts(df, group_col, prefix):
@@ -1963,6 +1893,8 @@ elif menu == '연도별 수익률 리포트':
             else pd.DataFrame()
         )
 
+      # 🛠️ [개선된 토글 버튼 위치 설정]
+      # 버튼을 차트 상단 제목 위 영역(y=1.28)으로 이동시켜 제목과의 겹침을 완벽 교정
       def add_toggle_controls(fig):
         fig.update_layout(
             updatemenus=[
@@ -1970,7 +1902,7 @@ elif menu == '연도별 수익률 리포트':
                     type='buttons',
                     direction='right',
                     x=0.0,
-                    y=1.22,
+                    y=1.28,
                     xanchor='left',
                     yanchor='top',
                     showactive=False,
@@ -2073,8 +2005,10 @@ elif menu == '연도별 수익률 리포트':
               ),
               barmode='group',
               hovermode='x unified',
-              height=560,
-              margin=dict(t=160, b=40, l=40, r=40),
+              height=540,
+              margin=dict(
+                  t=140, b=40, l=10, r=10
+              ),  # 🛠️ 상단 여백을 넓혀 겹침 현상 수정을 완벽하게 처리
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2156,8 +2090,10 @@ elif menu == '연도별 수익률 리포트':
               ),
               barmode='group',
               hovermode='x unified',
-              height=560,
-              margin=dict(t=160, b=40, l=40, r=40),
+              height=540,
+              margin=dict(
+                  t=140, b=40, l=10, r=10
+              ),  # 🛠️ 상단 여백 확보로 요소 간 격리 유지
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2182,13 +2118,11 @@ elif menu == '연도별 수익률 리포트':
                 fig_period_comp,
                 use_container_width=True,
                 key=f'ret_period_comp_{prefix}',
-                config=PLOTLY_CONFIG,
             )
             st.plotly_chart(
                 fig_cum_comp,
                 use_container_width=True,
                 key=f'ret_cum_comp_{prefix}',
-                config=PLOTLY_CONFIG,
             )
           else:
             r_col1, r_col2 = st.columns(2)
@@ -2197,14 +2131,12 @@ elif menu == '연도별 수익률 리포트':
                   fig_period_comp,
                   use_container_width=True,
                   key=f'ret_period_comp_{prefix}',
-                  config=PLOTLY_CONFIG,
               )
             with r_col2:
               st.plotly_chart(
                   fig_cum_comp,
                   use_container_width=True,
                   key=f'ret_cum_comp_{prefix}',
-                  config=PLOTLY_CONFIG,
               )
           st.write('---')
 
@@ -2292,7 +2224,7 @@ elif menu == '연도별 수익률 리포트':
               ),
               hovermode='x unified',
               height=500,
-              margin=dict(t=150, b=40, l=40, r=40),
+              margin=dict(t=130, b=40, l=10, r=10),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
@@ -2312,10 +2244,7 @@ elif menu == '연도별 수익률 리포트':
           )
           apply_y_axis_config_ret(fig, axis_name='yaxis')
           st.plotly_chart(
-              fig,
-              use_container_width=True,
-              key=f'ret_grp_{prefix}_{grp}',
-              config=PLOTLY_CONFIG,
+              fig, use_container_width=True, key=f'ret_grp_{prefix}_{grp}'
           )
 
           st.subheader(f'📋 [{grp}] 상세 수익률 데이터')
@@ -2542,7 +2471,7 @@ elif menu == '원금 및 입출금 관리':
         account_num = st.text_input('계좌번호')
       with col3:
         initial_amount = st.number_input(
-            '기초 원금 금액 (원)', min_value=0.0, step=100000.0
+            '기초 원금 금액 (원)', min_value=0.0, step=10000.0
         )
 
       submit_init = st.form_submit_button('기초 원금 저장')
