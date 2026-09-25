@@ -597,12 +597,6 @@ if menu == '트렌드 리포트':
             index=0,
             key='live_chart_layout',
         )
-        # 🛠️ [신규 추가] 범주 전체 표시/숨기기 선택 옵션
-        show_legend = st.checkbox(
-            '🎨 범주(Legend) 표시 (체크 해제 시 범주 숨김 & 차트 확대)',
-            value=True,
-            key='live_show_legend',
-        )
 
       with disp_col2:
         y_range_mode = st.radio(
@@ -652,6 +646,7 @@ if menu == '트렌드 리포트':
         elif axis_name == 'yaxis2':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
+      # 🛠️ [개별 범주 설정 적용] draw_single_chart
       def draw_single_chart(sub_df, title_name, force_single_col=False):
         sub_df = sub_df.copy()
         sub_df['dt_temp'] = pd.to_datetime(sub_df['Date'])
@@ -684,6 +679,34 @@ if menu == '트렌드 리포트':
         c_m1.metric('📌 선택 구간 누적 평가손익', f'{selected_cum_p_loss:,.0f} 원')
         c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
         c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
+
+        # 각 개별 차트 상단 범주 표시 체크박스
+        st.markdown(f'##### ⚙️ [{title_name}] 차트별 범주 설정')
+        cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
+        with cb_col1:
+          leg_fig1 = st.checkbox(
+              '차트1 범주 표시',
+              value=True,
+              key=f'leg_f1_{title_name}_{force_single_col}',
+          )
+        with cb_col2:
+          leg_fig2 = st.checkbox(
+              '차트2 범주 표시',
+              value=True,
+              key=f'leg_f2_{title_name}_{force_single_col}',
+          )
+        with cb_col3:
+          leg_fig3a = st.checkbox(
+              '차트3-1 범주 표시',
+              value=True,
+              key=f'leg_f3a_{title_name}_{force_single_col}',
+          )
+        with cb_col4:
+          leg_fig3b = st.checkbox(
+              '차트3-2 범주 표시',
+              value=True,
+              key=f'leg_f3b_{title_name}_{force_single_col}',
+          )
 
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
@@ -743,10 +766,8 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(
-                t=100, b=40 if not show_legend else 80, l=10, r=10
-            ),  # 🛠️ 범주 숨길 시 여백 조정
-            showlegend=show_legend,  # 🛠️ 범주 표시 여부 반영
+            margin=dict(t=100, b=40 if not leg_fig1 else 80, l=10, r=10),
+            showlegend=leg_fig1,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig1.update_xaxes(
@@ -802,8 +823,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_fig2 else 80, l=10, r=10),
+            showlegend=leg_fig2,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig2.update_xaxes(
@@ -862,8 +883,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_fig3a else 80, l=10, r=10),
+            showlegend=leg_fig3a,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3a.update_xaxes(
@@ -923,8 +944,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_fig3b else 80, l=10, r=10),
+            showlegend=leg_fig3b,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig3b.update_xaxes(
@@ -943,56 +964,81 @@ if menu == '트렌드 리포트':
 
         if effective_cols == 1:
           st.plotly_chart(
-              fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
+              fig1,
+              use_container_width=True,
+              key=f'trend_fig1_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
-              fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
+              fig2,
+              use_container_width=True,
+              key=f'trend_fig2_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
-              fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
+              fig3a,
+              use_container_width=True,
+              key=f'trend_fig3a_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
-              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
+              fig3b,
+              use_container_width=True,
+              key=f'trend_fig3b_{title_name}_{force_single_col}',
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
             st.plotly_chart(
-                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
+                fig1,
+                use_container_width=True,
+                key=f'trend_fig1_{title_name}_{force_single_col}',
             )
           with col_b:
             st.plotly_chart(
-                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
+                fig2,
+                use_container_width=True,
+                key=f'trend_fig2_{title_name}_{force_single_col}',
             )
           col_c, col_d = st.columns(2)
           with col_c:
             st.plotly_chart(
-                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
+                fig3a,
+                use_container_width=True,
+                key=f'trend_fig3a_{title_name}_{force_single_col}',
             )
           with col_d:
             st.plotly_chart(
-                fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
+                fig3b,
+                use_container_width=True,
+                key=f'trend_fig3b_{title_name}_{force_single_col}',
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
             st.plotly_chart(
-                fig1, use_container_width=True, key=f'trend_fig1_{title_name}'
+                fig1,
+                use_container_width=True,
+                key=f'trend_fig1_{title_name}_{force_single_col}',
             )
           with col_b:
             st.plotly_chart(
-                fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
+                fig2,
+                use_container_width=True,
+                key=f'trend_fig2_{title_name}_{force_single_col}',
             )
           with col_c:
             st.plotly_chart(
-                fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
+                fig3a,
+                use_container_width=True,
+                key=f'trend_fig3a_{title_name}_{force_single_col}',
             )
           st.plotly_chart(
-              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
+              fig3b,
+              use_container_width=True,
+              key=f'trend_fig3b_{title_name}_{force_single_col}',
           )
 
         return sub_df
 
+      # 🛠️ [개별 범주 설정 적용] draw_group_summary_charts
       def draw_group_summary_charts(df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
         grp_agg = (
@@ -1031,6 +1077,33 @@ if menu == '트렌드 리포트':
 
         groups = sorted(grp_agg[group_col].unique())
 
+        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 설정')
+        cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
+        with cb_c1:
+          leg_grp1 = st.checkbox(
+              '선택누적손익 범주', value=True, key=f'leg_grp1_{prefix}'
+          )
+        with cb_c2:
+          leg_grp2 = st.checkbox(
+              '주기별손익 범주', value=True, key=f'leg_grp2_{prefix}'
+          )
+        with cb_c3:
+          leg_grp3 = st.checkbox(
+              '주기별수익률 범주', value=True, key=f'leg_grp3_{prefix}'
+          )
+        with cb_c4:
+          leg_grp4 = st.checkbox(
+              '기간누적수익률 범주', value=True, key=f'leg_grp4_{prefix}'
+          )
+        with cb_c5:
+          leg_grp5 = st.checkbox(
+              '통산누적손익 범주', value=True, key=f'leg_grp5_{prefix}'
+          )
+        with cb_c6:
+          leg_grp6 = st.checkbox(
+              '통산수익률 범주', value=True, key=f'leg_grp6_{prefix}'
+          )
+
         fig_sel_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
@@ -1054,8 +1127,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp1 else 80, l=10, r=10),
+            showlegend=leg_grp1,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_sel_p.update_xaxes(
@@ -1092,8 +1165,8 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp2 else 80, l=10, r=10),
+            showlegend=leg_grp2,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_p.update_xaxes(
@@ -1151,8 +1224,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp3 else 80, l=10, r=10),
+            showlegend=leg_grp3,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_period_ret.update_xaxes(
@@ -1227,8 +1300,8 @@ if menu == '트렌드 리포트':
             barmode='group',
             hovermode='x unified',
             height=540,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp4 else 80, l=10, r=10),
+            showlegend=leg_grp4,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_cum_ret.update_xaxes(
@@ -1270,8 +1343,8 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp5 else 80, l=10, r=10),
+            showlegend=leg_grp5,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_p.update_xaxes(
@@ -1304,8 +1377,8 @@ if menu == '트렌드 리포트':
             ),
             hovermode='x unified',
             height=520,
-            margin=dict(t=100, b=40 if not show_legend else 80, l=10, r=10),
-            showlegend=show_legend,
+            margin=dict(t=100, b=40 if not leg_grp6 else 80, l=10, r=10),
+            showlegend=leg_grp6,
             legend=COMMON_LEGEND_CONFIG,
         )
         fig_r.update_xaxes(
@@ -1851,12 +1924,6 @@ elif menu == '연도별 수익률 리포트':
             index=0,
             key='ret_live_chart_layout',
         )
-        # 🛠️ [신규 추가] 범주 전체 표시/숨기기 선택 옵션
-        show_legend_ret = st.checkbox(
-            '🎨 범주(Legend) 표시 (체크 해제 시 범주 숨김 & 차트 확대)',
-            value=True,
-            key='ret_live_show_legend',
-        )
 
       with disp_col2:
         y_range_mode_ret = st.radio(
@@ -1988,6 +2055,7 @@ elif menu == '연도별 수익률 리포트':
             ]
         )
 
+      # 🛠️ [개별 범주 설정 적용] render_returns_view
       def render_returns_view(df, group_col, prefix):
         calc_res = calculate_group_returns(df, group_col)
         if calc_res.empty:
@@ -2005,6 +2073,21 @@ elif menu == '연도별 수익률 리포트':
 
         if group_col is not None and len(groups) > 1:
           st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
+
+          st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 설정')
+          rcb1, rcb2 = st.columns(2)
+          with rcb1:
+            leg_ret_comp1 = st.checkbox(
+                '주기별 수익률 종합 차트 범주 표시',
+                value=True,
+                key=f'leg_ret_comp1_{prefix}',
+            )
+          with rcb2:
+            leg_ret_comp2 = st.checkbox(
+                '누적 수익률 종합 차트 범주 표시',
+                value=True,
+                key=f'leg_ret_comp2_{prefix}',
+            )
 
           fig_period_comp = make_subplots(specs=[[{'secondary_y': True}]])
 
@@ -2073,9 +2156,9 @@ elif menu == '연도별 수익률 리포트':
               hovermode='x unified',
               height=560,
               margin=dict(
-                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+                  t=160, b=40 if not leg_ret_comp1 else 80, l=10, r=10
               ),
-              showlegend=show_legend_ret,
+              showlegend=leg_ret_comp1,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2159,9 +2242,9 @@ elif menu == '연도별 수익률 리포트':
               hovermode='x unified',
               height=560,
               margin=dict(
-                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+                  t=160, b=40 if not leg_ret_comp2 else 80, l=10, r=10
               ),
-              showlegend=show_legend_ret,
+              showlegend=leg_ret_comp2,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2215,6 +2298,10 @@ elif menu == '연도별 수익률 리포트':
               .reset_index(drop=True)
           )
           st.markdown(f'#### 📌 {prefix}: {grp}')
+
+          leg_single_grp = st.checkbox(
+              '범주 표시', value=True, key=f'leg_s_grp_{prefix}_{grp}'
+          )
 
           fig = make_subplots(specs=[[{'secondary_y': True}]])
 
@@ -2293,9 +2380,9 @@ elif menu == '연도별 수익률 리포트':
               hovermode='x unified',
               height=540,
               margin=dict(
-                  t=160, b=40 if not show_legend_ret else 80, l=10, r=10
+                  t=160, b=40 if not leg_single_grp else 80, l=10, r=10
               ),
-              showlegend=show_legend_ret,
+              showlegend=leg_single_grp,
               legend=COMMON_LEGEND_CONFIG,
           )
           fig.update_xaxes(
