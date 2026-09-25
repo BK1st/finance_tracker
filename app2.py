@@ -171,11 +171,11 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 🛠️ [개선된 공통 범주 설정 - 차트 하단으로 이동]
+# 🛠️ [공통 범주 설정 - 차트 하단으로 이동]
 COMMON_LEGEND_CONFIG = dict(
     orientation='h',
     yanchor='top',
-    y=-0.2,  # 차트 하단 외부로 이동하여 상단 제목/모드바와의 겹침 방지
+    y=-0.2,
     xanchor='center',
     x=0.5,
     font=dict(size=10),
@@ -235,7 +235,16 @@ if menu == '트렌드 리포트':
         '연간 (매년 말일)',
     ]
     bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI']
-    all_view_types = ['전체 합산', '계좌별', '증권사(Broker)별', '계좌유형별']
+
+    # 🛠️ [개선] 보유항목별, Category 4별 항목을 전체 트렌드 관점에 추가
+    all_view_types = [
+        '전체 합산',
+        '계좌별',
+        '증권사(Broker)별',
+        '계좌유형별',
+        'Category 4별',
+        '보유항목별',
+    ]
 
     with st.form('trend_control_form'):
       st.subheader('⚙️ 분석 조건 설정')
@@ -398,6 +407,13 @@ if menu == '트렌드 리포트':
               else '미지정'
           )
 
+          acc_alias_val = alias_map.get(acc, '')
+          acc_label = (
+              acc_alias_val
+              if acc_alias_val
+              else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
+          )
+
           init_val = (
               init_p_df[init_p_df['account_num'].astype(str) == acc][
                   'initial_amount'
@@ -417,7 +433,18 @@ if menu == '트렌드 리포트':
           principal = init_val + in_flow - out_flow
 
           if '미래에셋' in str(broker_name):
-            eval_amount = mirae_eval_val
+            # 🛠️ 미래에셋 수동입력 계좌 레코드 추가 (카테고리/종목명 기본값 세팅)
+            base_records.append({
+                'Date': t_str,
+                'account_num': acc_label,
+                'broker': broker_name,
+                'account_type': acc_type,
+                'category4': '미래에셋 수동',
+                'item_name': '미래에셋 수동자산',
+                '원금': principal,
+                '평가손익': mirae_eval_val - principal,
+                '총평가금액': mirae_eval_val,
+            })
           else:
             acc_pf = filtered_pf_df[
                 (filtered_pf_df['account_num'].astype(str) == acc)
@@ -432,10 +459,12 @@ if menu == '트렌드 리포트':
                   & (filtered_pf_df['record_date'] == min_date)
               ]
 
-            eval_amount = 0
             if not acc_pf.empty:
               latest_date = acc_pf['record_date'].max()
               current_pf = acc_pf[acc_pf['record_date'] == latest_date]
+              total_acc_eval = 0
+              item_eval_list = []
+
               for _, row in current_pf.iterrows():
                 fmt_tk = format_ticker(row['ticker'])
                 qty = row['quantity'] if pd.notna(row['quantity']) else 0
@@ -444,6 +473,19 @@ if menu == '트렌드 리포트':
                     row['current_price']
                     if 'current_price' in row and pd.notna(row['current_price'])
                     else 0
+                )
+
+                item_name = (
+                    row['item_name']
+                    if pd.notna(row['item_name'])
+                    and str(row['item_name']).strip() != ''
+                    else '미지정종목'
+                )
+                cat4 = (
+                    row['category4']
+                    if pd.notna(row['category4'])
+                    and str(row['category4']).strip() != ''
+                    else '미지정'
                 )
 
                 price = 0
@@ -469,26 +511,28 @@ if menu == '트렌드 리포트':
                 item_eval = (
                     (qty * price * usd_krw) if curr == 'USD' else (qty * price)
                 )
-                eval_amount += item_eval
+                total_acc_eval += item_eval
+                item_eval_list.append((item_name, cat4, item_eval))
 
-          p_loss = eval_amount - principal
+              # 계좌 내 항목별 원금 안분 (평가금액 비율 기준)
+              for item_name, cat4, item_eval in item_eval_list:
+                ratio = (
+                    (item_eval / total_acc_eval) if total_acc_eval > 0 else 0
+                )
+                item_principal = principal * ratio
+                item_p_loss = item_eval - item_principal
 
-          acc_alias_val = alias_map.get(acc, '')
-          acc_label = (
-              acc_alias_val
-              if acc_alias_val
-              else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
-          )
-
-          base_records.append({
-              'Date': t_str,
-              'account_num': acc_label,
-              'broker': broker_name,
-              'account_type': acc_type,
-              '원금': principal,
-              '평가손익': p_loss,
-              '총평가금액': eval_amount,
-          })
+                base_records.append({
+                    'Date': t_str,
+                    'account_num': acc_label,
+                    'broker': broker_name,
+                    'account_type': acc_type,
+                    'category4': cat4,
+                    'item_name': item_name,
+                    '원금': item_principal,
+                    '평가손익': item_p_loss,
+                    '총평가금액': item_eval,
+                })
 
       bm_calc_dict = {}
       for bm_label in selected_bm:
@@ -1400,6 +1444,7 @@ if menu == '트렌드 리포트':
               draw_single_chart(grp_df, f'{prefix} [{grp}]')
               st.write('---')
 
+      # 🛠️ [개선] 탭 생성 시 보유항목별 및 Category 4별 조건 분기 추가
       tabs = st.tabs(active_views)
       for i, v_type in enumerate(active_views):
         with tabs[i]:
@@ -1411,6 +1456,10 @@ if menu == '트렌드 리포트':
             render_separate_charts(calc_df, 'broker', '증권사')
           elif v_type == '계좌유형별':
             render_separate_charts(calc_df, 'account_type', '계좌유형')
+          elif v_type == 'Category 4별':
+            render_separate_charts(calc_df, 'category4', 'Category 4')
+          elif v_type == '보유항목별':
+            render_separate_charts(calc_df, 'item_name', '보유항목')
 
 # -----------------------------------------------------------------------------
 # 메뉴 2: 연도별 수익률 리포트
@@ -1759,7 +1808,7 @@ elif menu == '연도별 수익률 리포트':
       st.session_state['returns_bm_calc'] = bm_calc_dict
 
     # ---------------------------------------------------------------------
-    # 화면에 즉시 반영되는 디스플레이 컨트롤러 패널 (연도별 리포트용)
+    # 화면 디스플레이 컨트롤러 패널 (연도별 리포트용)
     # ---------------------------------------------------------------------
     if (
         'returns_calc_df' in st.session_state
@@ -1892,8 +1941,6 @@ elif menu == '연도별 수익률 리포트':
             else pd.DataFrame()
         )
 
-      # 🛠️ [개선된 토글 버튼 위치 설정]
-      # 버튼을 차트 상단 내부 왼쪽(x=0.0, y=1.12)으로 위치를 재설정하여 차트 제목과 무관하게 동작
       def add_toggle_controls(fig):
         fig.update_layout(
             updatemenus=[
@@ -2005,9 +2052,7 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=560,
-              margin=dict(
-                  t=160, b=80, l=10, r=10
-              ),  # 🛠️ 상단 여백을 160px로 대폭 확장하여 차트 툴바/버튼/제목의 수직 공간 보장
+              margin=dict(t=160, b=80, l=10, r=10),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_period_comp.update_xaxes(
@@ -2090,9 +2135,7 @@ elif menu == '연도별 수익률 리포트':
               barmode='group',
               hovermode='x unified',
               height=560,
-              margin=dict(
-                  t=160, b=80, l=10, r=10
-              ),  # 🛠️ 상단 여백 160px 적용으로 레이아웃 간섭 무력화
+              margin=dict(t=160, b=80, l=10, r=10),
               legend=COMMON_LEGEND_CONFIG,
           )
           fig_cum_comp.update_xaxes(
@@ -2352,7 +2395,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 포트폴리오 업로드 (안전한 트랜잭션 수정 적용)
+# 메뉴 4: 포트폴리오 업로드
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📂 포트폴리오 엑셀 파일 업로드')
