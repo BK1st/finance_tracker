@@ -193,7 +193,7 @@ if menu == '트렌드 리포트':
 
     acc_options = []
     for _, row in acc_info_df.iterrows():
-      acc_num = row['account_num']
+      acc_num = str(row['account_num'])
       alias = alias_map.get(acc_num, '')
       display_alias = (
           alias
@@ -209,7 +209,6 @@ if menu == '트렌드 리포트':
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
     max_rec_date = date.today()
 
-    # 지난달 말일 기본값 계산 (예: 9월 24일 기준 -> 8월 31일)
     today = date.today()
     first_day_of_curr_month = date(today.year, today.month, 1)
     prev_month_end = first_day_of_curr_month - timedelta(days=1)
@@ -307,7 +306,7 @@ if menu == '트렌드 리포트':
           alias_part = rest.split('[')[0].strip()
           matched_rows = acc_info_df[acc_info_df['broker'] == b_name]
           for _, m_row in matched_rows.iterrows():
-            m_acc = m_row['account_num']
+            m_acc = str(m_row['account_num'])
             m_alias = alias_map.get(m_acc, '')
             m_display = (
                 m_alias
@@ -337,7 +336,7 @@ if menu == '트렌드 리포트':
       )
 
       filtered_pf_df = pf_df[
-          pf_df['account_num'].isin(selected_accounts)
+          pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
       unique_tickers = filtered_pf_df['ticker'].unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
@@ -372,7 +371,9 @@ if menu == '트렌드 리포트':
             usd_krw = 1350.0
 
         for acc in selected_accounts:
-          acc_meta = filtered_pf_df[filtered_pf_df['account_num'] == acc]
+          acc_meta = filtered_pf_df[
+              filtered_pf_df['account_num'].astype(str) == acc
+          ]
           broker_name = (
               acc_meta['broker'].iloc[0] if not acc_meta.empty else '미지정'
           )
@@ -384,13 +385,16 @@ if menu == '트렌드 리포트':
           )
 
           init_val = (
-              init_p_df[init_p_df['account_num'] == acc]['initial_amount'].sum()
+              init_p_df[init_p_df['account_num'].astype(str) == acc][
+                  'initial_amount'
+              ].sum()
               if not init_p_df.empty
               else 0
           )
           if not cf_df.empty:
             acc_cf = cf_df[
-                (cf_df['account_num'] == acc) & (cf_df['trans_date'] <= t_str)
+                (cf_df['account_num'].astype(str) == acc)
+                & (cf_df['trans_date'] <= t_str)
             ]
             in_flow = acc_cf[acc_cf['flow_type'] == '입금']['amount'].sum()
             out_flow = acc_cf[acc_cf['flow_type'] == '출금']['amount'].sum()
@@ -402,15 +406,15 @@ if menu == '트렌드 리포트':
             eval_amount = mirae_eval_val
           else:
             acc_pf = filtered_pf_df[
-                (filtered_pf_df['account_num'] == acc)
+                (filtered_pf_df['account_num'].astype(str) == acc)
                 & (filtered_pf_df['record_date'] <= t_str)
             ]
             if acc_pf.empty:
-              min_date = filtered_pf_df[filtered_pf_df['account_num'] == acc][
-                  'record_date'
-              ].min()
+              min_date = filtered_pf_df[
+                  filtered_pf_df['account_num'].astype(str) == acc
+              ]['record_date'].min()
               acc_pf = filtered_pf_df[
-                  (filtered_pf_df['account_num'] == acc)
+                  (filtered_pf_df['account_num'].astype(str) == acc)
                   & (filtered_pf_df['record_date'] == min_date)
               ]
 
@@ -643,7 +647,6 @@ if menu == '트렌드 리포트':
             '💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원"
         )
 
-        # --- [차트 1] 자산 및 전체 손익/수익률 추이 ---
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
             go.Bar(
@@ -714,7 +717,6 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
-        # --- [차트 2] 구간 손익 금액 추이 ---
         fig2 = go.Figure()
         valid_period_df = sub_df.dropna(subset=['주기별 평가손익'])
         period_colors = [
@@ -754,7 +756,6 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig2, axis_name='yaxis', is_money=True)
         fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
-        # --- [차트 3A] 구간 누적수익률 추이 ---
         fig3a = go.Figure()
         fig3a.add_trace(
             go.Scatter(
@@ -810,7 +811,6 @@ if menu == '트렌드 리포트':
             zeroline=True,
         )
 
-        # --- [차트 3B] 주기별 수익률 추이 ---
         fig3b = go.Figure()
         fig3b.add_trace(
             go.Scatter(
@@ -1389,7 +1389,7 @@ elif menu == '연도별 수익률 리포트':
 
     acc_options = []
     for _, row in acc_info_df.iterrows():
-      acc_num = row['account_num']
+      acc_num = str(row['account_num'])
       alias = alias_map.get(acc_num, '')
       display_alias = (
           alias
@@ -1504,7 +1504,7 @@ elif menu == '연도별 수익률 리포트':
           alias_part = rest.split('[')[0].strip()
           matched_rows = acc_info_df[acc_info_df['broker'] == b_name]
           for _, m_row in matched_rows.iterrows():
-            m_acc = m_row['account_num']
+            m_acc = str(m_row['account_num'])
             m_alias = alias_map.get(m_acc, '')
             m_display = (
                 m_alias
@@ -1531,7 +1531,7 @@ elif menu == '연도별 수익률 리포트':
       )
 
       filtered_pf_df = pf_df[
-          pf_df['account_num'].isin(selected_accounts)
+          pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
       fetch_tickers = list(filtered_pf_df['ticker'].unique()) + list(
           bm_ticker_map.values()
@@ -1568,7 +1568,9 @@ elif menu == '연도별 수익률 리포트':
             usd_krw = 1350.0
 
         for acc in selected_accounts:
-          acc_meta = filtered_pf_df[filtered_pf_df['account_num'] == acc]
+          acc_meta = filtered_pf_df[
+              filtered_pf_df['account_num'].astype(str) == acc
+          ]
           broker_name = (
               acc_meta['broker'].iloc[0] if not acc_meta.empty else '미지정'
           )
@@ -1599,15 +1601,15 @@ elif menu == '연도별 수익률 리포트':
             })
           else:
             acc_pf = filtered_pf_df[
-                (filtered_pf_df['account_num'] == acc)
+                (filtered_pf_df['account_num'].astype(str) == acc)
                 & (filtered_pf_df['record_date'] <= t_str)
             ]
             if acc_pf.empty:
-              min_date = filtered_pf_df[filtered_pf_df['account_num'] == acc][
-                  'record_date'
-              ].min()
+              min_date = filtered_pf_df[
+                  filtered_pf_df['account_num'].astype(str) == acc
+              ]['record_date'].min()
               acc_pf = filtered_pf_df[
-                  (filtered_pf_df['account_num'] == acc)
+                  (filtered_pf_df['account_num'].astype(str) == acc)
                   & (filtered_pf_df['record_date'] == min_date)
               ]
 
@@ -2241,6 +2243,8 @@ elif menu == '계좌 별칭 관리':
         '등록된 계좌 정보가 없습니다. [포트폴리오 업로드]를 먼저 진행해 주세요.'
     )
   else:
+    pf_df['account_num'] = pf_df['account_num'].astype(str)
+    alias_df['account_num'] = alias_df['account_num'].astype(str)
     merged_df = pd.merge(pf_df, alias_df, on='account_num', how='left').fillna(
         {'alias': ''}
     )
@@ -2249,18 +2253,19 @@ elif menu == '계좌 별칭 관리':
     with st.form('alias_form'):
       updated_aliases = {}
       for idx, row in merged_df.iterrows():
+        acc_str = str(row['account_num'])
         col1, col2, col3 = st.columns([2, 3, 3])
         with col1:
           st.write(f"**{row['broker']}**")
         with col2:
-          st.write(f"`{row['account_num']}`")
+          st.write(f"`{acc_str}`")
         with col3:
           new_alias = st.text_input(
-              f"별칭 ({row['account_num']})",
+              f"별칭 ({acc_str})",
               value=row['alias'],
-              key=f"alias_{row['account_num']}",
+              key=f'alias_{acc_str}',
           )
-          updated_aliases[row['account_num']] = new_alias
+          updated_aliases[acc_str] = new_alias
 
       save_alias_btn = st.form_submit_button('💾 별칭 저장하기')
 
@@ -2274,7 +2279,7 @@ elif menu == '계좌 별칭 관리':
                         VALUES (?, ?)
                         ON CONFLICT(account_num) DO UPDATE SET alias=excluded.alias
                     """,
-              (acc_num, alias_val.strip()),
+              (str(acc_num), alias_val.strip()),
           )
         conn.commit()
         conn.close()
@@ -2282,7 +2287,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 포트폴리오 업로드
+# 메뉴 4: 포트폴리오 업로드 (안전한 트랜잭션 수정 적용)
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📂 포트폴리오 엑셀 파일 업로드')
@@ -2305,19 +2310,13 @@ elif menu == '포트폴리오 업로드':
       if missing_cols:
         st.error(f'엑셀 파일에 다음 필수 항목이 누락되었습니다: {missing_cols}')
       else:
-        if st.button(
-            'DB에 포트폴리오 저장 (해당 기준일자 데이터만 업데이트)'
-        ):
-          conn = get_connection()
-          c = conn.cursor()
+        if st.button('DB에 포트폴리오 저장 (안전 업데이트)'):
+          # 데이터 정제 및 타입 일치
           df['record_date'] = pd.to_datetime(df['record_date']).dt.strftime(
               '%Y-%m-%d'
           )
-
-          for r_date in df['record_date'].unique():
-            c.execute(
-                'DELETE FROM portfolio WHERE record_date = ?', (r_date,)
-            )
+          df['account_num'] = df['account_num'].astype(str).str.strip()
+          df['broker'] = df['broker'].astype(str).str.strip()
 
           optional_cols = [
               'account_type',
@@ -2346,36 +2345,48 @@ elif menu == '포트폴리오 업로드':
               'quantity',
               'current_price',
               'currency',
-          ]]
+          ]].copy()
 
-          save_df.to_sql(
-              'portfolio', conn, if_exists='append', index=False
-          )
+          # 안전한 트랜잭션 블록 적용
+          conn = get_connection()
+          try:
+            with conn:
+              c = conn.cursor()
+              # 업로드 대상 날짜 데이터 원자적 삭제 및 재삽입
+              for r_date in save_df['record_date'].unique():
+                c.execute(
+                    'DELETE FROM portfolio WHERE record_date = ?', (r_date,)
+                )
 
-          new_accs = save_df[['account_num', 'broker']].drop_duplicates()
-          for _, acc_row in new_accs.iterrows():
-            acc_num = acc_row['account_num']
-            broker_name = acc_row['broker']
-            c.execute(
-                """
-                            INSERT INTO initial_principal (account_num, broker, initial_amount)
-                            VALUES (?, ?, 0.0)
-                            ON CONFLICT(account_num) DO NOTHING
-                        """,
-                (acc_num, broker_name),
+              save_df.to_sql('portfolio', conn, if_exists='append', index=False)
+
+              new_accs = save_df[['account_num', 'broker']].drop_duplicates()
+              for _, acc_row in new_accs.iterrows():
+                acc_num = str(acc_row['account_num'])
+                broker_name = str(acc_row['broker'])
+                c.execute(
+                    """
+                                INSERT INTO initial_principal (account_num, broker, initial_amount)
+                                VALUES (?, ?, 0.0)
+                                ON CONFLICT(account_num) DO NOTHING
+                            """,
+                    (acc_num, broker_name),
+                )
+                c.execute(
+                    """
+                                INSERT INTO account_alias (account_num, alias)
+                                VALUES (?, '')
+                                ON CONFLICT(account_num) DO NOTHING
+                            """,
+                    (acc_num,),
+                )
+            st.success('포트폴리오가 성공적으로 안심 반영되었습니다!')
+          except Exception as db_err:
+            st.error(
+                f'DB 저장 처리 중 오류 발생 (기존 데이터 유지됨): {db_err}'
             )
-            c.execute(
-                """
-                            INSERT INTO account_alias (account_num, alias)
-                            VALUES (?, '')
-                            ON CONFLICT(account_num) DO NOTHING
-                        """,
-                (acc_num,),
-            )
-
-          conn.commit()
-          conn.close()
-          st.success('포트폴리오가 성공적으로 저장되었습니다!')
+          finally:
+            conn.close()
     except Exception as e:
       st.error(f'파일을 읽는 중 오류 발생: {e}')
 
@@ -2409,7 +2420,7 @@ elif menu == '원금 및 입출금 관리':
                     VALUES (?, ?, ?) ON CONFLICT(account_num) DO UPDATE SET
                     broker=excluded.broker, initial_amount=excluded.initial_amount
                 """,
-            (account_num, broker, initial_amount),
+            (str(account_num).strip(), broker.strip(), initial_amount),
         )
         conn.commit()
         st.success('기초 원금이 등록되었습니다.')
@@ -2427,7 +2438,7 @@ elif menu == '원금 및 입출금 관리':
       with col2:
         init_accs = pd.read_sql(
             'SELECT account_num FROM initial_principal', conn
-        )['account_num'].tolist()
+        )['account_num'].astype(str).tolist()
         acc_choice = st.selectbox(
             '계좌 선택', init_accs if init_accs else ['등록된 계좌 없음']
         )
@@ -2447,7 +2458,7 @@ elif menu == '원금 및 입출금 관리':
                 """,
             (
                 trans_date.strftime('%Y-%m-%d'),
-                acc_choice,
+                str(acc_choice).strip(),
                 flow_type,
                 amount,
                 note,
