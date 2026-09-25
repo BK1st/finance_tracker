@@ -192,7 +192,6 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    # 계좌번호 문자열 타입 일치화
     pf_df['account_num'] = pf_df['account_num'].astype(str).str.strip()
     pf_df['record_date'] = pd.to_datetime(pf_df['record_date']).dt.strftime(
         '%Y-%m-%d'
@@ -545,7 +544,6 @@ if menu == '트렌드 리포트':
       disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2, 2, 2, 3])
 
       with disp_col1:
-        # [수정 반영 1] 디폴트 선택 옵션을 1열(기존 세로 배치)로 변경 (index=0)
         layout_setting = st.selectbox(
             '🖥️ 차트 Layout 선택',
             options=[
@@ -628,6 +626,7 @@ if menu == '트렌드 리포트':
 
         date_order_list = sub_df['Chart_Date'].tolist()
 
+        # 데이터 산출
         sub_df['수익률'] = np.where(
             sub_df['원금'] > 0, (sub_df['평가손익'] / sub_df['원금']) * 100, 0
         )
@@ -636,9 +635,9 @@ if menu == '트렌드 리포트':
             sub_df['평가손익'].iloc[0] if len(sub_df) > 0 else 0
         )
         sub_df['선택구간 누적손익'] = sub_df['평가손익'] - base_start_p_loss
-        sub_df['구간별 수익률'] = sub_df['총평가금액'].pct_change() * 100
+        sub_df['주기별 수익률'] = sub_df['총평가금액'].pct_change() * 100
         initial_eval = sub_df['총평가금액'].iloc[0] if len(sub_df) > 0 else 0
-        sub_df['구간별 누적수익률'] = np.where(
+        sub_df['선택기간 누적수익률'] = np.where(
             initial_eval > 0,
             ((sub_df['총평가금액'] - initial_eval) / initial_eval) * 100,
             0,
@@ -661,64 +660,50 @@ if menu == '트렌드 리포트':
             f"{sub_df['총평가금액'].iloc[-1] if len(sub_df)>0 else 0:,.0f} 원",
         )
 
-        # 공통 범례(Legend) 설정: 상단 중앙 수평 배치 (좌우 트렌드 영역 확보)
         top_legend_config = dict(
             orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5
         )
 
+        # ---------------------------------------------------------------------
+        # 1. 주기별 평가손익(누적 세로 막대, 우측) & 선택 구간 누적 평가손익 TREND(꺾은선, 좌측)
+        # ---------------------------------------------------------------------
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
-            go.Bar(
-                x=sub_df['Chart_Date'],
-                y=sub_df['원금'],
-                name='원금',
-                marker_color='#2b5c8f',
-                opacity=0.6,
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
-            go.Bar(
-                x=sub_df['Chart_Date'],
-                y=sub_df['평가손익'],
-                name='전체 누적 평가손익',
-                marker_color='#e05d5d',
-                opacity=0.5,
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
             go.Scatter(
                 x=sub_df['Chart_Date'],
-                y=sub_df['총평가금액'],
-                name='총평가금액',
-                mode='lines+markers+text',
-                line=dict(color='#ff9900', width=3),
-                marker=dict(size=6),
-                text=[f'{v:,.0f}' for v in sub_df['총평가금액']],
-                textposition='top center',
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
-            go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['수익률'],
-                name='수익률(%)',
+                y=sub_df['선택구간 누적손익'],
+                name='선택구간 누적 평가손익',
                 mode='lines+markers',
-                line=dict(color='#2ca02c', dash='dash', width=2),
+                line=dict(color='#9467bd', width=2.5),
                 marker=dict(size=6),
-                hovertemplate='%{y:.2f}%',
+            ),
+            secondary_y=False,
+        )
+
+        valid_period_df = sub_df.dropna(subset=['주기별 평가손익'])
+        period_colors = [
+            '#2ca02c' if v >= 0 else '#d62728'
+            for v in valid_period_df['주기별 평가손익']
+        ]
+        fig1.add_trace(
+            go.Bar(
+                x=valid_period_df['Chart_Date'],
+                y=valid_period_df['주기별 평가손익'],
+                name='주기별 평가손익',
+                marker_color=period_colors,
+                opacity=0.7,
             ),
             secondary_y=True,
         )
 
         fig1.update_layout(
-            title=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-            barmode='relative',
+            title=(
+                f'1. [{title_name}] 주기별 평가손익 & 선택 구간 누적'
+                ' 평가손익 TREND'
+            ),
             hovermode='x unified',
             height=430,
-            legend=top_legend_config,  # [수정 반영 2] 범례 상단 위치
+            legend=top_legend_config,
         )
         fig1.update_xaxes(
             type='category',
@@ -726,119 +711,27 @@ if menu == '트렌드 리포트':
             categoryarray=date_order_list,
         )
         apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
+        apply_y_axis_config(fig1, axis_name='yaxis2', is_money=True)
         fig1.update_yaxes(
-            title_text='금액 (원)', tickformat=',.0f', secondary_y=False
+            title_text='누적 손익금액 (원)',
+            tickformat=',.0f',
+            secondary_y=False,
         )
         fig1.update_yaxes(
-            title_text='수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
+            title_text='주기별 손익금액 (원)',
+            tickformat=',.0f',
             secondary_y=True,
         )
 
+        # ---------------------------------------------------------------------
+        # 2. 선택기간의 주기별 수익률 TREND (벤치마크 포함)
+        # ---------------------------------------------------------------------
         fig2 = go.Figure()
-        valid_period_df = sub_df.dropna(subset=['주기별 평가손익'])
-        period_colors = [
-            '#2ca02c' if v >= 0 else '#d62728'
-            for v in valid_period_df['주기별 평가손익']
-        ]
-        fig2.add_trace(
-            go.Bar(
-                x=valid_period_df['Chart_Date'],
-                y=valid_period_df['주기별 평가손익'],
-                name='주기별 평가손익',
-                marker_color=period_colors,
-                opacity=0.85,
-            )
-        )
         fig2.add_trace(
             go.Scatter(
                 x=sub_df['Chart_Date'],
-                y=sub_df['선택구간 누적손익'],
-                name='선택구간 누적손익 (추이)',
-                mode='lines+markers',
-                line=dict(color='#9467bd', width=2.5),
-                marker=dict(size=5),
-            )
-        )
-
-        fig2.update_layout(
-            title=f'2. [{title_name}] 구간 손익 금액 추이',
-            hovermode='x unified',
-            height=430,
-            legend=top_legend_config,  # [수정 반영 2] 범례 상단 위치
-        )
-        fig2.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        apply_y_axis_config(fig2, axis_name='yaxis', is_money=True)
-        fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
-
-        fig3a = go.Figure()
-        fig3a.add_trace(
-            go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['구간별 누적수익률'],
-                name='구간별 누적수익률 (%)',
-                mode='lines+markers',
-                line=dict(color='#1f77b4', width=2.5),
-                marker=dict(size=5),
-                hovertemplate='%{y:.2f}%',
-            )
-        )
-
-        for bm_name, bm_df in bm_calc_dict.items():
-          bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
-          bm_df = bm_df.sort_values('dt_temp', ascending=True).reset_index(
-              drop=True
-          )
-          bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
-          bm_df.drop(columns=['dt_temp'], inplace=True)
-
-          fig3a.add_trace(
-              go.Scatter(
-                  x=bm_df['Chart_Date'],
-                  y=bm_df['기간 누적 수익률'],
-                  mode='lines',
-                  name=f'📌 {bm_name} 누적수익률 (%)',
-                  line=dict(
-                      color=bm_styles.get(bm_name, {}).get('color', '#7f7f7f'),
-                      dash='dot',
-                  ),
-                  hovertemplate='%{y:.2f}%',
-              )
-          )
-
-        fig3a.update_layout(
-            title=(
-                f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
-                ' 비교)'
-            ),
-            hovermode='x unified',
-            height=430,
-            legend=top_legend_config,  # [수정 반영 2] 범례 상단 위치
-        )
-        fig3a.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        fig3a.update_yaxes(
-            title_text='수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
-        )
-
-        fig3b = go.Figure()
-        fig3b.add_trace(
-            go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['구간별 수익률'],
-                name='구간별 수익률 (%)',
+                y=sub_df['주기별 수익률'],
+                name='주기별 수익률 (%)',
                 mode='lines+markers',
                 line=dict(color='#17becf', width=2, dash='dot'),
                 marker=dict(size=5),
@@ -854,7 +747,7 @@ if menu == '트렌드 리포트':
           bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
           bm_df.drop(columns=['dt_temp'], inplace=True)
 
-          fig3b.add_trace(
+          fig2.add_trace(
               go.Scatter(
                   x=bm_df['Chart_Date'],
                   y=bm_df['주기별 수익률'],
@@ -865,27 +758,163 @@ if menu == '트렌드 리포트':
               )
           )
 
-        fig3b.update_layout(
+        fig2.update_layout(
             title=(
-                f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
-                ' 비교)'
+                f'2. [{title_name}] 선택기간 주기별 수익률 TREND'
+                ' (벤치마크 포함)'
             ),
             hovermode='x unified',
             height=430,
-            legend=top_legend_config,  # [수정 반영 2] 범례 상단 위치
+            legend=top_legend_config,
         )
-        fig3b.update_xaxes(
+        fig2.update_xaxes(
             type='category',
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        fig3b.update_yaxes(
+        fig2.update_yaxes(
             title_text='수익률 (%)',
             tickformat=',.2f',
             ticksuffix='%',
             zeroline=True,
         )
 
+        # ---------------------------------------------------------------------
+        # 3. 선택기간 누적 수익률 TREND(좌측, 꺾은선) & 선택기간 누적 평가손익 TREND(우측, 보조축 그룹 세로 막대)
+        # ---------------------------------------------------------------------
+        fig3 = make_subplots(specs=[[{'secondary_y': True}]])
+        fig3.add_trace(
+            go.Scatter(
+                x=sub_df['Chart_Date'],
+                y=sub_df['선택기간 누적수익률'],
+                name='선택기간 누적 수익률 (%)',
+                mode='lines+markers',
+                line=dict(color='#1f77b4', width=2.5),
+                marker=dict(size=5),
+                hovertemplate='%{y:.2f}%',
+            ),
+            secondary_y=False,
+        )
+
+        for bm_name, bm_df in bm_calc_dict.items():
+          bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
+          bm_df = bm_df.sort_values('dt_temp', ascending=True).reset_index(
+              drop=True
+          )
+          bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
+          bm_df.drop(columns=['dt_temp'], inplace=True)
+
+          fig3.add_trace(
+              go.Scatter(
+                  x=bm_df['Chart_Date'],
+                  y=bm_df['기간 누적 수익률'],
+                  mode='lines',
+                  name=f'📌 {bm_name} 누적수익률 (%)',
+                  line=dict(
+                      color=bm_styles.get(bm_name, {}).get('color', '#7f7f7f'),
+                      dash='dot',
+                  ),
+                  hovertemplate='%{y:.2f}%',
+              ),
+              secondary_y=False,
+          )
+
+        fig3.add_trace(
+            go.Bar(
+                x=sub_df['Chart_Date'],
+                y=sub_df['선택구간 누적손익'],
+                name='선택기간 누적 평가손익',
+                marker_color='#ff7f0e',
+                opacity=0.4,
+            ),
+            secondary_y=True,
+        )
+
+        fig3.update_layout(
+            title=(
+                f'3. [{title_name}] 선택기간 누적 수익률 & 누적'
+                ' 평가손익 TREND'
+            ),
+            hovermode='x unified',
+            height=430,
+            legend=top_legend_config,
+        )
+        fig3.update_xaxes(
+            type='category',
+            categoryorder='array',
+            categoryarray=date_order_list,
+        )
+        fig3.update_yaxes(
+            title_text='수익률 (%)',
+            tickformat=',.2f',
+            ticksuffix='%',
+            zeroline=True,
+            secondary_y=False,
+        )
+        apply_y_axis_config(fig3, axis_name='yaxis2', is_money=True)
+        fig3.update_yaxes(
+            title_text='누적 평가손익 (원)',
+            tickformat=',.0f',
+            secondary_y=True,
+        )
+
+        # ---------------------------------------------------------------------
+        # 4. 통산 누적 평가손익 TREND(누적 세로 막대, 우측) & 통산 수익률 TREND(원금대비 수익률 꺾은선, 좌측)
+        # ---------------------------------------------------------------------
+        fig4 = make_subplots(specs=[[{'secondary_y': True}]])
+        fig4.add_trace(
+            go.Scatter(
+                x=sub_df['Chart_Date'],
+                y=sub_df['수익률'],
+                name='원금 대비 수익률 (%)',
+                mode='lines+markers',
+                line=dict(color='#2ca02c', width=2.5),
+                marker=dict(size=6),
+                hovertemplate='%{y:.2f}%',
+            ),
+            secondary_y=False,
+        )
+
+        fig4.add_trace(
+            go.Bar(
+                x=sub_df['Chart_Date'],
+                y=sub_df['평가손익'],
+                name='전체 통산 누적 평가손익',
+                marker_color='#e05d5d',
+                opacity=0.5,
+            ),
+            secondary_y=True,
+        )
+
+        fig4.update_layout(
+            title=(
+                f'4. [{title_name}] 통산 누적 평가손익 & 원금 대비'
+                ' 수익률 TREND'
+            ),
+            hovermode='x unified',
+            height=430,
+            legend=top_legend_config,
+        )
+        fig4.update_xaxes(
+            type='category',
+            categoryorder='array',
+            categoryarray=date_order_list,
+        )
+        fig4.update_yaxes(
+            title_text='수익률 (%)',
+            tickformat=',.2f',
+            ticksuffix='%',
+            zeroline=True,
+            secondary_y=False,
+        )
+        apply_y_axis_config(fig4, axis_name='yaxis2', is_money=True)
+        fig4.update_yaxes(
+            title_text='평가손익 (원)', tickformat=',.0f', secondary_y=True
+        )
+
+        # ---------------------------------------------------------------------
+        # 레이아웃에 따른 차트 렌더링
+        # ---------------------------------------------------------------------
         effective_cols = 1 if force_single_col else num_cols
 
         if effective_cols == 1:
@@ -896,10 +925,10 @@ if menu == '트렌드 리포트':
               fig2, use_container_width=True, key=f'trend_fig2_{title_name}'
           )
           st.plotly_chart(
-              fig3a, use_container_width=True, key=f'trend_fig3a_{title_name}'
+              fig3, use_container_width=True, key=f'trend_fig3_{title_name}'
           )
           st.plotly_chart(
-              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
+              fig4, use_container_width=True, key=f'trend_fig4_{title_name}'
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
@@ -914,15 +943,11 @@ if menu == '트렌드 리포트':
           col_c, col_d = st.columns(2)
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
+                fig3, use_container_width=True, key=f'trend_fig3_{title_name}'
             )
           with col_d:
             st.plotly_chart(
-                fig3b,
-                use_container_width=True,
-                key=f'trend_fig3b_{title_name}',
+                fig4, use_container_width=True, key=f'trend_fig4_{title_name}'
             )
         else:
           col_a, col_b, col_c = st.columns(3)
@@ -936,12 +961,10 @@ if menu == '트렌드 리포트':
             )
           with col_c:
             st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}',
+                fig3, use_container_width=True, key=f'trend_fig3_{title_name}'
             )
           st.plotly_chart(
-              fig3b, use_container_width=True, key=f'trend_fig3b_{title_name}'
+              fig4, use_container_width=True, key=f'trend_fig4_{title_name}'
           )
 
         return sub_df
@@ -1454,7 +1477,7 @@ elif menu == '연도별 수익률 리포트':
                     y=1.02,
                     xanchor='center',
                     x=0.5,
-                ),  # [수정 반영 2] 수익률 리포트 차트의 범례도 상단 중앙 배치
+                ),
             )
             fig_cum.update_yaxes(
                 title_text='수익률 (%)', tickformat=',.2f', ticksuffix='%'
