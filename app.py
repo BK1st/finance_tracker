@@ -779,45 +779,40 @@ elif menu == "일별/시점별 보유 현황 분석":
         # a. [단계별 + 각 단계별 합계/전체총합] 요약 현황 표 생성
         # ---------------------------------------------------------
         col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
-        disp_group_cols = [col_rename_map[c] for c in group_cols]
         
         profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
         rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
-        # 롤업(Rollup)을 통한 각 단계별 합계 데이터 집계
-        rollup_frames = []
+        # ✨ 수정 기능 2: 요약 현황 표 구분 기준 옵션 선택 (기본값: 구분)
+        st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
         
-        # 1. 최하위 및 중간 단계별 그룹 합계 계산
-        for i in range(1, len(group_cols) + 1):
-            sub_cols = group_cols[:i]
-            agg_df = sub_df.groupby(sub_cols).agg({
-                "매입총액(원)": "sum",
-                "평가액(원)": "sum",
-                "선택기준_평가손익(원)": "sum",
-            }).reset_index()
-            
-            # 하위 단계 열 채우기
-            for c in group_cols[i:]:
-                if i < len(group_cols):
-                    agg_df[c] = f"[{col_rename_map[sub_cols[-1]]} 소계]"
-                
-            rollup_frames.append(agg_df)
+        # 구분 기준 선택 option 기능 추가
+        summary_group_by_label = st.selectbox(
+            "📊 요약 현황표 구분 기준 선택",
+            options=list(cat_options.keys()),
+            index=0,  # default: '구분' (일반/연금 등)
+            key="summary_table_group_select"
+        )
+        selected_summary_col = cat_options[summary_group_by_label]
 
-        # 2. 전체 총합 계산
-        total_df = pd.DataFrame([{
-            group_cols[0]: "🌐 전체 총합",
+        # 선택된 구분 기준으로 데이터 집계
+        summary_group_df = sub_df.groupby(selected_summary_col).agg({
+            "매입총액(원)": "sum",
+            "평가액(원)": "sum",
+            "선택기준_평가손익(원)": "sum",
+        }).reset_index()
+
+        # 전체 총합 계산 및 행 추가
+        total_summary_df = pd.DataFrame([{
+            selected_summary_col: "🌐 전체 총합",
             "매입총액(원)": sub_df["매입총액(원)"].sum(),
             "평가액(원)": sub_df["평가액(원)"].sum(),
             "선택기준_평가손익(원)": sub_df["선택기준_평가손익(원)"].sum(),
         }])
-        for c in group_cols[1:]:
-            total_df[c] = "🌐 전체 총합"
-        
-        rollup_frames.append(total_df)
 
-        summary_group_df = pd.concat(rollup_frames, ignore_index=True)
+        summary_group_df = pd.concat([summary_group_df, total_summary_df], ignore_index=True)
 
-        # 수익률 및 등락률 독립 계산
+        # 수익률/등락률 계산
         if color_option == "총 누적 수익률 (%)":
             summary_group_df["선택기준_수익률(%)"] = (
                 summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
@@ -832,14 +827,14 @@ elif menu == "일별/시점별 보유 현황 분석":
             (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
         )
 
-        summary_display_df = summary_group_df.rename(columns=col_rename_map)
-
-        summary_display_df = summary_display_df.rename(columns={
+        summary_display_df = summary_group_df.rename(columns={
+            selected_summary_col: summary_group_by_label,
             "선택기준_평가손익(원)": profit_col_label,
             "선택기준_수익률(%)": rate_col_label,
         })
 
-        summary_final_cols = disp_group_cols + [
+        summary_final_cols = [
+            summary_group_by_label,
             "매입총액(원)",
             "평가액(원)",
             profit_col_label,
@@ -847,10 +842,6 @@ elif menu == "일별/시점별 보유 현황 분석":
             "점유율(%)",
         ]
 
-        # 데이터 중복 제거 및 가독성 높은 순서 정렬
-        summary_display_df = summary_display_df.drop_duplicates(subset=disp_group_cols)
-
-        st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
         st.dataframe(
             summary_display_df[summary_final_cols]
             .style.format({
@@ -871,6 +862,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             "매입총액(원)": "sum",
             "평가액(원)": "sum",
             "평가손익(원)": "sum",
+            "선택기준_평가손익(원)": "sum",
             "quantity": "sum",
             "current_price": "mean",
             "currency": "first",
@@ -908,12 +900,13 @@ elif menu == "일별/시점별 보유 현황 분석":
             axis=1
         )
 
+        # ✨ 수정 기능 1: Treemap 호버 툴팁에 평가손익(원) 추가 (custom_data에 선택기준_평가손익(원) 포함)
         fig_treemap = px.treemap(
             tree_df,
             path=group_cols,
             values="평가액(원)",
             color=color_col,
-            custom_data=[color_col, "display_price"],
+            custom_data=[color_col, "display_price", "선택기준_평가손익(원)"],
             color_continuous_scale=[
                 [0.0, "#D32F2F"],
                 [0.5, "#455A64"],
@@ -933,11 +926,13 @@ elif menu == "일별/시점별 보유 현황 분석":
                 "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
                 "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
             ),
+            # 호버 툴팁에 모든 단계별 평가 손익 금액 추가 표시
             hovertemplate=(
                 "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
                 "<span style='font-size: 15px;'>"
                 "• 평가금액: ₩%{value:,.0f}<br>"
                 "• 현재가: %{customdata[1]}<br>"
+                f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
                 f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
                 "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
                 "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
