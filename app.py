@@ -60,9 +60,44 @@ def normalize_ticker(ticker, currency):
     return t_str
 
 
-@st.cache_data(ttl=1800)
+def fetch_live_ticker_price(ticker):
+    """
+    단일 티커의 최신 시세(장후/After market 포함) 가져오기
+    fast_info 및 info 속성을 활용하여 주말/휴일/장후 최신 시세를 정확히 반환
+    """
+    if not ticker:
+        return None
+    try:
+        tk = yf.Ticker(ticker)
+        fast_info = tk.fast_info
+        
+        # 1. After market / Extended hours 가격 확인
+        post_price = fast_info.get("postMarketPrice")
+        if post_price and not pd.isna(post_price):
+            return round(float(post_price), 2)
+            
+        # 2. 실시간 체결가 (lastPrice)
+        last_price = fast_info.get("lastPrice")
+        if last_price and not pd.isna(last_price):
+            return round(float(last_price), 2)
+            
+        # 3. 최근 종가 (previousClose)
+        prev_close = fast_info.get("previousClose")
+        if prev_close and not pd.isna(prev_close):
+            return round(float(prev_close), 2)
+
+        # 4. Fallback: 최근 5일 history 데이터
+        hist = tk.history(period="5d")
+        if not hist.empty:
+            return round(float(hist["Close"].iloc[-1]), 2)
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=300)  # 캐시 TTL을 5분으로 단축하여 최신 시세 반영 촉진
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
-    """모든 종목의 시세를 yf.download로 단 1회 요청하여 캐싱"""
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -83,9 +118,24 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
 
 
 def get_price_from_batch_data(market_data, ticker, target_date_str):
-    """배치 수집된 메모리 데이터프레임에서 특정 티커 및 날짜의 종가 추출"""
-    if market_data.empty or not ticker:
+    """
+    배치 수집된 메모리 데이터프레임에서 특정 티커 및 날짜의 종가 추출
+    target_date_str가 오늘이거나 최근 2일 내인 경우 실시간/장후 시세 직접 조회
+    """
+    if not ticker:
         return None
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    target_dt = pd.to_datetime(target_date_str)
+    
+    # 조회 요청 대상 날짜가 최근(오늘 기준 2일 이내)일 경우 fast_info 우선 조회
+    if (datetime.now() - target_dt).days <= 2:
+        live_p = fetch_live_ticker_price(ticker)
+        if live_p is not None:
+            return live_p
+
+    if market_data.empty:
+        return fetch_live_ticker_price(ticker)
 
     try:
         df_ticker = market_data
@@ -95,27 +145,26 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
             elif ticker in market_data.columns.levels[1]:
                 df_ticker = market_data.xs(ticker, axis=1, level=1)
             else:
-                return None
+                return fetch_live_ticker_price(ticker)
 
         if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
             df_ticker.index = df_ticker.index.tz_localize(None)
 
-        target_dt = pd.to_datetime(target_date_str)
-        
         if "Close" in df_ticker.columns:
             series = df_ticker["Close"]
         else:
             series = df_ticker
 
         if series.empty:
-            return None
+            return fetch_live_ticker_price(ticker)
 
         valid_series = series[series.index <= target_dt].dropna()
         if not valid_series.empty:
             return round(float(valid_series.iloc[-1]), 2)
     except Exception:
         pass
-    return None
+
+    return fetch_live_ticker_price(ticker)
 
 
 # ---------------------------------------------------------
@@ -720,46 +769,47 @@ elif menu == "일별/시점별 보유 현황 분석":
                     rate = 0.0
                     profit_amt = 0.0
 
-                    if not f_ticker or m_data.empty:
+                    if not f_ticker:
                         change_rates.append(rate)
                         period_profits.append(profit_amt)
                         continue
 
-                    if isinstance(m_data.columns, pd.MultiIndex):
-                        if f_ticker in m_data.columns.levels[0]:
-                            df_ticker = m_data[f_ticker]
-                        elif f_ticker in m_data.columns.levels[1]:
-                            df_ticker = m_data.xs(f_ticker, axis=1, level=1)
+                    if not m_data.empty:
+                        if isinstance(m_data.columns, pd.MultiIndex):
+                            if f_ticker in m_data.columns.levels[0]:
+                                df_ticker = m_data[f_ticker]
+                            elif f_ticker in m_data.columns.levels[1]:
+                                df_ticker = m_data.xs(f_ticker, axis=1, level=1)
+                            else:
+                                df_ticker = pd.DataFrame()
                         else:
-                            df_ticker = pd.DataFrame()
-                    else:
-                        df_ticker = m_data
+                            df_ticker = m_data
 
-                    if not df_ticker.empty:
-                        if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
-                            df_ticker.index = df_ticker.index.tz_localize(None)
+                        if not df_ticker.empty:
+                            if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
+                                df_ticker.index = df_ticker.index.tz_localize(None)
 
-                        if "Close" in df_ticker.columns:
-                            valid_series = df_ticker["Close"].dropna()
-                        else:
-                            valid_series = df_ticker.dropna()
+                            if "Close" in df_ticker.columns:
+                                valid_series = df_ticker["Close"].dropna()
+                            else:
+                                valid_series = df_ticker.dropna()
 
-                        if color_option == "일간 등락률 (1일)":
-                            if len(valid_series) >= 2:
-                                latest_price = float(valid_series.iloc[-1])
-                                prev_price = float(valid_series.iloc[-2])
-                                if prev_price > 0:
-                                    rate = round(((latest_price - prev_price) / prev_price) * 100, 2)
-                                    profit_amt = (latest_price - prev_price) * qty * ex_r
-                        else:
-                            p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
-                            
-                            if p_price is None and not valid_series.empty:
-                                p_price = float(valid_series.iloc[0])
+                            if color_option == "일간 등락률 (1일)":
+                                if len(valid_series) >= 2:
+                                    latest_price = float(valid_series.iloc[-1])
+                                    prev_price = float(valid_series.iloc[-2])
+                                    if prev_price > 0:
+                                        rate = round(((latest_price - prev_price) / prev_price) * 100, 2)
+                                        profit_amt = (latest_price - prev_price) * qty * ex_r
+                            else:
+                                p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
+                                
+                                if p_price is None and not valid_series.empty:
+                                    p_price = float(valid_series.iloc[0])
 
-                            if curr_p and p_price and float(p_price) > 0:
-                                rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
-                                profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
+                                if curr_p and p_price and float(p_price) > 0:
+                                    rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
+                                    profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
 
                     change_rates.append(rate)
                     period_profits.append(profit_amt)
@@ -1030,7 +1080,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             with pie_tab1:
                 # ---------------------------------------------------------
-                # 도너츠 점유율 표시 분류 기준 옵션 (모든 후보 중 고를 수 있도록 수정)
+                # 도너츠 점유율 표시 분류 기준 옵션
                 # ---------------------------------------------------------
                 group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
 
