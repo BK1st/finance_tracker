@@ -82,7 +82,7 @@ def get_account_aliases():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 시세 수집 함수
+# 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
   if pd.isna(t) or str(t).strip() == '' or str(t).strip().lower() == 'nan':
@@ -95,22 +95,54 @@ def format_ticker(t):
   return t_str
 
 
-@st.cache_data(ttl=3600)
+def get_latest_price_single(ticker_symbol):
+  """개별 티커의 최신 가격(장후/실시간/휴일 대응)을 가져옵니다."""
+  try:
+    tk = yf.Ticker(ticker_symbol)
+    # 1. fast_info 시도 (가장 최신/실시간성 높음)
+    fast_info = tk.fast_info
+    if hasattr(fast_info, 'last_price') and fast_info.last_price is not None:
+      if not np.isnan(fast_info.last_price) and fast_info.last_price > 0:
+        return float(fast_info.last_price)
+
+    # 2. info (postMarketPrice / regularMarketPrice) 시도
+    info = tk.info
+    if 'postMarketPrice' in info and info['postMarketPrice']:
+      return float(info['postMarketPrice'])
+    if 'regularMarketPrice' in info and info['regularMarketPrice']:
+      return float(info['regularMarketPrice'])
+
+    # 3. 최근 5일 history 시도
+    hist = tk.history(period='5d')
+    if not hist.empty and 'Close' in hist.columns:
+      return float(hist['Close'].iloc[-1])
+  except Exception:
+    pass
+  return None
+
+
+@st.cache_data(ttl=900)  # TTL을 15분으로 단축하여 장후 시세 반영 강화
 def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
   all_tickers = list(all_tickers_tuple)
   if not all_tickers:
     return pd.DataFrame()
   try:
+    # ignore_tz=True 설정 및 종가(Close) 기준 로드
     df = yf.download(
-        all_tickers, start=start_date, end=end_date, progress=False
+        all_tickers,
+        start=start_date,
+        end=end_date,
+        progress=False,
+        ignore_tz=True,
     )
     if df.empty:
       return pd.DataFrame()
 
-    if 'Adj Close' in df:
-      data = df['Adj Close']
-    elif 'Close' in df:
+    # Adj Close 대신 최신 시장 가격인 Close 우선 사용
+    if 'Close' in df:
       data = df['Close']
+    elif 'Adj Close' in df:
+      data = df['Adj Close']
     else:
       data = df
 
@@ -118,6 +150,27 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
       data = data.to_frame(name=all_tickers[0])
 
     data = data.ffill()
+
+    # 오늘 날짜(또는 장 마감 후 최신 가격) 보정
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_dt = pd.to_datetime(today_str)
+
+    # 최근 실시간/장후 가격으로 최신 행 보정 또는 추가
+    latest_row = {}
+    for tk_sym in all_tickers:
+      lp = get_latest_price_single(tk_sym)
+      if lp is not None:
+        latest_row[tk_sym] = lp
+
+    if latest_row:
+      if today_dt in data.index:
+        for k, v in latest_row.items():
+          data.loc[today_dt, k] = v
+      else:
+        new_row_df = pd.DataFrame(latest_row, index=[today_dt])
+        data = pd.concat([data, new_row_df])
+        data = data.sort_index().ffill()
+
     return data
   except Exception as e:
     st.error(f'시세 데이터 수집 중 오류 발생: {e}')
@@ -2610,115 +2663,3 @@ elif menu == '포트폴리오 업로드':
             conn.close()
     except Exception as e:
       st.error(f'파일을 읽는 중 오류 발생: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 5: 원금 및 입출금 관리
-# -----------------------------------------------------------------------------
-elif menu == '원금 및 입출금 관리':
-  st.header('💰 계좌별 기초 원금 및 입출금 내역 관리')
-  tab1, tab2 = st.tabs(['1. 기초 원금 설정', '2. 입출금(캐시플로우) 입력'])
-  conn = get_connection()
-
-  with tab1:
-    st.subheader('계좌별 최초 시작 원금 등록')
-    with st.form('init_principal_form'):
-      col1, col2, col3 = st.columns(3)
-      with col1:
-        broker = st.text_input('증권사명')
-      with col2:
-        account_num = st.text_input('계좌번호')
-      with col3:
-        initial_amount = st.number_input(
-            '기초 원금 금액 (원)', min_value=0.0, step=10000.0
-        )
-
-      submit_init = st.form_submit_button('기초 원금 저장')
-      if submit_init and broker and account_num:
-        c = conn.cursor()
-        c.execute(
-            """
-                    INSERT INTO initial_principal (account_num, broker, initial_amount)
-                    VALUES (?, ?, ?) ON CONFLICT(account_num) DO UPDATE SET
-                    broker=excluded.broker, initial_amount=excluded.initial_amount
-                """,
-            (str(account_num).strip(), broker.strip(), initial_amount),
-        )
-        conn.commit()
-        st.success('기초 원금이 등록되었습니다.')
-    st.dataframe(
-        pd.read_sql('SELECT * FROM initial_principal', conn),
-        use_container_width=True,
-    )
-
-  with tab2:
-    st.subheader('추가 입출금 이력 등록')
-    with st.form('cash_flow_form'):
-      col1, col2, col3, col4 = st.columns(4)
-      with col1:
-        trans_date = st.date_input('거래 날짜', date.today())
-      with col2:
-        init_accs = pd.read_sql(
-            'SELECT account_num FROM initial_principal', conn
-        )['account_num'].astype(str).tolist()
-        acc_choice = st.selectbox(
-            '계좌 선택', init_accs if init_accs else ['등록된 계좌 없음']
-        )
-      with col3:
-        flow_type = st.selectbox('구분', ['입금', '출금'])
-      with col4:
-        amount = st.number_input('금액 (원)', min_value=0.0, step=10000.0)
-
-      note = st.text_input('비고')
-      submit_cf = st.form_submit_button('입출금 내역 저장')
-      if submit_cf and acc_choice != '등록된 계좌 없음' and amount > 0:
-        c = conn.cursor()
-        c.execute(
-            """
-                    INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note)
-                    VALUES (?, ?, ?, ?, ?)
-                """,
-            (
-                trans_date.strftime('%Y-%m-%d'),
-                str(acc_choice).strip(),
-                flow_type,
-                amount,
-                note,
-            ),
-        )
-        conn.commit()
-        st.success('입출금 내역이 저장되었습니다.')
-    st.dataframe(
-        pd.read_sql('SELECT * FROM cash_flow ORDER BY trans_date DESC', conn),
-        use_container_width=True,
-    )
-  conn.close()
-
-# -----------------------------------------------------------------------------
-# 메뉴 6: 등록 데이터 조회
-# -----------------------------------------------------------------------------
-elif menu == '등록 데이터 조회':
-  st.header('🗄 DB 저장 데이터 확인')
-  conn = get_connection()
-  st.subheader('1. 업로드된 포트폴리오 변경 이력')
-  st.dataframe(
-      pd.read_sql('SELECT * FROM portfolio ORDER BY record_date DESC', conn),
-      use_container_width=True,
-  )
-
-  st.subheader('2. 계좌 별칭 목록')
-  st.dataframe(
-      pd.read_sql('SELECT * FROM account_alias', conn), use_container_width=True
-  )
-
-  st.subheader('3. 계좌별 기초 원금')
-  st.dataframe(
-      pd.read_sql('SELECT * FROM initial_principal', conn),
-      use_container_width=True,
-  )
-
-  st.subheader('4. 입출금 이력')
-  st.dataframe(
-      pd.read_sql('SELECT * FROM cash_flow ORDER BY trans_date DESC', conn),
-      use_container_width=True,
-  )
-  conn.close()
