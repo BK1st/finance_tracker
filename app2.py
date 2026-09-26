@@ -1116,7 +1116,17 @@ if menu == '트렌드 리포트':
             0,
         )
 
-        groups = sorted(grp_agg[group_col].unique())
+        # 최신 조회일자 기준 총평가금액이 큰 순서(내림차순)대로 정렬
+        latest_date = df['Date'].max()
+        latest_df = df[df['Date'] == latest_date]
+        group_order = (
+            latest_df.groupby(group_col)['총평가금액']
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        all_groups = grp_agg[group_col].unique()
+        groups = group_order + [g for g in all_groups if g not in group_order]
 
         st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 설정')
         cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
@@ -1545,7 +1555,20 @@ if menu == '트렌드 리포트':
           draw_group_summary_charts(df, group_col, prefix)
           st.write('---')
 
-          groups = sorted(df[group_col].unique())
+          # 최신 조회일자 기준 총평가금액이 큰 순서(내림차순)대로 정렬
+          latest_date = df['Date'].max()
+          latest_df = df[df['Date'] == latest_date]
+          group_order = (
+              latest_df.groupby(group_col)['총평가금액']
+              .sum()
+              .sort_values(ascending=False)
+              .index.tolist()
+          )
+          all_groups = df[group_col].unique()
+          groups = group_order + [
+              g for g in all_groups if g not in group_order
+          ]
+
           if num_cols > 1 and group_col is not None:
             st.markdown(f'#### 📌 그룹별 상세 분석 ({prefix})')
             cols = st.columns(num_cols)
