@@ -1904,7 +1904,7 @@ elif menu == '원금 및 입출금 관리':
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회
+# 메뉴 5: 등록 데이터 조회 (최신 시세 반영 수정 적용)
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회':
   st.header('🔍 DB에 등록된 데이터 조회 및 관리')
@@ -1929,16 +1929,68 @@ elif menu == '등록 데이터 조회':
     else:
       st.write(f'총 **{len(pf_df)}** 건의 포트폴리오 데이터가 존재합니다.')
 
+      # 실시간 시세 및 평가금액 계산 추가
+      with st.spinner('최신 시세를 수집하는 중입니다...'):
+        unique_tickers = pf_df['ticker'].dropna().unique().tolist()
+        s_date = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
+        e_date = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
+        m_data = fetch_market_data(unique_tickers, s_date, e_date)
+
+        usd_krw = 1350.0
+        if 'KRW=X' in m_data.columns and not m_data['KRW=X'].dropna().empty:
+          usd_krw = float(m_data['KRW=X'].dropna().iloc[-1])
+
+        latest_prices = []
+        latest_evals = []
+
+        for _, row in pf_df.iterrows():
+          fmt_tk = format_ticker(row['ticker'])
+          qty = row['quantity'] if pd.notna(row['quantity']) else 0
+          curr = row['currency']
+          base_price = (
+              row['current_price'] if pd.notna(row['current_price']) else 0
+          )
+
+          price = None
+          if fmt_tk and fmt_tk in m_data.columns and not m_data.empty:
+            valid_p = m_data[fmt_tk].dropna()
+            if not valid_p.empty:
+              price = float(valid_p.iloc[-1])
+
+          if price is None or price <= 0:
+            price = base_price
+
+          item_eval = (
+              (qty * price * usd_krw) if curr == 'USD' else (qty * price)
+          )
+
+          latest_prices.append(price)
+          latest_evals.append(item_eval)
+
+        view_pf_df = pf_df.copy()
+        view_pf_df['최신_현재가(yfinance)'] = latest_prices
+        view_pf_df['최신_평가금액(원)'] = latest_evals
+
+        # 열 순서 재배치 (기존 current_price 바로 뒤에 배치)
+        cols = list(view_pf_df.columns)
+        if 'current_price' in cols:
+          cp_idx = cols.index('current_price')
+          cols.remove('최신_현재가(yfinance)')
+          cols.remove('최신_평가금액(원)')
+          cols.insert(cp_idx + 1, '최신_현재가(yfinance)')
+          cols.insert(cp_idx + 2, '최신_평가금액(원)')
+          view_pf_df = view_pf_df[cols]
+
       search_keyword = st.text_input('🔎 종목명 / 계좌번호 / 증권사 검색', '')
       if search_keyword:
-        filtered_pf = pf_df[
-            pf_df['item_name'].astype(str).str.contains(search_keyword)
-            | pf_df['account_num'].astype(str).str.contains(search_keyword)
-            | pf_df['broker'].astype(str).str.contains(search_keyword)
+        filtered_pf = view_pf_df[
+            view_pf_df['item_name'].astype(str).str.contains(search_keyword)
+            | view_pf_df['account_num'].astype(str).str.contains(search_keyword)
+            | view_pf_df['broker'].astype(str).str.contains(search_keyword)
         ]
         st.dataframe(filtered_pf, use_container_width=True)
       else:
-        st.dataframe(pf_df, use_container_width=True)
+        st.dataframe(view_pf_df, use_container_width=True)
 
   with tab2:
     st.subheader('🏦 최초 원금 등록 내역')
