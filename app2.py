@@ -193,24 +193,24 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
-# 차트 우측 하단 드래그를 통한 리사이즈 및 차트 분리 CSS
+# 요구사항 2 반영: 차트 우측 하단 드래그를 통한 리사이즈 및 레이아웃 밀림 방지 CSS 설정
 st.markdown(
     """
     <style>
-    /* Streamlit 차트 박스 전체 리사이즈 가능하도록 설정 */
+    /* Streamlit Plotly 차트 컨테이너 드래그 조절 가능 처리 */
     div[data-testid="stPlotlyChart"] {
         resize: both !important;
         overflow: auto !important;
-        min-height: 420px;
+        min-height: 450px;
         min-width: 300px;
         max-width: 100%;
-        padding: 10px;
+        padding: 12px;
         border: 1px solid #e2e8f0;
         border-radius: 10px;
         background-color: #ffffff;
         display: block !important;
         position: relative !important;
-        margin-bottom: 16px !important;
+        margin-bottom: 24px !important;
         box-sizing: border-box !important;
     }
     div[data-testid="stPlotlyChart"] > div {
@@ -260,23 +260,23 @@ DEFAULT_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set1
 
 
 def apply_chart_standard_layout(fig, title_text):
-  """
-  차트 및 범주 완전 분리 레이아웃 함수:
+  """요구사항 1 반영: 차트와 범주의 완전 물리적 분리 레이아웃 함수
+
   - orientation='h' : 가로형 범주 배치
-  - y=-0.25, yanchor='top' : 차트의 밑면 바깥쪽으로 완전히 분리
-  - margin(b=120) : 하단 여백을 충분히 주어 사이즈 조절 시 범주가 자동으로 하단에 위치하도록 설정
+  - y=-0.3, yanchor='top' : 차트의 x축 아래 바깥쪽 영역으로 범주를 밀어냄
+  - margin(b=140) : 범주 항목이 늘어나 줄바꿈되어도 차트를 가리지 않도록 하단 여백 대폭 확보
   """
   fig.update_layout(
       showlegend=True,
       legend=dict(
           orientation='h',
           yanchor='top',
-          y=-0.25,  # 차트 바깥 하단으로 범주 이동
+          y=-0.3,  # 차트 시각화 영역 밑으로 완전 분리
           xanchor='center',
           x=0.5,
           itemclick='toggle',
           itemdoubleclick='toggleothers',
-          bgcolor='rgba(255, 255, 255, 0.8)',
+          bgcolor='rgba(255, 255, 255, 0.9)',
           bordercolor='#e5e7eb',
           borderwidth=1,
       ),
@@ -288,15 +288,15 @@ def apply_chart_standard_layout(fig, title_text):
           y=0.98,
           font=dict(size=15, color='#1f2937'),
       ),
-      margin=dict(t=50, b=120, l=20, r=20),  # 범주 공간 확보를 위한 하단 여백 설정
+      margin=dict(
+          t=50, b=140, l=20, r=20
+      ),  # 하단 여백을 충분히 확보하여 차트 축 및 그래프 훼손 방지
       autosize=True,
   )
 
 
 def render_chart_with_click_event(fig, chart_key, calc_df=None):
-  """
-  Plotly 차트 출력 함수
-  """
+  """Plotly 차트 출력 함수 (컨테이너 크기 변경 시 자동 재렌더링 적용)"""
   st.plotly_chart(
       fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
   )
