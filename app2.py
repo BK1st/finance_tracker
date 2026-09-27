@@ -192,19 +192,62 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
-# 차트 컨테이너 드래그 조절 CSS 및 Plotly 스마트 레전드 스타일링
+# 차트 컨테이너 및 독립 범주(Legend) 드래그 사이즈 조절 CSS
 st.markdown(
     """
     <style>
-    /* Streamlit Plotly 차트 박스를 사용자가 직접 마우스 드래그로 조절 */
+    /* 1, 2) 차트 사이즈를 좌우/위아래(both) 드래그로 변경 가능하도록 설정 */
     div[data-testid="stPlotlyChart"] {
-        resize: vertical;
-        overflow: auto;
-        min-height: 400px;
-        padding-bottom: 15px;
+        resize: both !important;
+        overflow: auto !important;
+        min-height: 380px;
+        min-width: 300px;
+        padding: 5px;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
         background-color: #ffffff;
+    }
+    
+    /* 3, 4) 범주(Legend) 전용 드래그 박스 및 가로 자동배치 CSS */
+    .custom-legend-box {
+        resize: both !important;
+        overflow: auto !important;
+        min-height: 50px;
+        max-height: 200px;
+        min-width: 250px;
+        margin-top: 6px;
+        margin-bottom: 16px;
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        background-color: #f9fafb;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 14px; /* 범주 아이템 간의 상하/좌우 간격을 좁고 적절하게 조정 */
+    }
+    .legend-item {
+        display: inline-flex;
+        align-items: center;
+        font-size: 12px;
+        color: #374151;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        padding: 2px 4px;
+        border-radius: 4px;
+        transition: background-color 0.15s ease;
+    }
+    .legend-item:hover {
+        background-color: #e5e7eb;
+    }
+    .legend-color-chip {
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        margin-right: 5px;
+        display: inline-block;
+        flex-shrink: 0;
     }
     </style>
 """,
@@ -238,24 +281,62 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-# 범주(Legend) 항목이 너비에 맞추어 자동 줄바꿈(Flex Reflow)되도록 동적 설정
-COMMON_LEGEND_CONFIG = dict(
-    orientation='h',
-    yanchor='top',
-    y=-0.18,
-    xanchor='center',
-    x=0.5,
-    font=dict(size=11),
-    itemwidth=80,  # 각 범주 항목 너비 최소화로 자동 줄바꿈 유도
-    tracegroupgap=5,
-)
-
 PLOTLY_CONFIG = {
     'responsive': True,
     'scrollZoom': True,
     'displayModeBar': True,
     'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
 }
+
+# 범주 항목 자동 생성 및 스마트 렌더링 헬퍼 함수
+
+
+def render_chart_with_custom_legend(fig, chart_key):
+  # Plotly 순정 내장 범주 제거 (독립 박스로 분리)
+  fig.update_layout(showlegend=False)
+
+  # 트레이스 추출 및 스마트 범주 HTML 구성
+  legend_items_html = []
+  for idx, trace in enumerate(fig.data):
+    name = trace.name if trace.name else f'항목 {idx+1}'
+    color = '#4b5563'
+
+    if hasattr(trace, 'marker') and trace.marker and trace.marker.color:
+      color = (
+          trace.marker.color
+          if isinstance(trace.marker.color, str)
+          else '#3b82f6'
+      )
+    elif hasattr(trace, 'line') and trace.line and trace.line.color:
+      color = trace.line.color
+
+    item_html = f"""
+        <div class="legend-item" onclick="
+            var chart = document.querySelectorAll('div[data-testid=\\'stPlotlyChart\\']')[0];
+            if(chart && window.Plotly) {{
+                Plotly.restyle(chart, {{visible: this.style.opacity === '0.4' ? true : 'legendonly'}}, [{idx}]);
+                this.style.opacity = this.style.opacity === '0.4' ? '1' : '0.4';
+            }}
+        ">
+            <span class="legend-color-chip" style="background-color: {color};"></span>
+            <span>{name}</span>
+        </div>
+        """
+    legend_items_html.append(item_html)
+
+  # 차트 출력
+  st.plotly_chart(
+      fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
+  )
+
+  # 독립 조절 가능 범주(Legend) 박스 출력
+  legend_container_html = f"""
+    <div class="custom-legend-box">
+        {"".join(legend_items_html)}
+    </div>
+    """
+  st.markdown(legend_container_html, unsafe_allow_html=True)
+
 
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
@@ -821,10 +902,8 @@ if menu == '트렌드 리포트':
             ),
             barmode='relative',
             hovermode='x unified',
-            height=480,
-            margin=dict(t=80, b=100, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig1.update_xaxes(
             type='category',
@@ -878,10 +957,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=80, b=100, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig2.update_xaxes(
             type='category',
@@ -938,10 +1015,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=80, b=100, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig3a.update_xaxes(
             type='category',
@@ -999,10 +1074,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=480,
-            margin=dict(t=80, b=100, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig3b.update_xaxes(
             type='category',
@@ -1019,89 +1092,53 @@ if menu == '트렌드 리포트':
         effective_cols = 1 if force_single_col else num_cols
 
         if effective_cols == 1:
-          st.plotly_chart(
-              fig1,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_fig1_{title_name}_{force_single_col}',
+          render_chart_with_custom_legend(
+              fig1, f'trend_fig1_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig2,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_fig2_{title_name}_{force_single_col}',
+          render_chart_with_custom_legend(
+              fig2, f'trend_fig2_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig3a,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_fig3a_{title_name}_{force_single_col}',
+          render_chart_with_custom_legend(
+              fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_fig3b_{title_name}_{force_single_col}',
+          render_chart_with_custom_legend(
+              fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
-            st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig1_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig1, f'trend_fig1_{title_name}_{force_single_col}'
             )
           with col_b:
-            st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig2_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig2, f'trend_fig2_{title_name}_{force_single_col}'
             )
           col_c, col_d = st.columns(2)
           with col_c:
-            st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig3a_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
             )
           with col_d:
-            st.plotly_chart(
-                fig3b,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig3b_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
-            st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig1_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig1, f'trend_fig1_{title_name}_{force_single_col}'
             )
           with col_b:
-            st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig2_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig2, f'trend_fig2_{title_name}_{force_single_col}'
             )
           with col_c:
-            st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_fig3a_{title_name}_{force_single_col}',
+            render_chart_with_custom_legend(
+                fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
             )
-          st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_fig3b_{title_name}_{force_single_col}',
+          render_chart_with_custom_legend(
+              fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
           )
 
         return sub_df
@@ -1175,10 +1212,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_sel_p.update_xaxes(
             type='category',
@@ -1213,10 +1248,8 @@ if menu == '트렌드 리포트':
             ),
             barmode='relative',
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_period_p.update_xaxes(
             type='category',
@@ -1272,10 +1305,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_period_ret.update_xaxes(
             type='category',
@@ -1348,10 +1379,8 @@ if menu == '트렌드 리포트':
             ),
             barmode='group',
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_cum_ret.update_xaxes(
             type='category',
@@ -1391,10 +1420,8 @@ if menu == '트렌드 리포트':
             ),
             barmode='relative',
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_p.update_xaxes(
             type='category',
@@ -1425,10 +1452,8 @@ if menu == '트렌드 리포트':
                 yanchor='top',
             ),
             hovermode='x unified',
-            height=500,
-            margin=dict(t=80, b=120, l=10, r=10),
-            showlegend=True,
-            legend=COMMON_LEGEND_CONFIG,
+            height=380,
+            margin=dict(t=50, b=30, l=10, r=10),
         )
         fig_r.update_xaxes(
             type='category',
@@ -1443,133 +1468,67 @@ if menu == '트렌드 리포트':
         )
 
         if num_cols == 1:
-          st.plotly_chart(
-              fig_sel_p,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_sel_p_{prefix}',
+          render_chart_with_custom_legend(
+              fig_sel_p, f'trend_grp_sel_p_{prefix}'
           )
-          st.plotly_chart(
-              fig_period_p,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_period_p_{prefix}',
+          render_chart_with_custom_legend(
+              fig_period_p, f'trend_grp_period_p_{prefix}'
           )
-          st.plotly_chart(
-              fig_period_ret,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_period_ret_{prefix}',
+          render_chart_with_custom_legend(
+              fig_period_ret, f'trend_grp_period_ret_{prefix}'
           )
-          st.plotly_chart(
-              fig_cum_ret,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_cum_ret_{prefix}',
+          render_chart_with_custom_legend(
+              fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
           )
-          st.plotly_chart(
-              fig_p,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_p_{prefix}',
-          )
-          st.plotly_chart(
-              fig_r,
-              use_container_width=True,
-              config=PLOTLY_CONFIG,
-              key=f'trend_grp_r_{prefix}',
-          )
+          render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
+          render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
         elif num_cols == 2:
           col1, col2 = st.columns(2)
           with col1:
-            st.plotly_chart(
-                fig_sel_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_sel_p_{prefix}',
+            render_chart_with_custom_legend(
+                fig_sel_p, f'trend_grp_sel_p_{prefix}'
             )
           with col2:
-            st.plotly_chart(
-                fig_period_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_period_p_{prefix}',
+            render_chart_with_custom_legend(
+                fig_period_p, f'trend_grp_period_p_{prefix}'
             )
           col3, col4 = st.columns(2)
           with col3:
-            st.plotly_chart(
-                fig_period_ret,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_period_ret_{prefix}',
+            render_chart_with_custom_legend(
+                fig_period_ret, f'trend_grp_period_ret_{prefix}'
             )
           with col4:
-            st.plotly_chart(
-                fig_cum_ret,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_cum_ret_{prefix}',
+            render_chart_with_custom_legend(
+                fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
             )
           col5, col6 = st.columns(2)
           with col5:
-            st.plotly_chart(
-                fig_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_p_{prefix}',
-            )
+            render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
           with col6:
-            st.plotly_chart(
-                fig_r,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_r_{prefix}',
-            )
+            render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
         else:
           col1, col2, col3 = st.columns(3)
           with col1:
-            st.plotly_chart(
-                fig_sel_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_sel_p_{prefix}',
+            render_chart_with_custom_legend(
+                fig_sel_p, f'trend_grp_sel_p_{prefix}'
             )
           with col2:
-            st.plotly_chart(
-                fig_period_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_period_p_{prefix}',
+            render_chart_with_custom_legend(
+                fig_period_p, f'trend_grp_period_p_{prefix}'
             )
           with col3:
-            st.plotly_chart(
-                fig_period_ret,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_period_ret_{prefix}',
+            render_chart_with_custom_legend(
+                fig_period_ret, f'trend_grp_period_ret_{prefix}'
             )
           col4, col5, col6 = st.columns(3)
           with col4:
-            st.plotly_chart(
-                fig_cum_ret,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_cum_ret_{prefix}',
+            render_chart_with_custom_legend(
+                fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
             )
           with col5:
-            st.plotly_chart(
-                fig_p,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_p_{prefix}',
-            )
+            render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
           with col6:
-            st.plotly_chart(
-                fig_r,
-                use_container_width=True,
-                config=PLOTLY_CONFIG,
-                key=f'trend_grp_r_{prefix}',
-            )
+            render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
 
       def render_separate_charts(df, group_col, prefix):
         if group_col is None:
@@ -1640,7 +1599,7 @@ if menu == '트렌드 리포트':
             render_separate_charts(calc_df, 'item_name', '보유항목')
 
 # -----------------------------------------------------------------------------
-# 메뉴 2 ~ 메뉴 5 (이하 기존과 동일)
+# 메뉴 2: 계좌 별칭 관리
 # -----------------------------------------------------------------------------
 elif menu == '계좌 별칭 관리':
   st.header('🏷️ 계좌별 수동 별칭(Alias) 관리')
@@ -1696,6 +1655,9 @@ elif menu == '계좌 별칭 관리':
         st.success('계좌 별칭이 저장되었습니다!')
         st.rerun()
 
+# -----------------------------------------------------------------------------
+# 메뉴 3: 포트폴리오 업로드
+# -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📂 포트폴리오 엑셀 파일 업로드')
   uploaded_file = st.file_uploader('엑셀 파일 선택 (.xlsx)', type=['xlsx'])
@@ -1771,6 +1733,9 @@ elif menu == '포트폴리오 업로드':
     except Exception as e:
       st.error(f'엑셀 파싱 오류: {e}')
 
+# -----------------------------------------------------------------------------
+# 메뉴 4: 원금 및 입출금 관리
+# -----------------------------------------------------------------------------
 elif menu == '원금 및 입출금 관리':
   st.header('💰 원금 및 입출금 관리')
   tab1, tab2 = st.tabs(['1. 계좌별 최초 원금 설정', '2. 입출금 내역 관리'])
@@ -1911,6 +1876,9 @@ elif menu == '원금 및 입출금 관리':
             use_container_width=True,
         )
 
+# -----------------------------------------------------------------------------
+# 메뉴 5: 등록 데이터 조회
+# -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회':
   st.header('🔍 DB에 등록된 데이터 조회 및 관리')
   conn = get_connection()
