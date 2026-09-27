@@ -192,10 +192,11 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # 3. Plotly 레이아웃 및 범주 헬퍼 함수
 # -----------------------------------------------------------------------------
 def build_legend_config(mode_str):
-  """요청사항 1, 3, 4 반영: 차트별/공통 범주 배치 설정 생성
+  """모바일 가독성 향상 레이아웃 설정:
 
-  - 하단 배치시 차트 날짜축 아래로 떨어지도록 y=-0.25 지정
-  - entrywidthmode='fraction' 설정으로 모바일 가로 공간에 복수 항목 배치
+  1. 차트 제목과 모드 BAR의 충분한 격리 (t=90)
+  2. x축 날짜 라벨과의 침범 방지를 위해 범주 y축을 -0.35로 조정 및 b=140
+  3. 하단 범주 정렬을 좌측 끝(x=0, xanchor='left')부터 구성하고 entrywidth=100px 설정
   """
   if mode_str == '우측 배치':
     return (
@@ -208,33 +209,28 @@ def build_legend_config(mode_str):
             font=dict(size=10),
         ),
         True,
-        dict(t=80, b=40, l=10, r=140),
+        dict(t=90, b=50, l=10, r=140),
     )
   elif mode_str == '하단 배치':
     return (
         dict(
             orientation='h',
             yanchor='top',
-            y=-0.25,
-            xanchor='center',
-            x=0.5,
-            entrywidthmode='fraction',
-            entrywidth=0.22,  # 모바일 화면에서 한 줄에 여러 개 들어가도록 설정
+            y=-0.35,  # 날짜 라벨과 절대 겹치지 않도록 아래로 이동
+            xanchor='left',  # 맨 좌측부터 배치하여 공간 활용 극대화
+            x=0,
+            entrywidthmode='pixels',
+            entrywidth=100,  # 모바일에서 좌측부터 차곡차곡 줄바꿈 배치
             font=dict(size=10),
         ),
         True,
-        dict(t=80, b=100, l=10, r=20),  # 하단 여백을 충분히 확보하여 날짜 안 가림
+        dict(t=90, b=140, l=10, r=20),  # 하단 여백을 충분히 확보
     )
   else:  # '숨김'
-    return dict(), False, dict(t=80, b=40, l=10, r=20)
+    return dict(), False, dict(t=90, b=50, l=10, r=20)
 
 
 def render_resizable_plotly_chart(fig, key):
-  """요청사항 2, 5 반영:
-
-  - 차트 제목과 모드바가 겹치지 않도록 모드바 상단 배치
-  - 차트 사이즈 변경 시 X/Y축이 함께 스케일링되도록 responsive 설정 강화
-  """
   st.plotly_chart(
       fig,
       use_container_width=True,
@@ -793,7 +789,6 @@ if menu == '트렌드 리포트':
         c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
         c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
 
-        # 요청 3번: 각 차트별 범주 위치 개별 OPTION 설정
         st.markdown(f'##### ⚙️ [{title_name}] 개별 차트 범주 설정')
         cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -880,7 +875,7 @@ if menu == '트렌드 리포트':
         fig1.update_layout(
             title=dict(
                 text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -940,7 +935,7 @@ if menu == '트렌드 리포트':
         fig2.update_layout(
             title=dict(
                 text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1002,7 +997,7 @@ if menu == '트렌드 리포트':
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1065,7 +1060,7 @@ if menu == '트렌드 리포트':
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1255,7 +1250,7 @@ if menu == '트렌드 리포트':
         fig_sel_p.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1295,7 +1290,7 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1357,7 +1352,7 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
                     ' 벤치마크 포함)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1434,7 +1429,7 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
                     ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1480,7 +1475,7 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1518,7 +1513,7 @@ if menu == '트렌드 리포트':
         fig_r.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.96,
+                y=0.98,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
