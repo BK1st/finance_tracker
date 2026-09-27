@@ -194,7 +194,7 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 def build_legend_config(mode_str):
   """모바일 가독성 향상 레이아웃 설정:
 
-  1. 차트 제목과 모드 BAR의 충분한 격리 (t=90)
+  1. 차트 제목과 ModeBar(컨트롤 바)의 충돌 방지를 위해 상단 여백(t=120)을 넉넉히 확보
   2. x축 날짜 라벨과의 침범 방지를 위해 범주 y축을 -0.35로 조정 및 b=140
   3. 하단 범주 정렬을 좌측 끝(x=0, xanchor='left')부터 구성하고 entrywidth=100px 설정
   """
@@ -209,7 +209,7 @@ def build_legend_config(mode_str):
             font=dict(size=10),
         ),
         True,
-        dict(t=90, b=50, l=10, r=140),
+        dict(t=120, b=50, l=10, r=140),
     )
   elif mode_str == '하단 배치':
     return (
@@ -224,10 +224,10 @@ def build_legend_config(mode_str):
             font=dict(size=10),
         ),
         True,
-        dict(t=90, b=140, l=10, r=20),  # 하단 여백을 충분히 확보
+        dict(t=120, b=140, l=10, r=20),  # 상단 t=120 및 하단 여백 충분히 확보
     )
   else:  # '숨김'
-    return dict(), False, dict(t=90, b=50, l=10, r=20)
+    return dict(), False, dict(t=120, b=50, l=10, r=20)
 
 
 def render_resizable_plotly_chart(fig, key):
@@ -875,10 +875,11 @@ if menu == '트렌드 리포트':
         fig1.update_layout(
             title=dict(
                 text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             barmode='relative',
             hovermode='closest',
@@ -935,10 +936,11 @@ if menu == '트렌드 리포트':
         fig2.update_layout(
             title=dict(
                 text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
@@ -997,10 +999,11 @@ if menu == '트렌드 리포트':
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
@@ -1060,10 +1063,11 @@ if menu == '트렌드 리포트':
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
@@ -1250,10 +1254,11 @@ if menu == '트렌드 리포트':
         fig_sel_p.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
@@ -1290,10 +1295,11 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             barmode='relative',
             hovermode='closest',
@@ -1352,10 +1358,11 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
                     ' 벤치마크 포함)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
@@ -1429,10 +1436,11 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
                     ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             barmode='group',
             hovermode='closest',
@@ -1475,10 +1483,11 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             barmode='relative',
             hovermode='closest',
@@ -1513,10 +1522,11 @@ if menu == '트렌드 리포트':
         fig_r.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.98,
+                y=0.95,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
+                yref='container',
             ),
             hovermode='closest',
             height=500,
