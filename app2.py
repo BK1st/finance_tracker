@@ -10,7 +10,7 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 
 # -----------------------------------------------------------------------------
-# 1. DB 초기화 및 관리 함수 (데이터 지속성을 위한 경로/디렉토리 보완)
+# 1. DB 초기화 및 관리 함수
 # -----------------------------------------------------------------------------
 DATA_DIR = os.path.join(os.path.dirname(__file__), '.data')
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -99,23 +99,20 @@ def format_ticker(t):
 
 
 def get_latest_price_single(ticker_symbol):
-  """개별 티커의 최신 가격(장후/실시간/휴일 대응)을 가져옵니다."""
+  """개별 티커의 최신 가격을 가져옵니다."""
   try:
     tk = yf.Ticker(ticker_symbol)
-    # 1. fast_info 시도
     fast_info = tk.fast_info
     if hasattr(fast_info, 'last_price') and fast_info.last_price is not None:
       if not np.isnan(fast_info.last_price) and fast_info.last_price > 0:
         return float(fast_info.last_price)
 
-    # 2. info 시도
     info = tk.info
     if 'postMarketPrice' in info and info['postMarketPrice']:
       return float(info['postMarketPrice'])
     if 'regularMarketPrice' in info and info['regularMarketPrice']:
       return float(info['regularMarketPrice'])
 
-    # 3. 최근 5일 history 시도
     hist = tk.history(period='5d')
     if not hist.empty and 'Close' in hist.columns:
       return float(hist['Close'].iloc[-1])
@@ -192,7 +189,66 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 
 
 # -----------------------------------------------------------------------------
-# 3. Streamlit 대시보드 메인
+# 3. Plotly 레이아웃 및 범주 헬퍼 함수
+# -----------------------------------------------------------------------------
+def build_legend_config(mode_str):
+  """요청사항 1, 3, 4 반영: 차트별/공통 범주 배치 설정 생성
+
+  - 하단 배치시 차트 날짜축 아래로 떨어지도록 y=-0.25 지정
+  - entrywidthmode='fraction' 설정으로 모바일 가로 공간에 복수 항목 배치
+  """
+  if mode_str == '우측 배치':
+    return (
+        dict(
+            orientation='v',
+            yanchor='top',
+            y=1.0,
+            xanchor='left',
+            x=1.02,
+            font=dict(size=10),
+        ),
+        True,
+        dict(t=80, b=40, l=10, r=140),
+    )
+  elif mode_str == '하단 배치':
+    return (
+        dict(
+            orientation='h',
+            yanchor='top',
+            y=-0.25,
+            xanchor='center',
+            x=0.5,
+            entrywidthmode='fraction',
+            entrywidth=0.22,  # 모바일 화면에서 한 줄에 여러 개 들어가도록 설정
+            font=dict(size=10),
+        ),
+        True,
+        dict(t=80, b=100, l=10, r=20),  # 하단 여백을 충분히 확보하여 날짜 안 가림
+    )
+  else:  # '숨김'
+    return dict(), False, dict(t=80, b=40, l=10, r=20)
+
+
+def render_resizable_plotly_chart(fig, key):
+  """요청사항 2, 5 반영:
+
+  - 차트 제목과 모드바가 겹치지 않도록 모드바 상단 배치
+  - 차트 사이즈 변경 시 X/Y축이 함께 스케일링되도록 responsive 설정 강화
+  """
+  st.plotly_chart(
+      fig,
+      use_container_width=True,
+      key=key,
+      config={
+          'responsive': True,
+          'displayModeBar': True,
+          'displaylogo': False,
+      },
+  )
+
+
+# -----------------------------------------------------------------------------
+# 4. Streamlit 대시보드 메인
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 st.title('📈 자산 평가액 및 수익률 분석 시스템')
@@ -221,47 +277,6 @@ bm_styles = {
     '미국 QQQ': dict(color='#17becf', dash='dash'),
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
-
-
-def get_legend_config(pos_setting):
-  """범례 배치 옵션(하단/우측)에 따른 Plotly legend 설정 반환"""
-  if '우측' in pos_setting:
-    return dict(
-        orientation='v',
-        yanchor='top',
-        y=1.0,
-        xanchor='left',
-        x=1.02,
-        font=dict(size=10),
-    )
-  else:
-    # 하단 배치: 가로 공간 최적화를 위해 entrywidth 지정 제거
-    return dict(
-        orientation='h',
-        yanchor='top',
-        y=-0.18,
-        xanchor='center',
-        x=0.5,
-        font=dict(size=10),
-    )
-
-
-def render_resizable_plotly_chart(fig, key):
-  """마우스 드래그로 사이즈 조절 가능한 마크다운 컨테이너에 Plotly 차트 렌더링"""
-  st.markdown(
-      '<div style="resize: vertical; overflow: auto; min-height: 480px;'
-      ' border: 1px solid #e1e4e8; border-radius: 6px; padding: 4px'
-      ' margin-bottom: 15px;">',
-      unsafe_allow_html=True,
-  )
-  st.plotly_chart(
-      fig,
-      use_container_width=True,
-      key=key,
-      config={'responsive': True, 'displayModeBar': True},
-  )
-  st.markdown('</div>', unsafe_allow_html=True)
-
 
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
@@ -351,10 +366,7 @@ if menu == '트렌드 리포트':
             '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
             options=bm_options,
             default=st.session_state.get('trend_sel_bm', bm_options),
-            help=(
-                '선택한 벤치마크 지수의 수익률 트렌드가 수익률 그래프에 점선으로'
-                ' 표시됩니다.'
-            ),
+            help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
         )
 
       with f_col2:
@@ -388,10 +400,6 @@ if menu == '트렌드 리포트':
             '🏦 미래에셋 계좌 평가금액 수동 입력 (원)',
             value=st.session_state.get('trend_mirae_val', 55500000.0),
             step=1000000.0,
-            help=(
-                '미래에셋 증권 계좌는 수동 입력 가액이 전 분석 기간에 공통'
-                ' 반영됩니다.'
-            ),
         )
 
       st.write('---')
@@ -450,9 +458,7 @@ if menu == '트렌드 리포트':
       unique_tickers = filtered_pf_df['ticker'].unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
-      with st.spinner(
-          '최신 시세 및 벤치마크 데이터를 다시 수집하고 트렌드를 계산 중입니다...'
-      ):
+      with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
         s_str = start_date.strftime('%Y-%m-%d')
         e_str = (end_date + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
@@ -698,12 +704,12 @@ if menu == '트렌드 리포트':
         )
 
       with disp_col2:
-        legend_pos_setting = st.selectbox(
-            '📌 범례(Legend) 배치 위치 선택',
+        global_legend_pos = st.selectbox(
+            '📌 공통 범례(Legend) 기본 배치',
             options=['하단 배치', '우측 배치'],
             index=0,
             key='live_legend_pos',
-            help='범례를 차트 하단 또는 우측에 배치하도록 변경합니다.',
+            help='기본 범례 위치를 선택합니다. 각 차트별로 개별 변경도 가능합니다.',
         )
 
       with disp_col3:
@@ -735,9 +741,6 @@ if menu == '트렌드 리포트':
         num_cols = 2
       elif '3열' in layout_setting:
         num_cols = 3
-
-      current_legend_config = get_legend_config(legend_pos_setting)
-      right_margin = 130 if '우측' in legend_pos_setting else 20
 
       def apply_y_axis_config(fig, axis_name='yaxis', is_money=True):
         kwargs = dict(type='linear', zeroline=True)
@@ -790,33 +793,42 @@ if menu == '트렌드 리포트':
         c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
         c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
 
-        st.markdown(f'##### ⚙️ [{title_name}] 차트별 범주 설정')
+        # 요청 3번: 각 차트별 범주 위치 개별 OPTION 설정
+        st.markdown(f'##### ⚙️ [{title_name}] 개별 차트 범주 설정')
         cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
+        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
+        default_idx = 0 if global_legend_pos == '하단 배치' else 1
+
         with cb_col1:
-          leg_fig1 = st.checkbox(
-              '차트1 범주 표시',
-              value=True,
-              key=f'leg_f1_{title_name}_{force_single_col}',
+          pos_fig1 = st.selectbox(
+              '차트1 범주',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_f1_{title_name}_{force_single_col}',
           )
         with cb_col2:
-          leg_fig2 = st.checkbox(
-              '차트2 범주 표시',
-              value=True,
-              key=f'leg_f2_{title_name}_{force_single_col}',
+          pos_fig2 = st.selectbox(
+              '차트2 범주',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_f2_{title_name}_{force_single_col}',
           )
         with cb_col3:
-          leg_fig3a = st.checkbox(
-              '차트3-1 범주 표시',
-              value=True,
-              key=f'leg_f3a_{title_name}_{force_single_col}',
+          pos_fig3a = st.selectbox(
+              '차트3-1 범주',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_f3a_{title_name}_{force_single_col}',
           )
         with cb_col4:
-          leg_fig3b = st.checkbox(
-              '차트3-2 범주 표시',
-              value=True,
-              key=f'leg_f3b_{title_name}_{force_single_col}',
+          pos_fig3b = st.selectbox(
+              '차트3-2 범주',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_f3b_{title_name}_{force_single_col}',
           )
 
+        # Fig 1
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
             go.Bar(
@@ -864,10 +876,11 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
+        leg_cfg1, show_leg1, margin1 = build_legend_config(pos_fig1)
         fig1.update_layout(
             title=dict(
                 text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -875,9 +888,9 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_fig1 else 20, l=10, r=right_margin),
-            showlegend=leg_fig1,
-            legend=current_legend_config,
+            margin=margin1,
+            showlegend=show_leg1,
+            legend=leg_cfg1,
         )
         fig1.update_xaxes(
             type='category',
@@ -896,6 +909,7 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
+        # Fig 2
         fig2 = go.Figure()
         valid_period_df = sub_df.dropna(subset=['주기별 평가손익'])
         period_colors = [
@@ -922,19 +936,20 @@ if menu == '트렌드 리포트':
             )
         )
 
+        leg_cfg2, show_leg2, margin2 = build_legend_config(pos_fig2)
         fig2.update_layout(
             title=dict(
                 text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_fig2 else 20, l=10, r=right_margin),
-            showlegend=leg_fig2,
-            legend=current_legend_config,
+            margin=margin2,
+            showlegend=show_leg2,
+            legend=leg_cfg2,
         )
         fig2.update_xaxes(
             type='category',
@@ -944,6 +959,7 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig2, axis_name='yaxis', is_money=True)
         fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
+        # Fig 3a
         fig3a = go.Figure()
         fig3a.add_trace(
             go.Scatter(
@@ -979,22 +995,23 @@ if menu == '트렌드 리포트':
               )
           )
 
+        leg_cfg3a, show_leg3a, margin3a = build_legend_config(pos_fig3a)
         fig3a.update_layout(
             title=dict(
                 text=(
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_fig3a else 20, l=10, r=right_margin),
-            showlegend=leg_fig3a,
-            legend=current_legend_config,
+            margin=margin3a,
+            showlegend=show_leg3a,
+            legend=leg_cfg3a,
         )
         fig3a.update_xaxes(
             type='category',
@@ -1008,6 +1025,7 @@ if menu == '트렌드 리포트':
             zeroline=True,
         )
 
+        # Fig 3b
         fig3b = go.Figure()
         fig3b.add_trace(
             go.Scatter(
@@ -1040,22 +1058,23 @@ if menu == '트렌드 리포트':
               )
           )
 
+        leg_cfg3b, show_leg3b, margin3b = build_legend_config(pos_fig3b)
         fig3b.update_layout(
             title=dict(
                 text=(
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_fig3b else 20, l=10, r=right_margin),
-            showlegend=leg_fig3b,
-            legend=current_legend_config,
+            margin=margin3b,
+            showlegend=show_leg3b,
+            legend=leg_cfg3b,
         )
         fig3b.update_xaxes(
             type='category',
@@ -1159,7 +1178,6 @@ if menu == '트렌드 리포트':
             0,
         )
 
-        # 최신 조회일자 기준 총평가금액이 큰 순서(내림차순)대로 정렬
         latest_date = df['Date'].max()
         latest_df = df[df['Date'] == latest_date]
         group_order = (
@@ -1171,33 +1189,55 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 설정')
+        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 배치 설정')
         cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
+        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
+        default_idx = 0 if global_legend_pos == '하단 배치' else 1
+
         with cb_c1:
-          leg_grp1 = st.checkbox(
-              '선택누적손익 범주', value=True, key=f'leg_grp1_{prefix}'
+          pos_g1 = st.selectbox(
+              '선택누적손익',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g1_{prefix}',
           )
         with cb_c2:
-          leg_grp2 = st.checkbox(
-              '주기별손익 범주', value=True, key=f'leg_grp2_{prefix}'
+          pos_g2 = st.selectbox(
+              '주기별손익',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g2_{prefix}',
           )
         with cb_c3:
-          leg_grp3 = st.checkbox(
-              '주기별수익률 범주', value=True, key=f'leg_grp3_{prefix}'
+          pos_g3 = st.selectbox(
+              '주기별수익률',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g3_{prefix}',
           )
         with cb_c4:
-          leg_grp4 = st.checkbox(
-              '기간누적수익률 범주', value=True, key=f'leg_grp4_{prefix}'
+          pos_g4 = st.selectbox(
+              '기간누적수익률',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g4_{prefix}',
           )
         with cb_c5:
-          leg_grp5 = st.checkbox(
-              '통산누적손익 범주', value=True, key=f'leg_grp5_{prefix}'
+          pos_g5 = st.selectbox(
+              '통산누적손익',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g5_{prefix}',
           )
         with cb_c6:
-          leg_grp6 = st.checkbox(
-              '통산수익률 범주', value=True, key=f'leg_grp6_{prefix}'
+          pos_g6 = st.selectbox(
+              '통산수익률',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g6_{prefix}',
           )
 
+        # 1. 선택구간 누적 평가손익
         fig_sel_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
@@ -1205,25 +1245,26 @@ if menu == '트렌드 리포트':
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
-                  name=f'[누적손익] {grp}',
+                  name=f'{grp}',
                   mode='lines+markers',
                   hovertemplate='%{y:,.0f} 원',
               )
           )
 
+        leg_cfg_g1, show_g1, margin_g1 = build_legend_config(pos_g1)
         fig_sel_p.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp1 else 20, l=10, r=right_margin),
-            showlegend=leg_grp1,
-            legend=current_legend_config,
+            margin=margin_g1,
+            showlegend=show_g1,
+            legend=leg_cfg_g1,
         )
         fig_sel_p.update_xaxes(
             type='category',
@@ -1235,6 +1276,7 @@ if menu == '트렌드 리포트':
             title_text='선택구간 누적손익 (원)', tickformat=',.0f'
         )
 
+        # 2. 주기별 평가손익
         fig_period_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp].dropna(
@@ -1245,13 +1287,15 @@ if menu == '트렌드 리포트':
                   x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
               )
           )
+
+        leg_cfg_g2, show_g2, margin_g2 = build_legend_config(pos_g2)
         fig_period_p.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1259,9 +1303,9 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp2 else 20, l=10, r=right_margin),
-            showlegend=leg_grp2,
-            legend=current_legend_config,
+            margin=margin_g2,
+            showlegend=show_g2,
+            legend=leg_cfg_g2,
         )
         fig_period_p.update_xaxes(
             type='category',
@@ -1271,6 +1315,7 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig_period_p, is_money=True)
         fig_period_p.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
+        # 3. 주기별 수익률
         fig_period_ret = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp].dropna(
@@ -1305,22 +1350,23 @@ if menu == '트렌드 리포트':
               )
           )
 
+        leg_cfg_g3, show_g3, margin_g3 = build_legend_config(pos_g3)
         fig_period_ret.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
                     ' 벤치마크 포함)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp3 else 20, l=10, r=right_margin),
-            showlegend=leg_grp3,
-            legend=current_legend_config,
+            margin=margin_g3,
+            showlegend=show_g3,
+            legend=leg_cfg_g3,
         )
         fig_period_ret.update_xaxes(
             type='category',
@@ -1334,6 +1380,7 @@ if menu == '트렌드 리포트':
             zeroline=True,
         )
 
+        # 4. 누적 수익률 & 손익
         fig_cum_ret = make_subplots(specs=[[{'secondary_y': True}]])
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
@@ -1341,7 +1388,7 @@ if menu == '트렌드 리포트':
               go.Bar(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
-                  name=f'[누적평가손익] {grp}',
+                  name=f'[손익] {grp}',
                   opacity=0.7,
                   hovertemplate='%{y:,.0f} 원',
               ),
@@ -1354,7 +1401,7 @@ if menu == '트렌드 리포트':
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['선택기간 누적 수익률'],
-                  name=f'[누적수익률] {grp}',
+                  name=f'[수익률] {grp}',
                   mode='lines+markers',
                   hovertemplate='%{y:.2f}%',
               ),
@@ -1380,13 +1427,14 @@ if menu == '트렌드 리포트':
               secondary_y=False,
           )
 
+        leg_cfg_g4, show_g4, margin_g4 = build_legend_config(pos_g4)
         fig_cum_ret.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
                     ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1394,9 +1442,9 @@ if menu == '트렌드 리포트':
             barmode='group',
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp4 else 20, l=10, r=right_margin),
-            showlegend=leg_grp4,
-            legend=current_legend_config,
+            margin=margin_g4,
+            showlegend=show_g4,
+            legend=leg_cfg_g4,
         )
         fig_cum_ret.update_xaxes(
             type='category',
@@ -1417,19 +1465,22 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
+        # 5. 통산 누적 평가손익
         fig_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
           fig_p.add_trace(
               go.Bar(x=sub['Chart_Date'], y=sub['평가손익'], name=str(grp))
           )
+
+        leg_cfg_g5, show_g5, margin_g5 = build_legend_config(pos_g5)
         fig_p.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
@@ -1437,9 +1488,9 @@ if menu == '트렌드 리포트':
             barmode='relative',
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp5 else 20, l=10, r=right_margin),
-            showlegend=leg_grp5,
-            legend=current_legend_config,
+            margin=margin_g5,
+            showlegend=show_g5,
+            legend=leg_cfg_g5,
         )
         fig_p.update_xaxes(
             type='category',
@@ -1449,6 +1500,7 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig_p, is_money=True)
         fig_p.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
+        # 6. 통산 수익률
         fig_r = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
@@ -1461,19 +1513,21 @@ if menu == '트렌드 리포트':
                   hovertemplate='%{y:.2f}%',
               )
           )
+
+        leg_cfg_g6, show_g6, margin_g6 = build_legend_config(pos_g6)
         fig_r.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.98,
+                y=0.96,
                 x=0.01,
                 xanchor='left',
                 yanchor='top',
             ),
             hovermode='closest',
             height=500,
-            margin=dict(t=60, b=50 if leg_grp6 else 20, l=10, r=right_margin),
-            showlegend=leg_grp6,
-            legend=current_legend_config,
+            margin=margin_g6,
+            showlegend=show_g6,
+            legend=leg_cfg_g6,
         )
         fig_r.update_xaxes(
             type='category',
@@ -1562,7 +1616,6 @@ if menu == '트렌드 리포트':
           draw_group_summary_charts(df, group_col, prefix)
           st.write('---')
 
-          # 최신 조회일자 기준 총평가금액이 큰 순서(내림차순)대로 정렬
           latest_date = df['Date'].max()
           latest_df = df[df['Date'] == latest_date]
           group_order = (
@@ -1777,18 +1830,15 @@ elif menu == '원금 및 입출금 관리':
     st.subheader('🏦 계좌별 최초 원금 등록/수정')
     conn = get_connection()
 
-    # 포트폴리오 계좌 정보 및 최초 원금 계좌 정보 모두 가져오기
     pf_df = pd.read_sql(
         'SELECT DISTINCT broker, account_num FROM portfolio', conn
     )
     init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
     conn.close()
 
-    # 포트폴리오 및 최초원금 양쪽에 존재하는 전체 계좌 목록 생성
     pf_df['account_num'] = pf_df['account_num'].astype(str)
     init_df['account_num'] = init_df['account_num'].astype(str)
 
-    # Outer Join으로 어느 한쪽에만 있는 계좌도 누락되지 않도록 통합
     merged_init = pd.merge(
         pf_df,
         init_df,
@@ -1797,7 +1847,6 @@ elif menu == '원금 및 입출금 관리':
         suffixes=('', '_init'),
     )
 
-    # broker 컬럼 병합 보완
     if 'broker_init' in merged_init.columns:
       merged_init['broker'] = merged_init['broker'].fillna(
           merged_init['broker_init']
