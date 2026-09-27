@@ -189,27 +189,28 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 
 
 # -----------------------------------------------------------------------------
-# 3. Streamlit 대시보드 메인 설정 및 CSS
+# 3. Streamlit 대시보드 메인 설정 및 CSS (크기 조절 및 반응형 설정)
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
+# 차트 우측 하단 드래그를 통한 리사이즈 및 차트 분리 CSS
 st.markdown(
     """
     <style>
+    /* Streamlit 차트 박스 전체 리사이즈 가능하도록 설정 */
     div[data-testid="stPlotlyChart"] {
         resize: both !important;
         overflow: auto !important;
-        min-height: 400px;
+        min-height: 420px;
         min-width: 300px;
         max-width: 100%;
-        padding: 6px;
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
         background-color: #ffffff;
         display: block !important;
-        clear: both !important;
         position: relative !important;
-        margin-bottom: 12px !important;
+        margin-bottom: 16px !important;
         box-sizing: border-box !important;
     }
     div[data-testid="stPlotlyChart"] > div {
@@ -260,21 +261,24 @@ DEFAULT_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set1
 
 def apply_chart_standard_layout(fig, title_text):
   """
-  공통 차트 레이아웃 설정 함수:
-  1. 범주(Legend)를 차트 바깥 하단으로 이동 (차트와 겹치지 않게 yanchor="top", y=-0.2 지정)
-  2. hovermode="closest" 지정하여 마우스 오버 시 해당 항목 값만 노출
-  3. 차트 제목을 왼쪽(x=0.0)으로 이동 및 상단 여백 확보
+  차트 및 범주 완전 분리 레이아웃 함수:
+  - orientation='h' : 가로형 범주 배치
+  - y=-0.25, yanchor='top' : 차트의 밑면 바깥쪽으로 완전히 분리
+  - margin(b=120) : 하단 여백을 충분히 주어 사이즈 조절 시 범주가 자동으로 하단에 위치하도록 설정
   """
   fig.update_layout(
       showlegend=True,
       legend=dict(
           orientation='h',
           yanchor='top',
-          y=-0.2,  # 차트 바깥 하단 영역으로 이동
+          y=-0.25,  # 차트 바깥 하단으로 범주 이동
           xanchor='center',
           x=0.5,
           itemclick='toggle',
           itemdoubleclick='toggleothers',
+          bgcolor='rgba(255, 255, 255, 0.8)',
+          bordercolor='#e5e7eb',
+          borderwidth=1,
       ),
       hovermode='closest',
       title=dict(
@@ -284,15 +288,14 @@ def apply_chart_standard_layout(fig, title_text):
           y=0.98,
           font=dict(size=15, color='#1f2937'),
       ),
-      margin=dict(
-          t=60, b=100, l=10, r=10
-      ),  # 하단 여백(b=100)을 넓혀 범주와 차트가 겹치지 않도록 함
+      margin=dict(t=50, b=120, l=20, r=20),  # 범주 공간 확보를 위한 하단 여백 설정
+      autosize=True,
   )
 
 
 def render_chart_with_click_event(fig, chart_key, calc_df=None):
   """
-  Plotly 차트 단순 출력 함수 (날짜 클릭 상세 조회 기능 삭제)
+  Plotly 차트 출력 함수
   """
   st.plotly_chart(
       fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
@@ -859,7 +862,7 @@ if menu == '트렌드 리포트':
         apply_chart_standard_layout(
             fig1, f'1. [{title_name}] 자산 및 전체 손익/수익률 추이'
         )
-        fig1.update_layout(barmode='relative', height=380)
+        fig1.update_layout(barmode='relative', height=400)
         fig1.update_xaxes(
             type='category',
             categoryorder='array',
@@ -906,7 +909,7 @@ if menu == '트렌드 리포트':
         )
 
         apply_chart_standard_layout(fig2, f'2. [{title_name}] 구간 손익 금액 추이')
-        fig2.update_layout(height=380)
+        fig2.update_layout(height=400)
         fig2.update_xaxes(
             type='category',
             categoryorder='array',
@@ -952,7 +955,7 @@ if menu == '트렌드 리포트':
             fig3a,
             f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크 비교)',
         )
-        fig3a.update_layout(height=380)
+        fig3a.update_layout(height=400)
         fig3a.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1001,7 +1004,7 @@ if menu == '트렌드 리포트':
         apply_chart_standard_layout(
             fig3b, f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크 비교)'
         )
-        fig3b.update_layout(height=380)
+        fig3b.update_layout(height=400)
         fig3b.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1139,7 +1142,7 @@ if menu == '트렌드 리포트':
         apply_chart_standard_layout(
             fig_sel_p, f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend'
         )
-        fig_sel_p.update_layout(height=380)
+        fig_sel_p.update_layout(height=400)
         fig_sel_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1169,7 +1172,7 @@ if menu == '트렌드 리포트':
             fig_period_p,
             f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적 막대)',
         )
-        fig_period_p.update_layout(barmode='relative', height=380)
+        fig_period_p.update_layout(barmode='relative', height=400)
         fig_period_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1222,7 +1225,7 @@ if menu == '트렌드 리포트':
             f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선, 벤치마크'
             ' 포함)',
         )
-        fig_period_ret.update_layout(height=380)
+        fig_period_ret.update_layout(height=400)
         fig_period_ret.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1293,7 +1296,7 @@ if menu == '트렌드 리포트':
             f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) & 선택기간'
             ' 누적평가 손익 (우측 보조축 그룹 막대)',
         )
-        fig_cum_ret.update_layout(barmode='group', height=380)
+        fig_cum_ret.update_layout(barmode='group', height=400)
         fig_cum_ret.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1330,7 +1333,7 @@ if menu == '트렌드 리포트':
             fig_p,
             f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적 막대)',
         )
-        fig_p.update_layout(barmode='relative', height=380)
+        fig_p.update_layout(barmode='relative', height=400)
         fig_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1357,7 +1360,7 @@ if menu == '트렌드 리포트':
         apply_chart_standard_layout(
             fig_r, f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)'
         )
-        fig_r.update_layout(height=380)
+        fig_r.update_layout(height=400)
         fig_r.update_xaxes(
             type='category',
             categoryorder='array',
