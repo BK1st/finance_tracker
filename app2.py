@@ -195,6 +195,34 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # 3. Streamlit 대시보드 메인
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
+
+# 드래그 조절 가능한 범주 영역 및 차트 리사이즈 CSS 주입
+st.markdown(
+    """
+    <style>
+    /* 차트 및 범주 박스 드래그 리사이즈 스타일 */
+    .resizable-container {
+        resize: both;
+        overflow: auto;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 10px;
+        background-color: #fdfdfd;
+        min-width: 250px;
+        min-height: 80px;
+        margin-bottom: 15px;
+    }
+    .legend-flex-wrapper {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 15px;
+        align-items: center;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
 st.title('📈 자산 평가액 및 수익률 분석 시스템')
 
 menu = st.sidebar.selectbox(
@@ -232,6 +260,14 @@ COMMON_LEGEND_CONFIG = dict(
     entrywidthmode='fraction',
     entrywidth=0.45,
 )
+
+# Plotly 차트 공통 드래그/리사이즈 설정
+PLOTLY_CONFIG = {
+    'responsive': True,
+    'scrollZoom': True,
+    'displayModeBar': True,
+    'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
+}
 
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
@@ -748,32 +784,42 @@ if menu == '트렌드 리포트':
         c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
         c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
 
-        st.markdown(f'##### ⚙️ [{title_name}] 차트별 범주 설정')
-        cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
-        with cb_col1:
-          leg_fig1 = st.checkbox(
-              '차트1 범주 표시',
-              value=True,
-              key=f'leg_f1_{title_name}_{force_single_col}',
+        st.markdown(
+            f'##### ⚙️ [{title_name}] 차트 범주 박스 (우하단 드래그하여'
+            ' 크기 조절 가능)'
+        )
+
+        # 요청사항 2 반영: 드래그 크기 조절 및 항목 자연스러운 이동 배치 (Flex Wrap Container)
+        with st.container():
+          st.markdown(
+              '<div class="resizable-container">', unsafe_allow_html=True
           )
-        with cb_col2:
-          leg_fig2 = st.checkbox(
-              '차트2 범주 표시',
-              value=True,
-              key=f'leg_f2_{title_name}_{force_single_col}',
-          )
-        with cb_col3:
-          leg_fig3a = st.checkbox(
-              '차트3-1 범주 표시',
-              value=True,
-              key=f'leg_f3a_{title_name}_{force_single_col}',
-          )
-        with cb_col4:
-          leg_fig3b = st.checkbox(
-              '차트3-2 범주 표시',
-              value=True,
-              key=f'leg_f3b_{title_name}_{force_single_col}',
-          )
+          cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
+          with cb_col1:
+            leg_fig1 = st.checkbox(
+                '차트1 범주',
+                value=True,
+                key=f'leg_f1_{title_name}_{force_single_col}',
+            )
+          with cb_col2:
+            leg_fig2 = st.checkbox(
+                '차트2 범주',
+                value=True,
+                key=f'leg_f2_{title_name}_{force_single_col}',
+            )
+          with cb_col3:
+            leg_fig3a = st.checkbox(
+                '차트3-1 범주',
+                value=True,
+                key=f'leg_f3a_{title_name}_{force_single_col}',
+            )
+          with cb_col4:
+            leg_fig3b = st.checkbox(
+                '차트3-2 범주',
+                value=True,
+                key=f'leg_f3b_{title_name}_{force_single_col}',
+            )
+          st.markdown('</div>', unsafe_allow_html=True)
 
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
@@ -1029,25 +1075,30 @@ if menu == '트렌드 리포트':
 
         effective_cols = 1 if force_single_col else num_cols
 
+        # 요청사항 1 반영: plotly_chart 시 config=PLOTLY_CONFIG 설정으로 드래그 리사이즈 및 줌 기능 활성화
         if effective_cols == 1:
           st.plotly_chart(
               fig1,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_fig1_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
               fig2,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_fig2_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
               fig3a,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_fig3a_{title_name}_{force_single_col}',
           )
           st.plotly_chart(
               fig3b,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_fig3b_{title_name}_{force_single_col}',
           )
         elif effective_cols == 2:
@@ -1056,12 +1107,14 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig1,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig1_{title_name}_{force_single_col}',
             )
           with col_b:
             st.plotly_chart(
                 fig2,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig2_{title_name}_{force_single_col}',
             )
           col_c, col_d = st.columns(2)
@@ -1069,12 +1122,14 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig3a,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig3a_{title_name}_{force_single_col}',
             )
           with col_d:
             st.plotly_chart(
                 fig3b,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig3b_{title_name}_{force_single_col}',
             )
         else:
@@ -1083,23 +1138,27 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig1,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig1_{title_name}_{force_single_col}',
             )
           with col_b:
             st.plotly_chart(
                 fig2,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig2_{title_name}_{force_single_col}',
             )
           with col_c:
             st.plotly_chart(
                 fig3a,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_fig3a_{title_name}_{force_single_col}',
             )
           st.plotly_chart(
               fig3b,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_fig3b_{title_name}_{force_single_col}',
           )
 
@@ -1153,32 +1212,42 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 설정')
-        cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
-        with cb_c1:
-          leg_grp1 = st.checkbox(
-              '선택누적손익 범주', value=True, key=f'leg_grp1_{prefix}'
+        st.markdown(
+            f'##### ⚙️ [{prefix}] 종합 차트 범주 박스 (우하단 드래그하여 크기'
+            ' 조절 가능)'
+        )
+
+        # 요청사항 2 반영: 범주 컨트롤 박스 드래그 리사이즈 컨테이너
+        with st.container():
+          st.markdown(
+              '<div class="resizable-container">', unsafe_allow_html=True
           )
-        with cb_c2:
-          leg_grp2 = st.checkbox(
-              '주기별손익 범주', value=True, key=f'leg_grp2_{prefix}'
-          )
-        with cb_c3:
-          leg_grp3 = st.checkbox(
-              '주기별수익률 범주', value=True, key=f'leg_grp3_{prefix}'
-          )
-        with cb_c4:
-          leg_grp4 = st.checkbox(
-              '기간누적수익률 범주', value=True, key=f'leg_grp4_{prefix}'
-          )
-        with cb_c5:
-          leg_grp5 = st.checkbox(
-              '통산누적손익 범주', value=True, key=f'leg_grp5_{prefix}'
-          )
-        with cb_c6:
-          leg_grp6 = st.checkbox(
-              '통산수익률 범주', value=True, key=f'leg_grp6_{prefix}'
-          )
+          cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
+          with cb_c1:
+            leg_grp1 = st.checkbox(
+                '선택누적손익', value=True, key=f'leg_grp1_{prefix}'
+            )
+          with cb_c2:
+            leg_grp2 = st.checkbox(
+                '주기별손익', value=True, key=f'leg_grp2_{prefix}'
+            )
+          with cb_c3:
+            leg_grp3 = st.checkbox(
+                '주기별수익률', value=True, key=f'leg_grp3_{prefix}'
+            )
+          with cb_c4:
+            leg_grp4 = st.checkbox(
+                '기간누적수익률', value=True, key=f'leg_grp4_{prefix}'
+            )
+          with cb_c5:
+            leg_grp5 = st.checkbox(
+                '통산누적손익', value=True, key=f'leg_grp5_{prefix}'
+            )
+          with cb_c6:
+            leg_grp6 = st.checkbox(
+                '통산수익률', value=True, key=f'leg_grp6_{prefix}'
+            )
+          st.markdown('</div>', unsafe_allow_html=True)
 
         fig_sel_p = go.Figure()
         for grp in groups:
@@ -1473,28 +1542,38 @@ if menu == '트렌드 리포트':
           st.plotly_chart(
               fig_sel_p,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_grp_sel_p_{prefix}',
           )
           st.plotly_chart(
               fig_period_p,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_grp_period_p_{prefix}',
           )
           st.plotly_chart(
               fig_period_ret,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_grp_period_ret_{prefix}',
           )
           st.plotly_chart(
               fig_cum_ret,
               use_container_width=True,
+              config=PLOTLY_CONFIG,
               key=f'trend_grp_cum_ret_{prefix}',
           )
           st.plotly_chart(
-              fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
+              fig_p,
+              use_container_width=True,
+              config=PLOTLY_CONFIG,
+              key=f'trend_grp_p_{prefix}',
           )
           st.plotly_chart(
-              fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
+              fig_r,
+              use_container_width=True,
+              config=PLOTLY_CONFIG,
+              key=f'trend_grp_r_{prefix}',
           )
         elif num_cols == 2:
           col1, col2 = st.columns(2)
@@ -1502,12 +1581,14 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig_sel_p,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_sel_p_{prefix}',
             )
           with col2:
             st.plotly_chart(
                 fig_period_p,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_period_p_{prefix}',
             )
           col3, col4 = st.columns(2)
@@ -1515,22 +1596,30 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig_period_ret,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_period_ret_{prefix}',
             )
           with col4:
             st.plotly_chart(
                 fig_cum_ret,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_cum_ret_{prefix}',
             )
           col5, col6 = st.columns(2)
           with col5:
             st.plotly_chart(
-                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
+                fig_p,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                key=f'trend_grp_p_{prefix}',
             )
           with col6:
             st.plotly_chart(
-                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
+                fig_r,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                key=f'trend_grp_r_{prefix}',
             )
         else:
           col1, col2, col3 = st.columns(3)
@@ -1538,18 +1627,21 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig_sel_p,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_sel_p_{prefix}',
             )
           with col2:
             st.plotly_chart(
                 fig_period_p,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_period_p_{prefix}',
             )
           with col3:
             st.plotly_chart(
                 fig_period_ret,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_period_ret_{prefix}',
             )
           col4, col5, col6 = st.columns(3)
@@ -1557,15 +1649,22 @@ if menu == '트렌드 리포트':
             st.plotly_chart(
                 fig_cum_ret,
                 use_container_width=True,
+                config=PLOTLY_CONFIG,
                 key=f'trend_grp_cum_ret_{prefix}',
             )
           with col5:
             st.plotly_chart(
-                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
+                fig_p,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                key=f'trend_grp_p_{prefix}',
             )
           with col6:
             st.plotly_chart(
-                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
+                fig_r,
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+                key=f'trend_grp_r_{prefix}',
             )
 
       def render_separate_charts(df, group_col, prefix):
@@ -1784,7 +1883,7 @@ elif menu == '포트폴리오 업로드':
       st.error(f'엑셀 파싱 중 오류가 발생했습니다: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 입출금 관리 (오류가 수정된 파트)
+# 메뉴 4: 원금 및 입출금 관리
 # -----------------------------------------------------------------------------
 elif menu == '원금 및 입출금 관리':
   st.header('💰 원금 및 입출금(Cash Flow) 관리')
@@ -1795,18 +1894,15 @@ elif menu == '원금 및 입출금 관리':
     st.subheader('🏦 계좌별 최초 원금 등록/수정')
     conn = get_connection()
 
-    # 포트폴리오 계좌 정보 및 최초 원금 계좌 정보 모두 가져오기
     pf_df = pd.read_sql(
         'SELECT DISTINCT broker, account_num FROM portfolio', conn
     )
     init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
     conn.close()
 
-    # 포트폴리오 및 최초원금 양쪽에 존재하는 전체 계좌 목록 생성
     pf_df['account_num'] = pf_df['account_num'].astype(str)
     init_df['account_num'] = init_df['account_num'].astype(str)
 
-    # Outer Join으로 어느 한쪽에만 있는 계좌도 누락되지 않도록 통합
     merged_init = pd.merge(
         pf_df,
         init_df,
@@ -1815,7 +1911,6 @@ elif menu == '원금 및 입출금 관리':
         suffixes=('', '_init'),
     )
 
-    # broker 컬럼 병합 보완 (portfolio의 broker가 없으면 initial_principal의 broker 채움)
     if 'broker_init' in merged_init.columns:
       merged_init['broker'] = merged_init['broker'].fillna(
           merged_init['broker_init']
