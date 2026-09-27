@@ -265,9 +265,16 @@ if menu == '트렌드 리포트':
           else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
       )
       acc_type_str = (
-          row['account_type'] if pd.notna(row['account_type']) else '미지정'
+          row['account_type']
+          if ('account_type' in row and pd.notna(row['account_type']))
+          else '미지정'
       )
-      label = f"{row['broker']} | {display_alias} [{acc_type_str}]"
+      broker_str = (
+          row['broker']
+          if ('broker' in row and pd.notna(row['broker']))
+          else '증권사미지정'
+      )
+      label = f'{broker_str} | {display_alias} [{acc_type_str}]'
       acc_options.append(label)
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
@@ -447,12 +454,17 @@ if menu == '트렌드 리포트':
               filtered_pf_df['account_num'].astype(str) == acc
           ]
           broker_name = (
-              acc_meta['broker'].iloc[0] if not acc_meta.empty else '미지정'
+              acc_meta['broker'].iloc[0]
+              if (not acc_meta.empty and 'broker' in acc_meta.columns)
+              else '미지정'
           )
           acc_type = (
               acc_meta['account_type'].iloc[0]
-              if not acc_meta.empty
-              and pd.notna(acc_meta['account_type'].iloc[0])
+              if (
+                  not acc_meta.empty
+                  and 'account_type' in acc_meta.columns
+                  and pd.notna(acc_meta['account_type'].iloc[0])
+              )
               else '미지정'
           )
 
@@ -514,25 +526,35 @@ if menu == '트렌드 리포트':
               item_eval_list = []
 
               for _, row in current_pf.iterrows():
-                fmt_tk = format_ticker(row['ticker'])
-                qty = row['quantity'] if pd.notna(row['quantity']) else 0
-                curr = row['currency']
+                fmt_tk = format_ticker(row.get('ticker'))
+                qty = (
+                    row['quantity']
+                    if ('quantity' in row and pd.notna(row['quantity']))
+                    else 0
+                )
+                curr = row.get('currency', 'KRW')
                 base_price = (
                     row['current_price']
-                    if 'current_price' in row and pd.notna(row['current_price'])
+                    if ('current_price' in row and pd.notna(row['current_price']))
                     else 0
                 )
 
                 item_name = (
                     row['item_name']
-                    if pd.notna(row['item_name'])
-                    and str(row['item_name']).strip() != ''
+                    if (
+                        'item_name' in row
+                        and pd.notna(row['item_name'])
+                        and str(row['item_name']).strip() != ''
+                    )
                     else '미지정종목'
                 )
                 cat4 = (
                     row['category4']
-                    if pd.notna(row['category4'])
-                    and str(row['category4']).strip() != ''
+                    if (
+                        'category4' in row
+                        and pd.notna(row['category4'])
+                        and str(row['category4']).strip() != ''
+                    )
                     else '미지정'
                 )
 
@@ -1639,7 +1661,7 @@ elif menu == '계좌 별칭 관리':
     pf_df['account_num'] = pf_df['account_num'].astype(str)
     alias_df['account_num'] = alias_df['account_num'].astype(str)
     merged_df = pd.merge(pf_df, alias_df, on='account_num', how='left').fillna(
-        {'alias': ''}
+        {'alias': '', 'broker': '증권사미지정'}
     )
 
     st.subheader('계좌 별칭 입력 / 수정')
@@ -1649,7 +1671,7 @@ elif menu == '계좌 별칭 관리':
         acc_str = str(row['account_num'])
         col1, col2, col3 = st.columns([2, 3, 3])
         with col1:
-          st.write(f"**{row['broker']}**")
+          st.write(f"**{row.get('broker', '증권사미지정')}**")
         with col2:
           st.write(f'`{acc_str}`')
         with col3:
@@ -1762,7 +1784,7 @@ elif menu == '포트폴리오 업로드':
       st.error(f'엑셀 파싱 중 오류가 발생했습니다: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 입출금 관리
+# 메뉴 4: 원금 및 입출금 관리 (오류가 수정된 파트)
 # -----------------------------------------------------------------------------
 elif menu == '원금 및 입출금 관리':
   st.header('💰 원금 및 입출금(Cash Flow) 관리')
@@ -1772,28 +1794,48 @@ elif menu == '원금 및 입출금 관리':
   with tab1:
     st.subheader('🏦 계좌별 최초 원금 등록/수정')
     conn = get_connection()
+
+    # 포트폴리오 계좌 정보 및 최초 원금 계좌 정보 모두 가져오기
     pf_df = pd.read_sql(
         'SELECT DISTINCT broker, account_num FROM portfolio', conn
     )
     init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
     conn.close()
 
-    if pf_df.empty:
-      st.info('포트폴리오가 먼저 등록되어야 계좌 목록을 조회할 수 있습니다.')
-    else:
-      pf_df['account_num'] = pf_df['account_num'].astype(str)
-      init_df['account_num'] = init_df['account_num'].astype(str)
-      merged_init = pd.merge(
-          pf_df, init_df, on='account_num', how='left'
-      ).fillna({'initial_amount': 0.0})
+    # 포트폴리오 및 최초원금 양쪽에 존재하는 전체 계좌 목록 생성
+    pf_df['account_num'] = pf_df['account_num'].astype(str)
+    init_df['account_num'] = init_df['account_num'].astype(str)
 
+    # Outer Join으로 어느 한쪽에만 있는 계좌도 누락되지 않도록 통합
+    merged_init = pd.merge(
+        pf_df,
+        init_df,
+        on='account_num',
+        how='outer',
+        suffixes=('', '_init'),
+    )
+
+    # broker 컬럼 병합 보완 (portfolio의 broker가 없으면 initial_principal의 broker 채움)
+    if 'broker_init' in merged_init.columns:
+      merged_init['broker'] = merged_init['broker'].fillna(
+          merged_init['broker_init']
+      )
+      merged_init.drop(columns=['broker_init'], inplace=True)
+
+    merged_init['broker'] = merged_init['broker'].fillna('증권사미지정')
+    merged_init['initial_amount'] = merged_init['initial_amount'].fillna(0.0)
+
+    if merged_init.empty:
+      st.info('등록된 계좌 정보가 없습니다.')
+    else:
       with st.form('init_principal_form'):
         input_amounts = {}
         for idx, row in merged_init.iterrows():
           acc_str = str(row['account_num'])
+          broker_str = row.get('broker', '증권사미지정')
           alias_val = alias_map.get(acc_str, '')
           disp_name = (
-              f"{row['broker']} |"
+              f"{broker_str} |"
               f" {alias_val if alias_val else '별칭미지정'} ({acc_str})"
           )
 
@@ -1807,7 +1849,7 @@ elif menu == '원금 및 입출금 관리':
                 step=1000000.0,
                 key=f'init_val_{acc_str}',
             )
-            input_amounts[acc_str] = (row['broker'], val)
+            input_amounts[acc_str] = (broker_str, val)
 
         save_init_btn = st.form_submit_button('💾 최초 원금 저장')
 
@@ -1848,9 +1890,10 @@ elif menu == '원금 및 입출금 관리':
       acc_dict = {}
       for _, row in pf_df.iterrows():
         acc_str = str(row['account_num'])
+        broker_str = row.get('broker', '증권사미지정')
         alias_val = alias_map.get(acc_str, '')
         label = (
-            f"{row['broker']} | {alias_val if alias_val else '별칭미지정'}"
+            f"{broker_str} | {alias_val if alias_val else '별칭미지정'}"
             f' ({acc_str})'
         )
         acc_dict[label] = acc_str
@@ -1930,7 +1973,7 @@ elif menu == '원금 및 입출금 관리':
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 (최신 시세 반영 수정 적용)
+# 메뉴 5: 등록 데이터 조회
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회':
   st.header('🔍 DB에 등록된 데이터 조회 및 관리')
@@ -1955,7 +1998,6 @@ elif menu == '등록 데이터 조회':
     else:
       st.write(f'총 **{len(pf_df)}** 건의 포트폴리오 데이터가 존재합니다.')
 
-      # 실시간 시세 및 평가금액 계산 추가
       with st.spinner('최신 시세를 수집하는 중입니다...'):
         unique_tickers = pf_df['ticker'].dropna().unique().tolist()
         s_date = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
@@ -1970,11 +2012,17 @@ elif menu == '등록 데이터 조회':
         latest_evals = []
 
         for _, row in pf_df.iterrows():
-          fmt_tk = format_ticker(row['ticker'])
-          qty = row['quantity'] if pd.notna(row['quantity']) else 0
-          curr = row['currency']
+          fmt_tk = format_ticker(row.get('ticker'))
+          qty = (
+              row['quantity']
+              if ('quantity' in row and pd.notna(row['quantity']))
+              else 0
+          )
+          curr = row.get('currency', 'KRW')
           base_price = (
-              row['current_price'] if pd.notna(row['current_price']) else 0
+              row['current_price']
+              if ('current_price' in row and pd.notna(row['current_price']))
+              else 0
           )
 
           price = None
@@ -1997,7 +2045,6 @@ elif menu == '등록 데이터 조회':
         view_pf_df['최신_현재가(yfinance)'] = latest_prices
         view_pf_df['최신_평가금액(원)'] = latest_evals
 
-        # 열 순서 재배치 (기존 current_price 바로 뒤에 배치)
         cols = list(view_pf_df.columns)
         if 'current_price' in cols:
           cp_idx = cols.index('current_price')
