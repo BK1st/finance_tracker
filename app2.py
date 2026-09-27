@@ -193,15 +193,13 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
-# 차트 컨테이너 및 커스텀 범주(Legend) CSS (상하좌우 크기조절 & 레이아웃 겹침 방지)
 st.markdown(
     """
     <style>
-    /* 1) 차트 영역: 상하좌우(both) 리사이즈 지원 및 하단 요소 자동 밀림 */
     div[data-testid="stPlotlyChart"] {
         resize: both !important;
         overflow: auto !important;
-        min-height: 380px;
+        min-height: 400px;
         min-width: 300px;
         max-width: 100%;
         padding: 6px;
@@ -214,61 +212,9 @@ st.markdown(
         margin-bottom: 12px !important;
         box-sizing: border-box !important;
     }
-    
     div[data-testid="stPlotlyChart"] > div {
         height: 100% !important;
         width: 100% !important;
-    }
-    
-    /* 2) 커스텀 범주(Legend) 박스: 상하좌우 리사이즈 및 가로 배치 */
-    .custom-legend-box {
-        resize: both !important;
-        overflow: auto !important;
-        clear: both !important;
-        display: flex !important;
-        flex-wrap: wrap !important;
-        align-items: center !important;
-        gap: 6px 12px;
-        min-height: 45px;
-        min-width: 280px;
-        max-width: 100%;
-        margin-top: 8px !important;
-        margin-bottom: 24px !important;
-        padding: 10px 14px;
-        border: 1px solid #d1d5db;
-        border-radius: 6px;
-        background-color: #f8fafc;
-        box-sizing: border-box !important;
-        position: relative !important;
-        z-index: 10 !important;
-    }
-    
-    .legend-item {
-        display: inline-flex;
-        align-items: center;
-        font-size: 12.5px;
-        font-weight: 500;
-        color: #1f2937;
-        cursor: pointer;
-        user-select: none;
-        white-space: nowrap;
-        padding: 3px 8px;
-        border-radius: 4px;
-        background-color: #ffffff;
-        border: 1px solid #e5e7eb;
-        transition: all 0.15s ease;
-    }
-    .legend-item:hover {
-        background-color: #f3f4f6;
-        border-color: #d1d5db;
-    }
-    .legend-color-chip {
-        width: 12px;
-        height: 12px;
-        border-radius: 3px;
-        margin-right: 6px;
-        display: inline-block;
-        flex-shrink: 0;
     }
     </style>
 """,
@@ -309,63 +255,82 @@ PLOTLY_CONFIG = {
     'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
 }
 
-# 기본 스마트 시각화 색상 팔레트 (색상 미지정 시 순차 부여)
 DEFAULT_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set1
 
 
-def get_trace_color(trace, idx):
-  """트레이스에서 명시된 색상을 추출하고, 없으면 팔레트 순차 색상 반환"""
-  color = None
-  if hasattr(trace, 'marker') and trace.marker and trace.marker.color:
-    color = trace.marker.color
-  elif hasattr(trace, 'line') and trace.line and trace.line.color:
-    color = trace.line.color
-
-  if isinstance(color, (list, tuple, np.ndarray)):
-    color = color[0] if len(color) > 0 else None
-
-  if not color or not isinstance(color, str) or color.startswith('rgb(0,0,0)'):
-    color = DEFAULT_PALETTE[idx % len(DEFAULT_PALETTE)]
-
-  return color
-
-
-def render_chart_with_custom_legend(fig, chart_key):
-  """Plotly 차트 출력 및 색상 상충 없는 커스텀 스마트 범주(Legend) 렌더링"""
-  fig.update_layout(showlegend=False)
-
-  # 차트 시각화
-  st.plotly_chart(
-      fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
+def apply_chart_standard_layout(fig, title_text):
+  """
+  요구사항 1, 2, 3 번 반영 공통 함수:
+  1. 범주 클릭/더블클릭 토글 동작 활성화 및 표준 Plotly 범주 노출
+  2. hovermode="closest" 지정하여 마우스 오버 시 해당 항목 값만 노출
+  3. 차트 제목을 왼쪽(x=0.0)으로 이동하고 Toolbar와 겹치지 않게 상단 여백 확보
+  """
+  fig.update_layout(
+      showlegend=True,
+      legend=dict(
+          orientation='h',
+          yanchor='bottom',
+          y=-0.25,
+          xanchor='center',
+          x=0.5,
+          itemclick='toggle',  # 1. 단일 클릭 시 항목 숨기기/보이기
+          itemdoubleclick='toggleothers',  # 1. 더블 클릭 시 선택 항목만/전체 보이기
+      ),
+      hovermode='closest',  # 2. 마우스 올려놓은 '해당 항목'의 값만 표시
+      title=dict(
+          text=title_text,
+          x=0.0,  # 3. 차트 제목 왼쪽으로 이동
+          xanchor='left',
+          y=0.98,
+          font=dict(size=15, color='#1f2937'),
+      ),
+      margin=dict(t=60, b=50, l=10, r=10),  # 3. 차트 기능 BAR와 겹치지 않도록 여백 확보
   )
 
-  # 커스텀 범주 아이템 생성
-  legend_items_html = []
-  for idx, trace in enumerate(fig.data):
-    name = trace.name if trace.name else f'항목 {idx+1}'
-    color = get_trace_color(trace, idx)
 
-    item_html = (
-        f'<div class="legend-item" onclick="'
-        f'var leg = this.closest(\'.custom-legend-box\');'
-        f'var el = leg ? (leg.parentElement.previousElementSibling || leg.previousElementSibling) : null;'
-        f'var chart = el ? (el.querySelector(\'div[data-testid="stPlotlyChart"]\') || el) : document.querySelector(\'div[data-testid="stPlotlyChart"]\');'
-        f'if(!chart || !chart.data) chart = document.querySelectorAll(\'div[data-testid="stPlotlyChart"]\')[0];'
-        f'if(chart && window.Plotly) {{'
-        f'  Plotly.restyle(chart, {{visible: this.style.opacity === \'0.4\' ? true : \'legendonly\'}}, [{idx}]);'
-        f'  this.style.opacity = this.style.opacity === \'0.4\' ? \'1\' : \'0.4\';'
-        f'}}">'
-        f'<span class="legend-color-chip" style="background-color: {color};"></span>'
-        f'<span>{name}</span>'
-        f'</div>'
-    )
-    legend_items_html.append(item_html)
-
-  # 독립 조절 가능 범주 박스 출력
-  legend_container_html = (
-      f'<div class="custom-legend-box">{"".join(legend_items_html)}</div>'
+def render_chart_with_click_event(fig, chart_key, calc_df=None):
+  """
+  Plotly 차트 출력 및 날짜 클릭 시 해당 일자의 전체 값 출력 (요구사항 4번 반영)
+  """
+  # selection_mode="points" 설정으로 클릭 이벤트 감지
+  event_data = st.plotly_chart(
+      fig,
+      use_container_width=True,
+      config=PLOTLY_CONFIG,
+      key=chart_key,
+      on_select='rerun',
+      selection_mode='points',
   )
-  st.markdown(legend_container_html, unsafe_allow_html=True)
+
+  # 4. 차트에서 날짜를 클릭하면 해당 날짜 데이터 표시
+  if (
+      event_data
+      and 'selection' in event_data
+      and event_data['selection']['points']
+  ):
+    point = event_data['selection']['points'][0]
+    clicked_date = point.get('x')
+
+    if clicked_date and calc_df is not None and not calc_df.empty:
+      st.info(f'📅 **선택한 날짜: {clicked_date}** 상세 내역')
+      day_df = calc_df[calc_df['Date'] == clicked_date]
+      if not day_df.empty:
+        st.dataframe(
+            day_df[
+                [
+                    'Date',
+                    'broker',
+                    'account_num',
+                    'account_type',
+                    'category4',
+                    'item_name',
+                    '원금',
+                    '평가손익',
+                    '총평가금액',
+                ]
+            ],
+            use_container_width=True,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -883,6 +848,7 @@ if menu == '트렌드 리포트':
                 name='원금',
                 marker_color='#2b5c8f',
                 opacity=0.6,
+                hovertemplate='%{y:,.0f} 원',
             ),
             secondary_y=False,
         )
@@ -893,6 +859,7 @@ if menu == '트렌드 리포트':
                 name='전체 누적 평가손익',
                 marker_color='#e05d5d',
                 opacity=0.5,
+                hovertemplate='%{y:,.0f} 원',
             ),
             secondary_y=False,
         )
@@ -906,6 +873,7 @@ if menu == '트렌드 리포트':
                 marker=dict(size=6, color='#ff9900'),
                 text=[f'{v:,.0f}' for v in sub_df['총평가금액']],
                 textposition='top center',
+                hovertemplate='%{y:,.0f} 원',
             ),
             secondary_y=False,
         )
@@ -922,19 +890,10 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
-        fig1.update_layout(
-            title=dict(
-                text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            barmode='relative',
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig1, f'1. [{title_name}] 자산 및 전체 손익/수익률 추이'
         )
+        fig1.update_layout(barmode='relative', height=380)
         fig1.update_xaxes(
             type='category',
             categoryorder='array',
@@ -965,6 +924,7 @@ if menu == '트렌드 리포트':
                 name='주기별 평가손익',
                 marker_color=period_colors,
                 opacity=0.85,
+                hovertemplate='%{y:,.0f} 원',
             )
         )
         fig2.add_trace(
@@ -975,21 +935,12 @@ if menu == '트렌드 리포트':
                 mode='lines+markers',
                 line=dict(color='#9467bd', width=2.5),
                 marker=dict(size=5, color='#9467bd'),
+                hovertemplate='%{y:,.0f} 원',
             )
         )
 
-        fig2.update_layout(
-            title=dict(
-                text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
-        )
+        apply_chart_standard_layout(fig2, f'2. [{title_name}] 구간 손익 금액 추이')
+        fig2.update_layout(height=380)
         fig2.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1031,21 +982,11 @@ if menu == '트렌드 리포트':
               )
           )
 
-        fig3a.update_layout(
-            title=dict(
-                text=(
-                    f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
-                    ' 비교)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig3a,
+            f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크 비교)',
         )
+        fig3a.update_layout(height=380)
         fig3a.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1091,21 +1032,10 @@ if menu == '트렌드 리포트':
               )
           )
 
-        fig3b.update_layout(
-            title=dict(
-                text=(
-                    f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
-                    ' 비교)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig3b, f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크 비교)'
         )
+        fig3b.update_layout(height=380)
         fig3b.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1121,53 +1051,53 @@ if menu == '트렌드 리포트':
         effective_cols = 1 if force_single_col else num_cols
 
         if effective_cols == 1:
-          render_chart_with_custom_legend(
-              fig1, f'trend_fig1_{title_name}_{force_single_col}'
+          render_chart_with_click_event(
+              fig1, f'trend_fig1_{title_name}_{force_single_col}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig2, f'trend_fig2_{title_name}_{force_single_col}'
+          render_chart_with_click_event(
+              fig2, f'trend_fig2_{title_name}_{force_single_col}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
+          render_chart_with_click_event(
+              fig3a, f'trend_fig3a_{title_name}_{force_single_col}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
+          render_chart_with_click_event(
+              fig3b, f'trend_fig3b_{title_name}_{force_single_col}', calc_df
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
-            render_chart_with_custom_legend(
-                fig1, f'trend_fig1_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig1, f'trend_fig1_{title_name}_{force_single_col}', calc_df
             )
           with col_b:
-            render_chart_with_custom_legend(
-                fig2, f'trend_fig2_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig2, f'trend_fig2_{title_name}_{force_single_col}', calc_df
             )
           col_c, col_d = st.columns(2)
           with col_c:
-            render_chart_with_custom_legend(
-                fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig3a, f'trend_fig3a_{title_name}_{force_single_col}', calc_df
             )
           with col_d:
-            render_chart_with_custom_legend(
-                fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig3b, f'trend_fig3b_{title_name}_{force_single_col}', calc_df
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
-            render_chart_with_custom_legend(
-                fig1, f'trend_fig1_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig1, f'trend_fig1_{title_name}_{force_single_col}', calc_df
             )
           with col_b:
-            render_chart_with_custom_legend(
-                fig2, f'trend_fig2_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig2, f'trend_fig2_{title_name}_{force_single_col}', calc_df
             )
           with col_c:
-            render_chart_with_custom_legend(
-                fig3a, f'trend_fig3a_{title_name}_{force_single_col}'
+            render_chart_with_click_event(
+                fig3a, f'trend_fig3a_{title_name}_{force_single_col}', calc_df
             )
-          render_chart_with_custom_legend(
-              fig3b, f'trend_fig3b_{title_name}_{force_single_col}'
+          render_chart_with_click_event(
+              fig3b, f'trend_fig3b_{title_name}_{force_single_col}', calc_df
           )
 
         return sub_df
@@ -1219,7 +1149,6 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        # 범주별 색상 사전 매핑 (검정색 단일화 방지)
         group_color_map = {
             grp: DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
             for i, grp in enumerate(groups)
@@ -1233,7 +1162,7 @@ if menu == '트렌드 리포트':
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
-                  name=f'[누적손익] {grp}',
+                  name=f'{grp}',
                   mode='lines+markers',
                   line=dict(color=c, width=2),
                   marker=dict(size=5, color=c),
@@ -1241,18 +1170,10 @@ if menu == '트렌드 리포트':
               )
           )
 
-        fig_sel_p.update_layout(
-            title=dict(
-                text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_sel_p, f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend'
         )
+        fig_sel_p.update_layout(height=380)
         fig_sel_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1275,24 +1196,14 @@ if menu == '트렌드 리포트':
                   y=sub['주기별 평가손익'],
                   name=str(grp),
                   marker_color=c,
+                  hovertemplate='%{y:,.0f} 원',
               )
           )
-        fig_period_p.update_layout(
-            title=dict(
-                text=(
-                    f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
-                    ' 막대)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            barmode='relative',
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_period_p,
+            f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적 막대)',
         )
+        fig_period_p.update_layout(barmode='relative', height=380)
         fig_period_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1340,21 +1251,12 @@ if menu == '트렌드 리포트':
               )
           )
 
-        fig_period_ret.update_layout(
-            title=dict(
-                text=(
-                    f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
-                    ' 벤치마크 포함)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_period_ret,
+            f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선, 벤치마크'
+            ' 포함)',
         )
+        fig_period_ret.update_layout(height=380)
         fig_period_ret.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1375,7 +1277,7 @@ if menu == '트렌드 리포트':
               go.Bar(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
-                  name=f'[누적평가손익] {grp}',
+                  name=f'[누적손익] {grp}',
                   marker_color=c,
                   opacity=0.6,
                   hovertemplate='%{y:,.0f} 원',
@@ -1420,22 +1322,12 @@ if menu == '트렌드 리포트':
               secondary_y=False,
           )
 
-        fig_cum_ret.update_layout(
-            title=dict(
-                text=(
-                    f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
-                    ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            barmode='group',
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_cum_ret,
+            f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) & 선택기간'
+            ' 누적평가 손익 (우측 보조축 그룹 막대)',
         )
+        fig_cum_ret.update_layout(barmode='group', height=380)
         fig_cum_ret.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1465,24 +1357,14 @@ if menu == '트렌드 리포트':
                   y=sub['평가손익'],
                   name=str(grp),
                   marker_color=c,
+                  hovertemplate='%{y:,.0f} 원',
               )
           )
-        fig_p.update_layout(
-            title=dict(
-                text=(
-                    f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
-                    ' 막대)'
-                ),
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            barmode='relative',
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_p,
+            f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적 막대)',
         )
+        fig_p.update_layout(barmode='relative', height=380)
         fig_p.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1506,18 +1388,10 @@ if menu == '트렌드 리포트':
                   hovertemplate='%{y:.2f}%',
               )
           )
-        fig_r.update_layout(
-            title=dict(
-                text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.96,
-                x=0.5,
-                xanchor='center',
-                yanchor='top',
-            ),
-            hovermode='x unified',
-            height=380,
-            margin=dict(t=50, b=30, l=10, r=10),
+        apply_chart_standard_layout(
+            fig_r, f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)'
         )
+        fig_r.update_layout(height=380)
         fig_r.update_xaxes(
             type='category',
             categoryorder='array',
@@ -1531,67 +1405,79 @@ if menu == '트렌드 리포트':
         )
 
         if num_cols == 1:
-          render_chart_with_custom_legend(
-              fig_sel_p, f'trend_grp_sel_p_{prefix}'
+          render_chart_with_click_event(
+              fig_sel_p, f'trend_grp_sel_p_{prefix}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig_period_p, f'trend_grp_period_p_{prefix}'
+          render_chart_with_click_event(
+              fig_period_p, f'trend_grp_period_p_{prefix}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig_period_ret, f'trend_grp_period_ret_{prefix}'
+          render_chart_with_click_event(
+              fig_period_ret, f'trend_grp_period_ret_{prefix}', calc_df
           )
-          render_chart_with_custom_legend(
-              fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
+          render_chart_with_click_event(
+              fig_cum_ret, f'trend_grp_cum_ret_{prefix}', calc_df
           )
-          render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
-          render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
+          render_chart_with_click_event(
+              fig_p, f'trend_grp_p_{prefix}', calc_df
+          )
+          render_chart_with_click_event(
+              fig_r, f'trend_grp_r_{prefix}', calc_df
+          )
         elif num_cols == 2:
           col1, col2 = st.columns(2)
           with col1:
-            render_chart_with_custom_legend(
-                fig_sel_p, f'trend_grp_sel_p_{prefix}'
+            render_chart_with_click_event(
+                fig_sel_p, f'trend_grp_sel_p_{prefix}', calc_df
             )
           with col2:
-            render_chart_with_custom_legend(
-                fig_period_p, f'trend_grp_period_p_{prefix}'
+            render_chart_with_click_event(
+                fig_period_p, f'trend_grp_period_p_{prefix}', calc_df
             )
           col3, col4 = st.columns(2)
           with col3:
-            render_chart_with_custom_legend(
-                fig_period_ret, f'trend_grp_period_ret_{prefix}'
+            render_chart_with_click_event(
+                fig_period_ret, f'trend_grp_period_ret_{prefix}', calc_df
             )
           with col4:
-            render_chart_with_custom_legend(
-                fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
+            render_chart_with_click_event(
+                fig_cum_ret, f'trend_grp_cum_ret_{prefix}', calc_df
             )
           col5, col6 = st.columns(2)
           with col5:
-            render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
+            render_chart_with_click_event(
+                fig_p, f'trend_grp_p_{prefix}', calc_df
+            )
           with col6:
-            render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
+            render_chart_with_click_event(
+                fig_r, f'trend_grp_r_{prefix}', calc_df
+            )
         else:
           col1, col2, col3 = st.columns(3)
           with col1:
-            render_chart_with_custom_legend(
-                fig_sel_p, f'trend_grp_sel_p_{prefix}'
+            render_chart_with_click_event(
+                fig_sel_p, f'trend_grp_sel_p_{prefix}', calc_df
             )
           with col2:
-            render_chart_with_custom_legend(
-                fig_period_p, f'trend_grp_period_p_{prefix}'
+            render_chart_with_click_event(
+                fig_period_p, f'trend_grp_period_p_{prefix}', calc_df
             )
           with col3:
-            render_chart_with_custom_legend(
-                fig_period_ret, f'trend_grp_period_ret_{prefix}'
+            render_chart_with_click_event(
+                fig_period_ret, f'trend_grp_period_ret_{prefix}', calc_df
             )
           col4, col5, col6 = st.columns(3)
           with col4:
-            render_chart_with_custom_legend(
-                fig_cum_ret, f'trend_grp_cum_ret_{prefix}'
+            render_chart_with_click_event(
+                fig_cum_ret, f'trend_grp_cum_ret_{prefix}', calc_df
             )
           with col5:
-            render_chart_with_custom_legend(fig_p, f'trend_grp_p_{prefix}')
+            render_chart_with_click_event(
+                fig_p, f'trend_grp_p_{prefix}', calc_df
+            )
           with col6:
-            render_chart_with_custom_legend(fig_r, f'trend_grp_r_{prefix}')
+            render_chart_with_click_event(
+                fig_r, f'trend_grp_r_{prefix}', calc_df
+            )
 
       def render_separate_charts(df, group_col, prefix):
         if group_col is None:
