@@ -260,77 +260,43 @@ DEFAULT_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set1
 
 def apply_chart_standard_layout(fig, title_text):
   """
-  요구사항 1, 2, 3 번 반영 공통 함수:
-  1. 범주 클릭/더블클릭 토글 동작 활성화 및 표준 Plotly 범주 노출
+  공통 차트 레이아웃 설정 함수:
+  1. 범주(Legend)를 차트 바깥 하단으로 이동 (차트와 겹치지 않게 yanchor="top", y=-0.2 지정)
   2. hovermode="closest" 지정하여 마우스 오버 시 해당 항목 값만 노출
-  3. 차트 제목을 왼쪽(x=0.0)으로 이동하고 Toolbar와 겹치지 않게 상단 여백 확보
+  3. 차트 제목을 왼쪽(x=0.0)으로 이동 및 상단 여백 확보
   """
   fig.update_layout(
       showlegend=True,
       legend=dict(
           orientation='h',
-          yanchor='bottom',
-          y=-0.25,
+          yanchor='top',
+          y=-0.2,  # 차트 바깥 하단 영역으로 이동
           xanchor='center',
           x=0.5,
-          itemclick='toggle',  # 1. 단일 클릭 시 항목 숨기기/보이기
-          itemdoubleclick='toggleothers',  # 1. 더블 클릭 시 선택 항목만/전체 보이기
+          itemclick='toggle',
+          itemdoubleclick='toggleothers',
       ),
-      hovermode='closest',  # 2. 마우스 올려놓은 '해당 항목'의 값만 표시
+      hovermode='closest',
       title=dict(
           text=title_text,
-          x=0.0,  # 3. 차트 제목 왼쪽으로 이동
+          x=0.0,
           xanchor='left',
           y=0.98,
           font=dict(size=15, color='#1f2937'),
       ),
-      margin=dict(t=60, b=50, l=10, r=10),  # 3. 차트 기능 BAR와 겹치지 않도록 여백 확보
+      margin=dict(
+          t=60, b=100, l=10, r=10
+      ),  # 하단 여백(b=100)을 넓혀 범주와 차트가 겹치지 않도록 함
   )
 
 
 def render_chart_with_click_event(fig, chart_key, calc_df=None):
   """
-  Plotly 차트 출력 및 날짜 클릭 시 해당 일자의 전체 값 출력 (요구사항 4번 반영)
+  Plotly 차트 단순 출력 함수 (날짜 클릭 상세 조회 기능 삭제)
   """
-  # selection_mode="points" 설정으로 클릭 이벤트 감지
-  event_data = st.plotly_chart(
-      fig,
-      use_container_width=True,
-      config=PLOTLY_CONFIG,
-      key=chart_key,
-      on_select='rerun',
-      selection_mode='points',
+  st.plotly_chart(
+      fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
   )
-
-  # 4. 차트에서 날짜를 클릭하면 해당 날짜 데이터 표시
-  if (
-      event_data
-      and 'selection' in event_data
-      and event_data['selection']['points']
-  ):
-    point = event_data['selection']['points'][0]
-    clicked_date = point.get('x')
-
-    if clicked_date and calc_df is not None and not calc_df.empty:
-      st.info(f'📅 **선택한 날짜: {clicked_date}** 상세 내역')
-      day_df = calc_df[calc_df['Date'] == clicked_date]
-      if not day_df.empty:
-        st.dataframe(
-            day_df[
-                [
-                    'Date',
-                    'broker',
-                    'account_num',
-                    'account_type',
-                    'category4',
-                    'item_name',
-                    '원금',
-                    '평가손익',
-                    '총평가금액',
-                ]
-            ],
-            use_container_width=True,
-        )
 
 
 # -----------------------------------------------------------------------------
