@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import urllib.request
 from datetime import datetime, timedelta
@@ -16,6 +17,113 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"  # 모바일 화면을 위해 사이드바 기본 닫힘
 )
+
+# ---------------------------------------------------------
+# DB 및 백업 설정
+# ---------------------------------------------------------
+DB_FILE = "stock_data.db"
+BACKUP_FILE = "portfolio_backup.json"
+
+
+def get_connection():
+    return sqlite3.connect(DB_FILE)
+
+
+def export_backup_json():
+    """DB 내의 데이터를 JSON 백업 파일로 자동 저장"""
+    try:
+        conn = get_connection()
+        df = pd.read_sql("""
+            SELECT record_date, broker, account_num, account_type, item_name, ticker,
+                   category1, category2, category3, category4, buy_price, quantity,
+                   current_price, currency, exchange_rate
+            FROM portfolio
+        """, conn)
+        conn.close()
+        
+        records = df.to_dict(orient="records")
+        json_bytes = json.dumps(records, ensure_ascii=False, indent=2)
+        with open(BACKUP_FILE, "w", encoding="utf-8") as f:
+            f.write(json_bytes)
+        return json_bytes
+    except Exception as e:
+        return None
+
+
+def import_backup_json(json_content, replace=True):
+    """JSON 백업 데이터를 DB로 복원"""
+    try:
+        if isinstance(json_content, bytes):
+            json_content = json_content.decode("utf-8")
+        data = json.loads(json_content)
+        if not data:
+            return 0
+        df = pd.DataFrame(data)
+        required_cols = [
+            "record_date", "broker", "account_num", "account_type", "item_name",
+            "ticker", "category1", "category2", "category3", "category4",
+            "buy_price", "quantity", "current_price", "currency", "exchange_rate"
+        ]
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = None
+        df["currency"] = df["currency"].fillna("KRW")
+        df["exchange_rate"] = df["exchange_rate"].fillna(1.0)
+        
+        conn = get_connection()
+        cursor = conn.cursor()
+        if replace:
+            cursor.execute("DELETE FROM portfolio")
+        
+        df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+        conn.commit()
+        conn.close()
+        
+        export_backup_json()
+        return len(df)
+    except Exception as e:
+        return 0
+
+
+def init_db():
+    """DB 초기화 및 비활성화 후 서버 재부팅 시 자동 데이터 복구"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS portfolio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_date TEXT,
+            broker TEXT,
+            account_num TEXT,
+            account_type TEXT,
+            item_name TEXT,
+            ticker TEXT,
+            category1 TEXT,
+            category2 TEXT,
+            category3 TEXT,
+            category4 TEXT,
+            buy_price REAL,
+            quantity REAL,
+            current_price REAL,
+            currency TEXT DEFAULT 'KRW',
+            exchange_rate REAL DEFAULT 1.0
+        )
+    """)
+    conn.commit()
+    
+    cursor.execute("SELECT COUNT(*) FROM portfolio")
+    count = cursor.fetchone()[0]
+    conn.close()
+
+    # DB가 비어있고 백업 파일이 존재할 경우 자동 복구 진행
+    if count == 0 and os.path.exists(BACKUP_FILE):
+        try:
+            with open(BACKUP_FILE, "r", encoding="utf-8") as f:
+                content = f.read()
+            import_backup_json(content, replace=False)
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------
 # 0. 배치 시세 수집 및 캐싱 함수
@@ -61,32 +169,25 @@ def normalize_ticker(ticker, currency):
 
 
 def fetch_live_ticker_price(ticker):
-    """
-    단일 티커의 최신 시세(장후/After market 포함) 가져오기
-    fast_info 및 info 속성을 활용하여 주말/휴일/장후 최신 시세를 정확히 반환
-    """
+    """단일 티커의 최신 시세 가져오기"""
     if not ticker:
         return None
     try:
         tk = yf.Ticker(ticker)
         fast_info = tk.fast_info
         
-        # 1. After market / Extended hours 가격 확인
         post_price = fast_info.get("postMarketPrice")
         if post_price and not pd.isna(post_price):
             return round(float(post_price), 2)
             
-        # 2. 실시간 체결가 (lastPrice)
         last_price = fast_info.get("lastPrice")
         if last_price and not pd.isna(last_price):
             return round(float(last_price), 2)
             
-        # 3. 최근 종가 (previousClose)
         prev_close = fast_info.get("previousClose")
         if prev_close and not pd.isna(prev_close):
             return round(float(prev_close), 2)
 
-        # 4. Fallback: 최근 5일 history 데이터
         hist = tk.history(period="5d")
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 2)
@@ -95,7 +196,7 @@ def fetch_live_ticker_price(ticker):
     return None
 
 
-@st.cache_data(ttl=300)  # 캐시 TTL을 5분으로 단축하여 최신 시세 반영 촉진
+@st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
     """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
@@ -118,17 +219,13 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
 
 
 def get_price_from_batch_data(market_data, ticker, target_date_str):
-    """
-    배치 수집된 메모리 데이터프레임에서 특정 티커 및 날짜의 종가 추출
-    target_date_str가 오늘이거나 최근 2일 내인 경우 실시간/장후 시세 직접 조회
-    """
+    """배치 수집된 데이터프레임에서 특정 티커 및 날짜의 종가 추출"""
     if not ticker:
         return None
 
     today_str = datetime.now().strftime("%Y-%m-%d")
     target_dt = pd.to_datetime(target_date_str)
     
-    # 조회 요청 대상 날짜가 최근(오늘 기준 2일 이내)일 경우 fast_info 우선 조회
     if (datetime.now() - target_dt).days <= 2:
         live_p = fetch_live_ticker_price(ticker)
         if live_p is not None:
@@ -165,43 +262,6 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
         pass
 
     return fetch_live_ticker_price(ticker)
-
-
-# ---------------------------------------------------------
-# 1. DB 설정 및 관리
-# ---------------------------------------------------------
-DB_FILE = "stock_data.db"
-
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            record_date TEXT,
-            broker TEXT,
-            account_num TEXT,
-            account_type TEXT,
-            item_name TEXT,
-            ticker TEXT,
-            category1 TEXT,
-            category2 TEXT,
-            category3 TEXT,
-            category4 TEXT,
-            buy_price REAL,
-            quantity REAL,
-            current_price REAL,
-            currency TEXT DEFAULT 'KRW',
-            exchange_rate REAL DEFAULT 1.0
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-
-def get_connection():
-    return sqlite3.connect(DB_FILE)
 
 
 def update_all_prices_and_rate_batch(curr_rate):
@@ -249,9 +309,12 @@ def update_all_prices_and_rate_batch(curr_rate):
 
     conn.commit()
     conn.close()
+    
+    export_backup_json()
     return updated_count
 
 
+# 앱 시작 시 DB 생성 및 자동 복구 수행
 init_db()
 
 st.markdown(
@@ -285,6 +348,7 @@ menu = st.sidebar.selectbox(
         "자산 입력 및 관리",
         "일별/시점별 보유 현황 분석",
         "기간별 성과 및 추이 분석",
+        "💾 데이터 백업 및 복구",
     ],
 )
 
@@ -406,6 +470,7 @@ if menu == "자산 입력 및 관리":
                 )
                 conn.commit()
                 conn.close()
+                export_backup_json()
                 st.success("저장되었습니다.")
                 st.rerun()
 
@@ -451,6 +516,7 @@ if menu == "자산 입력 및 관리":
                         "portfolio", conn, if_exists="append", index=False
                     )
                     conn.close()
+                    export_backup_json()
                     st.success("일괄 저장 완료!")
                     st.rerun()
             except Exception as e:
@@ -544,6 +610,7 @@ if menu == "자산 입력 및 관리":
                     )
                     conn.commit()
                     conn.close()
+                    export_backup_json()
                     st.success("수정되었습니다.")
                     st.rerun()
         else:
@@ -564,6 +631,7 @@ if menu == "자산 입력 및 관리":
                     )
                     conn.commit()
                     conn.close()
+                    export_backup_json()
                     st.success("삭제 완료!")
                     st.rerun()
         else:
@@ -826,9 +894,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                 if c_name not in group_cols:
                     group_cols.append(c_name)
 
-        # ---------------------------------------------------------
-        # a. [단계별 + 각 단계별 합계/전체총합] 요약 현황 표 생성
-        # ---------------------------------------------------------
         col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
         
         profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
@@ -901,13 +966,9 @@ elif menu == "일별/시점별 보유 현황 분석":
         )
         st.markdown("")
 
-        # ---------------------------------------------------------
-        # TREEMAP 데이터 구성 (go.Treemap 활용으로 상위 계층 NaN 해결)
-        # ---------------------------------------------------------
         ids, labels, parents, values = [], [], [], []
         custom_rates, custom_prices, custom_profits = [], [], []
 
-        # 1. 최상위 루트 노드 추가 (전체 포트폴리오)
         ids.append("Root")
         labels.append("전체 포트폴리오")
         parents.append("")
@@ -916,7 +977,6 @@ elif menu == "일별/시점별 보유 현황 분석":
         custom_prices.append("-")
         custom_profits.append(sub_df["선택기준_평가손익(원)"].sum())
 
-        # 2. 선택된 계층별 그룹 연산 및 계층 노드 구축
         built_nodes = set(["Root"])
 
         for idx_row, row in sub_df.iterrows():
@@ -930,7 +990,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                 if current_id_path not in built_nodes:
                     built_nodes.add(current_id_path)
                     
-                    # 해당 계층 조건에 맞는 sub_df 필터링
                     filter_mask = pd.Series(True, index=sub_df.index)
                     for k in range(depth + 1):
                         filter_mask &= (sub_df[group_cols[k]] == row[group_cols[k]])
@@ -947,7 +1006,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                         grp_past_eval = grp_eval - grp_profit
                         grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
 
-                    # 리프 노드(최하위)인 경우 가격 표시
                     if depth == len(group_cols) - 1:
                         price_sym = "$" if row["currency"] == "USD" else "₩"
                         disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
@@ -964,7 +1022,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                 current_parent = current_id_path
 
-        # 색상 범위 설정
         c_rates_arr = [r for r in custom_rates if r is not None]
         max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
 
@@ -975,7 +1032,6 @@ elif menu == "일별/시점별 보유 현황 분석":
         else:
             dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
-        # go.Treemap 기반 차트 생성
         fig_treemap = go.Figure(
             go.Treemap(
                 ids=ids,
@@ -1026,9 +1082,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         st.plotly_chart(fig_treemap, width="stretch")
 
-        # ---------------------------------------------------------
-        # b. 선택 계층별 상세 요약 및 점유율 원형 그래프(Pie Chart) 표현
-        # ---------------------------------------------------------
         st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
 
         hierarchy_summary = (
@@ -1079,9 +1132,6 @@ elif menu == "일별/시점별 보유 현황 분석":
             pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
 
             with pie_tab1:
-                # ---------------------------------------------------------
-                # 도너츠 점유율 표시 분류 기준 옵션
-                # ---------------------------------------------------------
                 group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
 
                 pie_group_mode = st.selectbox(
@@ -1091,7 +1141,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                     key="pie_hierarchy_mode_select"
                 )
 
-                # 선택한 기준에 따라 도넛 그래프용 데이터프레임 집계
                 if pie_group_mode == "전체 계층 경로 (A > B > C)":
                     hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
                     pie_chart_df = hierarchy_summary.groupby("계층경로")["평가액(원)"].sum().reset_index()
@@ -1117,7 +1166,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                 st.plotly_chart(fig_pie_hierarchy, width="stretch")
 
             with pie_tab2:
-                # 보유 항목(ITEM)별 점유율
                 item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
                 fig_pie_item = px.pie(
                     item_summary,
@@ -1492,3 +1540,99 @@ elif menu == "기간별 성과 및 추이 분석":
             title=f"{period} 기록 기반 총 자산 평가액 추이",
         )
         st.plotly_chart(fig_eval, width="stretch")
+
+# ---------------------------------------------------------
+# 메뉴 4: 데이터 백업 및 복구
+# ---------------------------------------------------------
+elif menu == "💾 데이터 백업 및 복구":
+    st.header("💾 데이터 백업 및 완전 복구")
+    st.info("클라우드 서버 재부팅이나 비활성화 후에도 데이터를 안전하게 보존하고 백업할 수 있습니다.")
+
+    tab_bk1, tab_bk2 = st.tabs(["📥 내보내기 (백업 다운로드)", "📤 불러오기 (백업 파일 복원)"])
+
+    with tab_bk1:
+        st.subheader("📥 현재 저장된 자산 데이터 백업 파일 다운로드")
+        conn = get_connection()
+        df_all = pd.read_sql("SELECT * FROM portfolio", conn)
+        conn.close()
+
+        if df_all.empty:
+            st.warning("백업할 자산 데이터가 없습니다.")
+        else:
+            json_data = export_backup_json()
+            
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                st.download_button(
+                    label="💾 JSON 백업 파일 다운로드",
+                    data=json_data or "",
+                    file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+            
+            with col_b2:
+                # 엑셀 다운로드 파일 준비
+                excel_df = df_all.drop(columns=["id"], errors="ignore")
+                import io
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    excel_df.to_excel(writer, index=False, sheet_name="Portfolio")
+                
+                st.download_button(
+                    label="📊 Excel 백업 파일 다운로드",
+                    data=buffer.getvalue(),
+                    file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+    with tab_bk2:
+        st.subheader("📤 백업 파일 업로드 및 데이터 복원")
+        st.write("저장해둔 JSON 백업 파일 또는 Excel 파일을 업로드하면 데이터베이스로 즉시 복원됩니다.")
+        
+        uploaded_backup = st.file_uploader(
+            "백업 파일 선택 (.json 또는 .xlsx)",
+            type=["json", "xlsx", "csv"],
+            key="backup_uploader"
+        )
+
+        restore_mode = st.radio(
+            "복원 방식 선택",
+            [" 기존 데이터 전체 덮어쓰기 (기존 데이터 삭제 후 복원)", "➕ 기존 데이터에 추가하기"],
+            index=0
+        )
+
+        if uploaded_backup is not None:
+            if st.button("🚀 백업 데이터 복원 실행"):
+                try:
+                    replace_flag = "덮어쓰기" in restore_mode
+                    if uploaded_backup.name.endswith(".json"):
+                        content = uploaded_backup.read()
+                        restored_cnt = import_backup_json(content, replace=replace_flag)
+                    else:
+                        u_df = pd.read_csv(uploaded_backup) if uploaded_backup.name.endswith(".csv") else pd.read_excel(uploaded_backup)
+                        required_cols = [
+                            "record_date", "broker", "account_num", "account_type", "item_name",
+                            "ticker", "category1", "category2", "category3", "category4",
+                            "buy_price", "quantity", "current_price", "currency", "exchange_rate"
+                        ]
+                        for col in required_cols:
+                            if col not in u_df.columns:
+                                u_df[col] = None
+                        
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        if replace_flag:
+                            cursor.execute("DELETE FROM portfolio")
+                        
+                        u_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+                        conn.commit()
+                        conn.close()
+                        export_backup_json()
+                        restored_cnt = len(u_df)
+
+                    st.success(f"🎉 성공적으로 {restored_cnt}개 항목이 복원되었습니다!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"복원 중 오류 발생: {e}")
