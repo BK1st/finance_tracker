@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
@@ -188,74 +189,84 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 
 
 # -----------------------------------------------------------------------------
-# 3. Streamlit 대시보드 메인
+# 3. Streamlit 대시보드 메인 설정 및 CSS
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
-# 차트 컨테이너 및 독립 범주(Legend) CSS 개선
+# 차트 컨테이너 및 커스텀 범주(Legend) CSS (상하좌우 크기조절 & 레이아웃 겹침 방지)
 st.markdown(
     """
     <style>
-    /* 1) 차트 사이즈 수동 조절 시 하단 요소가 밀리도록 layout 구조 개편 */
+    /* 1) 차트 영역: 상하좌우(both) 리사이즈 지원 및 하단 요소 자동 밀림 */
     div[data-testid="stPlotlyChart"] {
-        resize: vertical !important;
+        resize: both !important;
         overflow: auto !important;
         min-height: 380px;
-        min-width: 100%;
-        padding: 5px;
+        min-width: 300px;
+        max-width: 100%;
+        padding: 6px;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
         background-color: #ffffff;
         display: block !important;
         clear: both !important;
         position: relative !important;
-        margin-bottom: 8px !important;
+        margin-bottom: 12px !important;
         box-sizing: border-box !important;
     }
     
     div[data-testid="stPlotlyChart"] > div {
         height: 100% !important;
+        width: 100% !important;
     }
     
-    /* 2) 범주(Legend) 전용 독립 박스 및 가로 자동배치 CSS */
+    /* 2) 커스텀 범주(Legend) 박스: 상하좌우 리사이즈 및 가로 배치 */
     .custom-legend-box {
-        resize: vertical !important;
+        resize: both !important;
         overflow: auto !important;
         clear: both !important;
         display: flex !important;
         flex-wrap: wrap !important;
         align-items: center !important;
-        gap: 6px 14px;
-        min-height: 40px;
-        max-height: 200px;
-        margin-top: 4px !important;
-        margin-bottom: 20px !important;
-        padding: 8px 12px;
+        gap: 6px 12px;
+        min-height: 45px;
+        min-width: 280px;
+        max-width: 100%;
+        margin-top: 8px !important;
+        margin-bottom: 24px !important;
+        padding: 10px 14px;
         border: 1px solid #d1d5db;
         border-radius: 6px;
-        background-color: #f9fafb;
+        background-color: #f8fafc;
         box-sizing: border-box !important;
+        position: relative !important;
+        z-index: 10 !important;
     }
+    
     .legend-item {
         display: inline-flex;
         align-items: center;
-        font-size: 12px;
-        color: #374151;
+        font-size: 12.5px;
+        font-weight: 500;
+        color: #1f2937;
         cursor: pointer;
         user-select: none;
         white-space: nowrap;
-        padding: 2px 6px;
+        padding: 3px 8px;
         border-radius: 4px;
-        transition: background-color 0.15s ease;
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        transition: all 0.15s ease;
     }
     .legend-item:hover {
-        background-color: #e5e7eb;
+        background-color: #f3f4f6;
+        border-color: #d1d5db;
     }
     .legend-color-chip {
         width: 12px;
         height: 12px;
         border-radius: 3px;
-        margin-right: 5px;
+        margin-right: 6px;
         display: inline-block;
         flex-shrink: 0;
     }
@@ -298,34 +309,42 @@ PLOTLY_CONFIG = {
     'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'eraseshape'],
 }
 
-# 범주 항목 자동 생성 및 스마트 렌더링 헬퍼 함수
+# 기본 스마트 시각화 색상 팔레트 (색상 미지정 시 순차 부여)
+DEFAULT_PALETTE = px.colors.qualitative.Plotly + px.colors.qualitative.Set1
+
+
+def get_trace_color(trace, idx):
+  """트레이스에서 명시된 색상을 추출하고, 없으면 팔레트 순차 색상 반환"""
+  color = None
+  if hasattr(trace, 'marker') and trace.marker and trace.marker.color:
+    color = trace.marker.color
+  elif hasattr(trace, 'line') and trace.line and trace.line.color:
+    color = trace.line.color
+
+  if isinstance(color, (list, tuple, np.ndarray)):
+    color = color[0] if len(color) > 0 else None
+
+  if not color or not isinstance(color, str) or color.startswith('rgb(0,0,0)'):
+    color = DEFAULT_PALETTE[idx % len(DEFAULT_PALETTE)]
+
+  return color
 
 
 def render_chart_with_custom_legend(fig, chart_key):
-  # Plotly 순정 내장 범주 제거
+  """Plotly 차트 출력 및 색상 상충 없는 커스텀 스마트 범주(Legend) 렌더링"""
   fig.update_layout(showlegend=False)
 
-  # 차트 출력
+  # 차트 시각화
   st.plotly_chart(
       fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
   )
 
-  # 트레이스 추출 및 스마트 범주 HTML 구성
+  # 커스텀 범주 아이템 생성
   legend_items_html = []
   for idx, trace in enumerate(fig.data):
     name = trace.name if trace.name else f'항목 {idx+1}'
-    color = '#4b5563'
+    color = get_trace_color(trace, idx)
 
-    if hasattr(trace, 'marker') and trace.marker and trace.marker.color:
-      color = (
-          trace.marker.color
-          if isinstance(trace.marker.color, str)
-          else '#3b82f6'
-      )
-    elif hasattr(trace, 'line') and trace.line and trace.line.color:
-      color = trace.line.color
-
-    # 들여쓰기 없이 단일 줄 HTML 문자열로 생성하여 마크다운 파싱 오류(코드블록 오인) 완벽 방지
     item_html = (
         f'<div class="legend-item" onclick="'
         f'var leg = this.closest(\'.custom-legend-box\');'
@@ -342,7 +361,7 @@ def render_chart_with_custom_legend(fig, chart_key):
     )
     legend_items_html.append(item_html)
 
-  # 독립 조절 가능 범주(Legend) 박스 출력
+  # 독립 조절 가능 범주 박스 출력
   legend_container_html = (
       f'<div class="custom-legend-box">{"".join(legend_items_html)}</div>'
   )
@@ -884,7 +903,7 @@ if menu == '트렌드 리포트':
                 name='총평가금액',
                 mode='lines+markers+text',
                 line=dict(color='#ff9900', width=3),
-                marker=dict(size=6),
+                marker=dict(size=6, color='#ff9900'),
                 text=[f'{v:,.0f}' for v in sub_df['총평가금액']],
                 textposition='top center',
             ),
@@ -897,7 +916,7 @@ if menu == '트렌드 리포트':
                 name='수익률(%)',
                 mode='lines+markers',
                 line=dict(color='#2ca02c', dash='dash', width=2),
-                marker=dict(size=6),
+                marker=dict(size=6, color='#2ca02c'),
                 hovertemplate='%{y:.2f}%',
             ),
             secondary_y=True,
@@ -955,7 +974,7 @@ if menu == '트렌드 리포트':
                 name='선택구간 누적손익 (추이)',
                 mode='lines+markers',
                 line=dict(color='#9467bd', width=2.5),
-                marker=dict(size=5),
+                marker=dict(size=5, color='#9467bd'),
             )
         )
 
@@ -987,7 +1006,7 @@ if menu == '트렌드 리포트':
                 name='구간별 누적수익률 (%)',
                 mode='lines+markers',
                 line=dict(color='#1f77b4', width=2.5),
-                marker=dict(size=5),
+                marker=dict(size=5, color='#1f77b4'),
                 hovertemplate='%{y:.2f}%',
             )
         )
@@ -1000,16 +1019,14 @@ if menu == '트렌드 리포트':
           bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
           bm_df.drop(columns=['dt_temp'], inplace=True)
 
+          bm_color = bm_styles.get(bm_name, {}).get('color', '#7f7f7f')
           fig3a.add_trace(
               go.Scatter(
                   x=bm_df['Chart_Date'],
                   y=bm_df['기간 누적 수익률'],
                   mode='lines',
                   name=f'📌 {bm_name} 누적수익률 (%)',
-                  line=dict(
-                      color=bm_styles.get(bm_name, {}).get('color', '#7f7f7f'),
-                      dash='dot',
-                  ),
+                  line=dict(color=bm_color, dash='dot'),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1049,7 +1066,7 @@ if menu == '트렌드 리포트':
                 name='구간별 수익률 (%)',
                 mode='lines+markers',
                 line=dict(color='#17becf', width=2, dash='dot'),
-                marker=dict(size=5),
+                marker=dict(size=5, color='#17becf'),
                 hovertemplate='%{y:.2f}%',
             )
         )
@@ -1062,13 +1079,14 @@ if menu == '트렌드 리포트':
           bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
           bm_df.drop(columns=['dt_temp'], inplace=True)
 
+          bm_color = bm_styles.get(bm_name, {}).get('color', '#7f7f7f')
           fig3b.add_trace(
               go.Scatter(
                   x=bm_df['Chart_Date'],
                   y=bm_df['주기별 수익률'],
                   mode='lines',
                   name=f'📌 {bm_name} 주기별수익률 (%)',
-                  line=bm_styles.get(bm_name, dict(dash='dash')),
+                  line=dict(color=bm_color, dash='dash'),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1201,15 +1219,24 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
+        # 범주별 색상 사전 매핑 (검정색 단일화 방지)
+        group_color_map = {
+            grp: DEFAULT_PALETTE[i % len(DEFAULT_PALETTE)]
+            for i, grp in enumerate(groups)
+        }
+
         fig_sel_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
+          c = group_color_map[grp]
           fig_sel_p.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
                   name=f'[누적손익] {grp}',
                   mode='lines+markers',
+                  line=dict(color=c, width=2),
+                  marker=dict(size=5, color=c),
                   hovertemplate='%{y:,.0f} 원',
               )
           )
@@ -1241,9 +1268,13 @@ if menu == '트렌드 리포트':
           sub = grp_agg[grp_agg[group_col] == grp].dropna(
               subset=['주기별 평가손익']
           )
+          c = group_color_map[grp]
           fig_period_p.add_trace(
               go.Bar(
-                  x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
+                  x=sub['Chart_Date'],
+                  y=sub['주기별 평가손익'],
+                  name=str(grp),
+                  marker_color=c,
               )
           )
         fig_period_p.update_layout(
@@ -1275,12 +1306,15 @@ if menu == '트렌드 리포트':
           sub = grp_agg[grp_agg[group_col] == grp].dropna(
               subset=['주기별 수익률']
           )
+          c = group_color_map[grp]
           fig_period_ret.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['주기별 수익률'],
                   name=str(grp),
                   mode='lines+markers',
+                  line=dict(color=c, width=2),
+                  marker=dict(size=5, color=c),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1293,13 +1327,15 @@ if menu == '트렌드 리포트':
           bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
           bm_df.drop(columns=['dt_temp'], inplace=True)
           sub_bm = bm_df.dropna(subset=['주기별 수익률'])
+
+          bm_color = bm_styles.get(bm_name, {}).get('color', '#7f7f7f')
           fig_period_ret.add_trace(
               go.Scatter(
                   x=sub_bm['Chart_Date'],
                   y=sub_bm['주기별 수익률'],
                   mode='lines',
                   name=f'📌 {bm_name}',
-                  line=bm_styles.get(bm_name, dict(dash='dot')),
+                  line=dict(color=bm_color, dash='dot'),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1334,12 +1370,14 @@ if menu == '트렌드 리포트':
         fig_cum_ret = make_subplots(specs=[[{'secondary_y': True}]])
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
+          c = group_color_map[grp]
           fig_cum_ret.add_trace(
               go.Bar(
                   x=sub['Chart_Date'],
                   y=sub['선택구간 누적손익'],
                   name=f'[누적평가손익] {grp}',
-                  opacity=0.7,
+                  marker_color=c,
+                  opacity=0.6,
                   hovertemplate='%{y:,.0f} 원',
               ),
               secondary_y=True,
@@ -1347,12 +1385,15 @@ if menu == '트렌드 리포트':
 
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
+          c = group_color_map[grp]
           fig_cum_ret.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['선택기간 누적 수익률'],
                   name=f'[누적수익률] {grp}',
                   mode='lines+markers',
+                  line=dict(color=c, width=2.5),
+                  marker=dict(size=5, color=c),
                   hovertemplate='%{y:.2f}%',
               ),
               secondary_y=False,
@@ -1365,13 +1406,15 @@ if menu == '트렌드 리포트':
           )
           bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
           bm_df.drop(columns=['dt_temp'], inplace=True)
+
+          bm_color = bm_styles.get(bm_name, {}).get('color', '#7f7f7f')
           fig_cum_ret.add_trace(
               go.Scatter(
                   x=bm_df['Chart_Date'],
                   y=bm_df['기간 누적 수익률'],
                   mode='lines',
                   name=f'📌 {bm_name}',
-                  line=bm_styles.get(bm_name, dict(dash='dot')),
+                  line=dict(color=bm_color, dash='dot'),
                   hovertemplate='%{y:.2f}%',
               ),
               secondary_y=False,
@@ -1415,8 +1458,14 @@ if menu == '트렌드 리포트':
         fig_p = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
+          c = group_color_map[grp]
           fig_p.add_trace(
-              go.Bar(x=sub['Chart_Date'], y=sub['평가손익'], name=str(grp))
+              go.Bar(
+                  x=sub['Chart_Date'],
+                  y=sub['평가손익'],
+                  name=str(grp),
+                  marker_color=c,
+              )
           )
         fig_p.update_layout(
             title=dict(
@@ -1445,12 +1494,15 @@ if menu == '트렌드 리포트':
         fig_r = go.Figure()
         for grp in groups:
           sub = grp_agg[grp_agg[group_col] == grp]
+          c = group_color_map[grp]
           fig_r.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
                   y=sub['수익률'],
                   name=str(grp),
                   mode='lines+markers',
+                  line=dict(color=c, width=2),
+                  marker=dict(size=5, color=c),
                   hovertemplate='%{y:.2f}%',
               )
           )
