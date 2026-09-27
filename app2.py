@@ -222,16 +222,46 @@ bm_styles = {
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
 }
 
-COMMON_LEGEND_CONFIG = dict(
-    orientation='h',
-    yanchor='top',
-    y=-0.2,
-    xanchor='center',
-    x=0.5,
-    font=dict(size=10),
-    entrywidthmode='fraction',
-    entrywidth=0.45,
-)
+
+def get_legend_config(pos_setting):
+  """범례 배치 옵션(하단/우측)에 따른 Plotly legend 설정 반환"""
+  if '우측' in pos_setting:
+    return dict(
+        orientation='v',
+        yanchor='top',
+        y=1.0,
+        xanchor='left',
+        x=1.02,
+        font=dict(size=10),
+    )
+  else:
+    # 하단 배치: 가로 공간 최적화를 위해 entrywidth 지정 제거
+    return dict(
+        orientation='h',
+        yanchor='top',
+        y=-0.18,
+        xanchor='center',
+        x=0.5,
+        font=dict(size=10),
+    )
+
+
+def render_resizable_plotly_chart(fig, key):
+  """마우스 드래그로 사이즈 조절 가능한 마크다운 컨테이너에 Plotly 차트 렌더링"""
+  st.markdown(
+      '<div style="resize: vertical; overflow: auto; min-height: 480px;'
+      ' border: 1px solid #e1e4e8; border-radius: 6px; padding: 4px'
+      ' margin-bottom: 15px;">',
+      unsafe_allow_html=True,
+  )
+  st.plotly_chart(
+      fig,
+      use_container_width=True,
+      key=key,
+      config={'responsive': True, 'displayModeBar': True},
+  )
+  st.markdown('</div>', unsafe_allow_html=True)
+
 
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
@@ -653,7 +683,7 @@ if menu == '트렌드 리포트':
       st.write('---')
       st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
-      disp_col1, disp_col2, disp_col3 = st.columns([3, 3, 4])
+      disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2.5, 2.5, 2, 3])
 
       with disp_col1:
         layout_setting = st.selectbox(
@@ -668,6 +698,15 @@ if menu == '트렌드 리포트':
         )
 
       with disp_col2:
+        legend_pos_setting = st.selectbox(
+            '📌 범례(Legend) 배치 위치 선택',
+            options=['하단 배치', '우측 배치'],
+            index=0,
+            key='live_legend_pos',
+            help='범례를 차트 하단 또는 우측에 배치하도록 변경합니다.',
+        )
+
+      with disp_col3:
         y_range_mode = st.radio(
             '🎯 Y축 Range(범위) 지정',
             options=['자동 (Auto)', '수동 지정 (Manual)'],
@@ -676,7 +715,7 @@ if menu == '트렌드 리포트':
         )
 
       y_min_val, y_max_val = None, None
-      with disp_col3:
+      with disp_col4:
         if y_range_mode == '수동 지정 (Manual)':
           r_c1, r_c2 = st.columns(2)
           with r_c1:
@@ -696,6 +735,9 @@ if menu == '트렌드 리포트':
         num_cols = 2
       elif '3열' in layout_setting:
         num_cols = 3
+
+      current_legend_config = get_legend_config(legend_pos_setting)
+      right_margin = 130 if '우측' in legend_pos_setting else 20
 
       def apply_y_axis_config(fig, axis_name='yaxis', is_money=True):
         kwargs = dict(type='linear', zeroline=True)
@@ -825,17 +867,17 @@ if menu == '트렌드 리포트':
         fig1.update_layout(
             title=dict(
                 text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
             barmode='relative',
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_fig1 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_fig1 else 20, l=10, r=right_margin),
             showlegend=leg_fig1,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig1.update_xaxes(
             type='category',
@@ -883,16 +925,16 @@ if menu == '트렌드 리포트':
         fig2.update_layout(
             title=dict(
                 text=f'2. [{title_name}] 구간 손익 금액 추이',
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_fig2 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_fig2 else 20, l=10, r=right_margin),
             showlegend=leg_fig2,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig2.update_xaxes(
             type='category',
@@ -943,16 +985,16 @@ if menu == '트렌드 리포트':
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_fig3a else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_fig3a else 20, l=10, r=right_margin),
             showlegend=leg_fig3a,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig3a.update_xaxes(
             type='category',
@@ -1004,16 +1046,16 @@ if menu == '트렌드 리포트':
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
                     ' 비교)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_fig3b else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_fig3b else 20, l=10, r=right_margin),
             showlegend=leg_fig3b,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig3b.update_xaxes(
             type='category',
@@ -1030,77 +1072,53 @@ if menu == '트렌드 리포트':
         effective_cols = 1 if force_single_col else num_cols
 
         if effective_cols == 1:
-          st.plotly_chart(
-              fig1,
-              use_container_width=True,
-              key=f'trend_fig1_{title_name}_{force_single_col}',
+          render_resizable_plotly_chart(
+              fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig2,
-              use_container_width=True,
-              key=f'trend_fig2_{title_name}_{force_single_col}',
+          render_resizable_plotly_chart(
+              fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig3a,
-              use_container_width=True,
-              key=f'trend_fig3a_{title_name}_{force_single_col}',
+          render_resizable_plotly_chart(
+              fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
           )
-          st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}_{force_single_col}',
+          render_resizable_plotly_chart(
+              fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
           )
         elif effective_cols == 2:
           col_a, col_b = st.columns(2)
           with col_a:
-            st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
             )
           with col_b:
-            st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
             )
           col_c, col_d = st.columns(2)
           with col_c:
-            st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
             )
           with col_d:
-            st.plotly_chart(
-                fig3b,
-                use_container_width=True,
-                key=f'trend_fig3b_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
             )
         else:
           col_a, col_b, col_c = st.columns(3)
           with col_a:
-            st.plotly_chart(
-                fig1,
-                use_container_width=True,
-                key=f'trend_fig1_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
             )
           with col_b:
-            st.plotly_chart(
-                fig2,
-                use_container_width=True,
-                key=f'trend_fig2_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
             )
           with col_c:
-            st.plotly_chart(
-                fig3a,
-                use_container_width=True,
-                key=f'trend_fig3a_{title_name}_{force_single_col}',
+            render_resizable_plotly_chart(
+                fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
             )
-          st.plotly_chart(
-              fig3b,
-              use_container_width=True,
-              key=f'trend_fig3b_{title_name}_{force_single_col}',
+          render_resizable_plotly_chart(
+              fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
           )
 
         return sub_df
@@ -1196,16 +1214,16 @@ if menu == '트렌드 리포트':
         fig_sel_p.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_grp1 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp1 else 20, l=10, r=right_margin),
             showlegend=leg_grp1,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_sel_p.update_xaxes(
             type='category',
@@ -1233,17 +1251,17 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
             barmode='relative',
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_grp2 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp2 else 20, l=10, r=right_margin),
             showlegend=leg_grp2,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_period_p.update_xaxes(
             type='category',
@@ -1293,16 +1311,16 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
                     ' 벤치마크 포함)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_grp3 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp3 else 20, l=10, r=right_margin),
             showlegend=leg_grp3,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_period_ret.update_xaxes(
             type='category',
@@ -1368,17 +1386,17 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
                     ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
             barmode='group',
-            hovermode='x unified',
-            height=540,
-            margin=dict(t=100, b=40 if not leg_grp4 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp4 else 20, l=10, r=right_margin),
             showlegend=leg_grp4,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_cum_ret.update_xaxes(
             type='category',
@@ -1411,17 +1429,17 @@ if menu == '트렌드 리포트':
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
                     ' 막대)'
                 ),
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
             barmode='relative',
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_grp5 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp5 else 20, l=10, r=right_margin),
             showlegend=leg_grp5,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_p.update_xaxes(
             type='category',
@@ -1446,16 +1464,16 @@ if menu == '트렌드 리포트':
         fig_r.update_layout(
             title=dict(
                 text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
-                y=0.95,
-                x=0.5,
-                xanchor='center',
+                y=0.98,
+                x=0.01,
+                xanchor='left',
                 yanchor='top',
             ),
-            hovermode='x unified',
-            height=520,
-            margin=dict(t=100, b=40 if not leg_grp6 else 80, l=10, r=10),
+            hovermode='closest',
+            height=500,
+            margin=dict(t=60, b=50 if leg_grp6 else 20, l=10, r=right_margin),
             showlegend=leg_grp6,
-            legend=COMMON_LEGEND_CONFIG,
+            legend=current_legend_config,
         )
         fig_r.update_xaxes(
             type='category',
@@ -1470,103 +1488,67 @@ if menu == '트렌드 리포트':
         )
 
         if num_cols == 1:
-          st.plotly_chart(
-              fig_sel_p,
-              use_container_width=True,
-              key=f'trend_grp_sel_p_{prefix}',
+          render_resizable_plotly_chart(
+              fig_sel_p, key=f'trend_grp_sel_p_{prefix}'
           )
-          st.plotly_chart(
-              fig_period_p,
-              use_container_width=True,
-              key=f'trend_grp_period_p_{prefix}',
+          render_resizable_plotly_chart(
+              fig_period_p, key=f'trend_grp_period_p_{prefix}'
           )
-          st.plotly_chart(
-              fig_period_ret,
-              use_container_width=True,
-              key=f'trend_grp_period_ret_{prefix}',
+          render_resizable_plotly_chart(
+              fig_period_ret, key=f'trend_grp_period_ret_{prefix}'
           )
-          st.plotly_chart(
-              fig_cum_ret,
-              use_container_width=True,
-              key=f'trend_grp_cum_ret_{prefix}',
+          render_resizable_plotly_chart(
+              fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
-          st.plotly_chart(
-              fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
-          )
-          st.plotly_chart(
-              fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
-          )
+          render_resizable_plotly_chart(fig_p, key=f'trend_grp_p_{prefix}')
+          render_resizable_plotly_chart(fig_r, key=f'trend_grp_r_{prefix}')
         elif num_cols == 2:
           col1, col2 = st.columns(2)
           with col1:
-            st.plotly_chart(
-                fig_sel_p,
-                use_container_width=True,
-                key=f'trend_grp_sel_p_{prefix}',
+            render_resizable_plotly_chart(
+                fig_sel_p, key=f'trend_grp_sel_p_{prefix}'
             )
           with col2:
-            st.plotly_chart(
-                fig_period_p,
-                use_container_width=True,
-                key=f'trend_grp_period_p_{prefix}',
+            render_resizable_plotly_chart(
+                fig_period_p, key=f'trend_grp_period_p_{prefix}'
             )
           col3, col4 = st.columns(2)
           with col3:
-            st.plotly_chart(
-                fig_period_ret,
-                use_container_width=True,
-                key=f'trend_grp_period_ret_{prefix}',
+            render_resizable_plotly_chart(
+                fig_period_ret, key=f'trend_grp_period_ret_{prefix}'
             )
           with col4:
-            st.plotly_chart(
-                fig_cum_ret,
-                use_container_width=True,
-                key=f'trend_grp_cum_ret_{prefix}',
+            render_resizable_plotly_chart(
+                fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
             )
           col5, col6 = st.columns(2)
           with col5:
-            st.plotly_chart(
-                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
-            )
+            render_resizable_plotly_chart(fig_p, key=f'trend_grp_p_{prefix}')
           with col6:
-            st.plotly_chart(
-                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
-            )
+            render_resizable_plotly_chart(fig_r, key=f'trend_grp_r_{prefix}')
         else:
           col1, col2, col3 = st.columns(3)
           with col1:
-            st.plotly_chart(
-                fig_sel_p,
-                use_container_width=True,
-                key=f'trend_grp_sel_p_{prefix}',
+            render_resizable_plotly_chart(
+                fig_sel_p, key=f'trend_grp_sel_p_{prefix}'
             )
           with col2:
-            st.plotly_chart(
-                fig_period_p,
-                use_container_width=True,
-                key=f'trend_grp_period_p_{prefix}',
+            render_resizable_plotly_chart(
+                fig_period_p, key=f'trend_grp_period_p_{prefix}'
             )
           with col3:
-            st.plotly_chart(
-                fig_period_ret,
-                use_container_width=True,
-                key=f'trend_grp_period_ret_{prefix}',
+            render_resizable_plotly_chart(
+                fig_period_ret, key=f'trend_grp_period_ret_{prefix}'
             )
           col4, col5, col6 = st.columns(3)
           with col4:
-            st.plotly_chart(
-                fig_cum_ret,
-                use_container_width=True,
-                key=f'trend_grp_cum_ret_{prefix}',
+            render_resizable_plotly_chart(
+                fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
             )
           with col5:
-            st.plotly_chart(
-                fig_p, use_container_width=True, key=f'trend_grp_p_{prefix}'
-            )
+            render_resizable_plotly_chart(fig_p, key=f'trend_grp_p_{prefix}')
           with col6:
-            st.plotly_chart(
-                fig_r, use_container_width=True, key=f'trend_grp_r_{prefix}'
-            )
+            render_resizable_plotly_chart(fig_r, key=f'trend_grp_r_{prefix}')
 
       def render_separate_charts(df, group_col, prefix):
         if group_col is None:
@@ -1784,7 +1766,7 @@ elif menu == '포트폴리오 업로드':
       st.error(f'엑셀 파싱 중 오류가 발생했습니다: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 입출금 관리 (오류가 수정된 파트)
+# 메뉴 4: 원금 및 입출금 관리
 # -----------------------------------------------------------------------------
 elif menu == '원금 및 입출금 관리':
   st.header('💰 원금 및 입출금(Cash Flow) 관리')
@@ -1815,7 +1797,7 @@ elif menu == '원금 및 입출금 관리':
         suffixes=('', '_init'),
     )
 
-    # broker 컬럼 병합 보완 (portfolio의 broker가 없으면 initial_principal의 broker 채움)
+    # broker 컬럼 병합 보완
     if 'broker_init' in merged_init.columns:
       merged_init['broker'] = merged_init['broker'].fillna(
           merged_init['broker_init']
