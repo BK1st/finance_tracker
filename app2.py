@@ -192,39 +192,49 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 
-# 차트 컨테이너 및 독립 범주(Legend) 드래그 사이즈 조절 CSS
+# 차트 컨테이너 및 독립 범주(Legend) CSS 개선
 st.markdown(
     """
     <style>
-    /* 1, 2) 차트 사이즈를 좌우/위아래(both) 드래그로 변경 가능하도록 설정 */
+    /* 1) 차트 사이즈 수동 조절 시 하단 요소가 밀리도록 layout 구조 개편 */
     div[data-testid="stPlotlyChart"] {
-        resize: both !important;
+        resize: vertical !important;
         overflow: auto !important;
         min-height: 380px;
-        min-width: 300px;
+        min-width: 100%;
         padding: 5px;
         border: 1px solid #e0e0e0;
         border-radius: 8px;
         background-color: #ffffff;
+        display: block !important;
+        clear: both !important;
+        position: relative !important;
+        margin-bottom: 8px !important;
+        box-sizing: border-box !important;
     }
     
-    /* 3, 4) 범주(Legend) 전용 드래그 박스 및 가로 자동배치 CSS */
+    div[data-testid="stPlotlyChart"] > div {
+        height: 100% !important;
+    }
+    
+    /* 2) 범주(Legend) 전용 독립 박스 및 가로 자동배치 CSS */
     .custom-legend-box {
-        resize: both !important;
+        resize: vertical !important;
         overflow: auto !important;
-        min-height: 50px;
+        clear: both !important;
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        gap: 6px 14px;
+        min-height: 40px;
         max-height: 200px;
-        min-width: 250px;
-        margin-top: 6px;
-        margin-bottom: 16px;
+        margin-top: 4px !important;
+        margin-bottom: 20px !important;
         padding: 8px 12px;
         border: 1px solid #d1d5db;
         border-radius: 6px;
         background-color: #f9fafb;
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px 14px; /* 범주 아이템 간의 상하/좌우 간격을 좁고 적절하게 조정 */
+        box-sizing: border-box !important;
     }
     .legend-item {
         display: inline-flex;
@@ -234,7 +244,7 @@ st.markdown(
         cursor: pointer;
         user-select: none;
         white-space: nowrap;
-        padding: 2px 4px;
+        padding: 2px 6px;
         border-radius: 4px;
         transition: background-color 0.15s ease;
     }
@@ -292,8 +302,13 @@ PLOTLY_CONFIG = {
 
 
 def render_chart_with_custom_legend(fig, chart_key):
-  # Plotly 순정 내장 범주 제거 (독립 박스로 분리)
+  # Plotly 순정 내장 범주 제거
   fig.update_layout(showlegend=False)
+
+  # 차트 출력
+  st.plotly_chart(
+      fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
+  )
 
   # 트레이스 추출 및 스마트 범주 HTML 구성
   legend_items_html = []
@@ -310,31 +325,27 @@ def render_chart_with_custom_legend(fig, chart_key):
     elif hasattr(trace, 'line') and trace.line and trace.line.color:
       color = trace.line.color
 
-    item_html = f"""
-        <div class="legend-item" onclick="
-            var chart = document.querySelectorAll('div[data-testid=\\'stPlotlyChart\\']')[0];
-            if(chart && window.Plotly) {{
-                Plotly.restyle(chart, {{visible: this.style.opacity === '0.4' ? true : 'legendonly'}}, [{idx}]);
-                this.style.opacity = this.style.opacity === '0.4' ? '1' : '0.4';
-            }}
-        ">
-            <span class="legend-color-chip" style="background-color: {color};"></span>
-            <span>{name}</span>
-        </div>
-        """
+    # 들여쓰기 없이 단일 줄 HTML 문자열로 생성하여 마크다운 파싱 오류(코드블록 오인) 완벽 방지
+    item_html = (
+        f'<div class="legend-item" onclick="'
+        f'var leg = this.closest(\'.custom-legend-box\');'
+        f'var el = leg ? (leg.parentElement.previousElementSibling || leg.previousElementSibling) : null;'
+        f'var chart = el ? (el.querySelector(\'div[data-testid="stPlotlyChart"]\') || el) : document.querySelector(\'div[data-testid="stPlotlyChart"]\');'
+        f'if(!chart || !chart.data) chart = document.querySelectorAll(\'div[data-testid="stPlotlyChart"]\')[0];'
+        f'if(chart && window.Plotly) {{'
+        f'  Plotly.restyle(chart, {{visible: this.style.opacity === \'0.4\' ? true : \'legendonly\'}}, [{idx}]);'
+        f'  this.style.opacity = this.style.opacity === \'0.4\' ? \'1\' : \'0.4\';'
+        f'}}">'
+        f'<span class="legend-color-chip" style="background-color: {color};"></span>'
+        f'<span>{name}</span>'
+        f'</div>'
+    )
     legend_items_html.append(item_html)
 
-  # 차트 출력
-  st.plotly_chart(
-      fig, use_container_width=True, config=PLOTLY_CONFIG, key=chart_key
-  )
-
   # 독립 조절 가능 범주(Legend) 박스 출력
-  legend_container_html = f"""
-    <div class="custom-legend-box">
-        {"".join(legend_items_html)}
-    </div>
-    """
+  legend_container_html = (
+      f'<div class="custom-legend-box">{"".join(legend_items_html)}</div>'
+  )
   st.markdown(legend_container_html, unsafe_allow_html=True)
 
 
