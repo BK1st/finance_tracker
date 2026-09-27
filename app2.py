@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 
@@ -9,9 +10,11 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 
 # -----------------------------------------------------------------------------
-# 1. DB 초기화 및 관리 함수
+# 1. DB 초기화 및 관리 함수 (데이터 지속성을 위한 경로/디렉토리 보완)
 # -----------------------------------------------------------------------------
-DB_FILE = 'asset_tracker.db'
+DATA_DIR = os.path.join(os.path.dirname(__file__), '.data')
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_FILE = os.path.join(DATA_DIR, 'asset_tracker.db')
 
 
 def init_db():
