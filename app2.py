@@ -88,13 +88,19 @@ def get_account_aliases():
 # 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
+  """연금 계좌 종목 및 국내 ETF/주식 Ticker 포맷 표준화 함수"""
   if pd.isna(t) or str(t).strip() == '' or str(t).strip().lower() == 'nan':
     return None
   t_str = str(t).strip()
+
+  # 실수형으로 들어온 경우 처리 (예: 69500.0 -> 69500)
   if t_str.endswith('.0'):
     t_str = t_str[:-2]
+
+  # 6자리 숫자인 경우 한국 거래소 종목 코드(.KS) 부여
   if t_str.isdigit():
     t_str = t_str.zfill(6) + '.KS'
+
   return t_str
 
 
@@ -448,7 +454,7 @@ if menu == '트렌드 리포트':
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
-      unique_tickers = filtered_pf_df['ticker'].unique().tolist()
+      unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
@@ -458,7 +464,6 @@ if menu == '트렌드 리포트':
             fetch_tickers, s_str, e_str, force_refresh=True
         )
 
-      # 최초일 환율 수집 (환차손 제외 기준 환율)
       first_t_str = target_dates[0].strftime('%Y-%m-%d')
       usd_krw_first = None
       if 'KRW=X' in market_data.columns and not market_data.empty:
@@ -615,7 +620,7 @@ if menu == '트렌드 리포트':
 
                 price = 0
                 if fmt_tk is None:
-                  price = base_price if base_price > 0 else 1.0
+                  price = base_price if base_price > 0 else 0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
                     if pd.to_datetime(t_str) in market_data.index:
@@ -648,15 +653,18 @@ if menu == '트렌드 리포트':
                     (item_name, cat4, item_eval, item_eval_ex_fx)
                 )
 
+              # 개별 보유 종목별 평가손익 및 원금 안분 계산 (연금 계좌 평가 손익 0 해결 핵심)
+              item_count = len(item_eval_list)
               for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
-                ratio = (
-                    (item_eval / total_acc_eval) if total_acc_eval > 0 else 0
-                )
-                ratio_ex = (
-                    (item_eval_ex / total_acc_eval_ex_fx)
-                    if total_acc_eval_ex_fx > 0
-                    else 0
-                )
+                if total_acc_eval > 0:
+                  ratio = item_eval / total_acc_eval
+                else:
+                  ratio = 1.0 / item_count if item_count > 0 else 0
+
+                if total_acc_eval_ex_fx > 0:
+                  ratio_ex = item_eval_ex / total_acc_eval_ex_fx
+                else:
+                  ratio_ex = 1.0 / item_count if item_count > 0 else 0
 
                 item_principal = principal * ratio
                 item_p_loss = item_eval - item_principal
@@ -1933,6 +1941,7 @@ elif menu == '포트폴리오 업로드':
               df[col] = None
 
           for _, row in df.iterrows():
+            formatted_tk = format_ticker(row.get('ticker'))
             c.execute(
                 '''
                             INSERT INTO portfolio (
@@ -1947,7 +1956,7 @@ elif menu == '포트폴리오 업로드':
                     row['account_num'],
                     row['account_type'],
                     row['item_name'],
-                    row['ticker'],
+                    formatted_tk,
                     row['category1'],
                     row['category2'],
                     row['category3'],
