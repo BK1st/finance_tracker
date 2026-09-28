@@ -192,12 +192,7 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # 3. Plotly 레이아웃 및 범주 헬퍼 함수
 # -----------------------------------------------------------------------------
 def build_legend_config(mode_str):
-  """모바일 가독성 향상 레이아웃 설정:
-
-  1. 차트 제목과 ModeBar(컨트롤 바)의 충돌 방지를 위해 상단 여백(t=120)을 넉넉히 확보
-  2. x축 날짜 라벨과의 침범 방지를 위해 범주 y축을 -0.35로 조정 및 b=140
-  3. 하단 범주 정렬을 좌측 끝(x=0, xanchor='left')부터 구성하고 entrywidth=100px 설정
-  """
+  """모바일 가독성 향상 레이아웃 설정"""
   if mode_str == '우측 배치':
     return (
         dict(
@@ -216,15 +211,15 @@ def build_legend_config(mode_str):
         dict(
             orientation='h',
             yanchor='top',
-            y=-0.35,  # 날짜 라벨과 절대 겹치지 않도록 아래로 이동
-            xanchor='left',  # 맨 좌측부터 배치하여 공간 활용 극대화
+            y=-0.35,
+            xanchor='left',
             x=0,
             entrywidthmode='pixels',
-            entrywidth=100,  # 모바일에서 좌측부터 차곡차곡 줄바꿈 배치
+            entrywidth=100,
             font=dict(size=10),
         ),
         True,
-        dict(t=120, b=140, l=10, r=20),  # 상단 t=120 및 하단 여백 충분히 확보
+        dict(t=120, b=140, l=10, r=20),
     )
   else:  # '숨김'
     return dict(), False, dict(t=120, b=50, l=10, r=20)
@@ -266,12 +261,14 @@ bm_ticker_map = {
     '미국 SPY': 'SPY',
     '미국 QQQ': 'QQQ',
     '한국 KOSPI': '^KS11',
+    'KRW/USD 환율': 'KRW=X',
 }
 
 bm_styles = {
     '미국 SPY': dict(color='#7f7f7f', dash='dash'),
     '미국 QQQ': dict(color='#17becf', dash='dash'),
     '한국 KOSPI': dict(color='#e377c2', dash='dash'),
+    'KRW/USD 환율': dict(color='#2ca02c', dash='dashdot'),
 }
 
 # -----------------------------------------------------------------------------
@@ -332,7 +329,7 @@ if menu == '트렌드 리포트':
         '월간 (매달 말일)',
         '연간 (매년 말일)',
     ]
-    bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI']
+    bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI', 'KRW/USD 환율']
 
     all_view_types = [
         '전체 합산',
@@ -461,6 +458,28 @@ if menu == '트렌드 리포트':
             fetch_tickers, s_str, e_str, force_refresh=True
         )
 
+      # 최초일 환율 수집 (환차손 제외 기준 환율)
+      first_t_str = target_dates[0].strftime('%Y-%m-%d')
+      usd_krw_first = None
+      if 'KRW=X' in market_data.columns and not market_data.empty:
+        if pd.to_datetime(first_t_str) in market_data.index:
+          usd_krw_first = market_data.loc[pd.to_datetime(first_t_str), 'KRW=X']
+        else:
+          usd_krw_first = market_data['KRW=X'].asof(pd.to_datetime(first_t_str))
+
+      if (
+          pd.isna(usd_krw_first)
+          or usd_krw_first is None
+          or usd_krw_first <= 0
+      ):
+        if (
+            'KRW=X' in market_data.columns
+            and not market_data['KRW=X'].dropna().empty
+        ):
+          usd_krw_first = float(market_data['KRW=X'].dropna().iloc[0])
+        else:
+          usd_krw_first = 1350.0
+
       base_records = []
       for t_date in target_dates:
         t_str = t_date.strftime('%Y-%m-%d')
@@ -536,6 +555,9 @@ if menu == '트렌드 리포트':
                 '원금': principal,
                 '평가손익': mirae_eval_val - principal,
                 '총평가금액': mirae_eval_val,
+                '원금_ex_fx': principal,
+                '평가손익_ex_fx': mirae_eval_val - principal,
+                '총평가금액_ex_fx': mirae_eval_val,
             })
           else:
             acc_pf = filtered_pf_df[
@@ -555,6 +577,7 @@ if menu == '트렌드 리포트':
               latest_date = acc_pf['record_date'].max()
               current_pf = acc_pf[acc_pf['record_date'] == latest_date]
               total_acc_eval = 0
+              total_acc_eval_ex_fx = 0
               item_eval_list = []
 
               for _, row in current_pf.iterrows():
@@ -613,15 +636,33 @@ if menu == '트렌드 리포트':
                 item_eval = (
                     (qty * price * usd_krw) if curr == 'USD' else (qty * price)
                 )
-                total_acc_eval += item_eval
-                item_eval_list.append((item_name, cat4, item_eval))
+                item_eval_ex_fx = (
+                    (qty * price * usd_krw_first)
+                    if curr == 'USD'
+                    else (qty * price)
+                )
 
-              for item_name, cat4, item_eval in item_eval_list:
+                total_acc_eval += item_eval
+                total_acc_eval_ex_fx += item_eval_ex_fx
+                item_eval_list.append(
+                    (item_name, cat4, item_eval, item_eval_ex_fx)
+                )
+
+              for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
                 ratio = (
                     (item_eval / total_acc_eval) if total_acc_eval > 0 else 0
                 )
+                ratio_ex = (
+                    (item_eval_ex / total_acc_eval_ex_fx)
+                    if total_acc_eval_ex_fx > 0
+                    else 0
+                )
+
                 item_principal = principal * ratio
                 item_p_loss = item_eval - item_principal
+
+                item_principal_ex = principal * ratio_ex
+                item_p_loss_ex = item_eval_ex - item_principal_ex
 
                 base_records.append({
                     'Date': t_str,
@@ -633,6 +674,9 @@ if menu == '트렌드 리포트':
                     '원금': item_principal,
                     '평가손익': item_p_loss,
                     '총평가금액': item_eval,
+                    '원금_ex_fx': item_principal_ex,
+                    '평가손익_ex_fx': item_p_loss_ex,
+                    '총평가금액_ex_fx': item_eval_ex,
                 })
 
       bm_calc_dict = {}
@@ -756,40 +800,8 @@ if menu == '트렌드 리포트':
         elif axis_name == 'yaxis2':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
-      def draw_single_chart(sub_df, title_name, force_single_col=False):
-        sub_df = sub_df.copy()
-        sub_df['dt_temp'] = pd.to_datetime(sub_df['Date'])
-        sub_df = sub_df.sort_values('dt_temp', ascending=True).reset_index(
-            drop=True
-        )
-        sub_df['Chart_Date'] = sub_df['dt_temp'].dt.strftime('%Y-%m-%d')
-        sub_df.drop(columns=['dt_temp'], inplace=True)
-
-        date_order_list = sub_df['Chart_Date'].tolist()
-
-        sub_df['수익률'] = np.where(
-            sub_df['원금'] > 0, (sub_df['평가손익'] / sub_df['원금']) * 100, 0
-        )
-        sub_df['주기별 평가손익'] = sub_df['총평가금액'].diff()
-        base_start_p_loss = sub_df['평가손익'].iloc[0]
-        sub_df['선택구간 누적손익'] = sub_df['평가손익'] - base_start_p_loss
-        sub_df['구간별 수익률'] = sub_df['총평가금액'].pct_change() * 100
-        initial_eval = sub_df['총평가금액'].iloc[0]
-        sub_df['구간별 누적수익률'] = np.where(
-            initial_eval > 0,
-            ((sub_df['총평가금액'] - initial_eval) / initial_eval) * 100,
-            0,
-        )
-
-        selected_cum_p_loss = sub_df['선택구간 누적손익'].iloc[-1]
-        total_cum_p_loss = sub_df['평가손익'].iloc[-1]
-
-        c_m1, c_m2, c_m3 = st.columns(3)
-        c_m1.metric('📌 선택 구간 누적 평가손익', f'{selected_cum_p_loss:,.0f} 원')
-        c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
-        c_m3.metric('💰 최종 기말 평가금액', f"{sub_df['총평가금액'].iloc[-1]:,.0f} 원")
-
-        st.markdown(f'##### ⚙️ [{title_name}] 개별 차트 범주 설정')
+      def draw_single_chart(raw_df, title_name, force_single_col=False):
+        st.markdown(f'##### ⚙️ [{title_name}] 개별 차트 범주 및 환율 옵션 설정')
         cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
         default_idx = 0 if global_legend_pos == '하단 배치' else 1
@@ -801,12 +813,20 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_f1_{title_name}_{force_single_col}',
           )
+          ex_fx1 = st.toggle(
+              '🔀 환차손제외 (차트1)',
+              key=f'ex1_{title_name}_{force_single_col}',
+          )
         with cb_col2:
           pos_fig2 = st.selectbox(
               '차트2 범주',
               leg_pos_options,
               index=default_idx,
               key=f'pos_f2_{title_name}_{force_single_col}',
+          )
+          ex_fx2 = st.toggle(
+              '🔀 환차손제외 (차트2)',
+              key=f'ex2_{title_name}_{force_single_col}',
           )
         with cb_col3:
           pos_fig3a = st.selectbox(
@@ -815,6 +835,10 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_f3a_{title_name}_{force_single_col}',
           )
+          ex_fx3a = st.toggle(
+              '🔀 환차손제외 (차트3-1)',
+              key=f'ex3a_{title_name}_{force_single_col}',
+          )
         with cb_col4:
           pos_fig3b = st.selectbox(
               '차트3-2 범주',
@@ -822,13 +846,61 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_f3b_{title_name}_{force_single_col}',
           )
+          ex_fx3b = st.toggle(
+              '🔀 환차손제외 (차트3-2)',
+              key=f'ex3b_{title_name}_{force_single_col}',
+          )
+
+        def get_sub_df(use_ex_fx):
+          sub_df = raw_df.copy()
+          if use_ex_fx and '원금_ex_fx' in sub_df.columns:
+            sub_df['원금'] = sub_df['원금_ex_fx']
+            sub_df['평가손익'] = sub_df['평가손익_ex_fx']
+            sub_df['총평가금액'] = sub_df['총평가금액_ex_fx']
+
+          sub_df['dt_temp'] = pd.to_datetime(sub_df['Date'])
+          sub_df = sub_df.sort_values('dt_temp', ascending=True).reset_index(
+              drop=True
+          )
+          sub_df['Chart_Date'] = sub_df['dt_temp'].dt.strftime('%Y-%m-%d')
+          sub_df.drop(columns=['dt_temp'], inplace=True)
+
+          sub_df['수익률'] = np.where(
+              sub_df['원금'] > 0, (sub_df['평가손익'] / sub_df['원금']) * 100, 0
+          )
+          sub_df['주기별 평가손익'] = sub_df['총평가금액'].diff()
+          base_start_p_loss = sub_df['평가손익'].iloc[0]
+          sub_df['선택구간 누적손익'] = sub_df['평가손익'] - base_start_p_loss
+          sub_df['구간별 수익률'] = sub_df['총평가금액'].pct_change() * 100
+          initial_eval = sub_df['총평가금액'].iloc[0]
+          sub_df['구간별 누적수익률'] = np.where(
+              initial_eval > 0,
+              ((sub_df['총평가금액'] - initial_eval) / initial_eval) * 100,
+              0,
+          )
+          return sub_df
+
+        sub_df_default = get_sub_df(False)
+
+        selected_cum_p_loss = sub_df_default['선택구간 누적손익'].iloc[-1]
+        total_cum_p_loss = sub_df_default['평가손익'].iloc[-1]
+
+        c_m1, c_m2, c_m3 = st.columns(3)
+        c_m1.metric('📌 선택 구간 누적 평가손익', f'{selected_cum_p_loss:,.0f} 원')
+        c_m2.metric('🏛️ 전체 통산 누적 평가손익', f'{total_cum_p_loss:,.0f} 원')
+        c_m3.metric(
+            '💰 최종 기말 평가금액', f"{sub_df_default['총평가금액'].iloc[-1]:,.0f} 원"
+        )
+
+        date_order_list = sub_df_default['Chart_Date'].tolist()
 
         # Fig 1
+        sub1 = get_sub_df(ex_fx1)
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         fig1.add_trace(
             go.Bar(
-                x=sub_df['Chart_Date'],
-                y=sub_df['원금'],
+                x=sub1['Chart_Date'],
+                y=sub1['원금'],
                 name='원금',
                 marker_color='#2b5c8f',
                 opacity=0.6,
@@ -837,8 +909,8 @@ if menu == '트렌드 리포트':
         )
         fig1.add_trace(
             go.Bar(
-                x=sub_df['Chart_Date'],
-                y=sub_df['평가손익'],
+                x=sub1['Chart_Date'],
+                y=sub1['평가손익'],
                 name='전체 누적 평가손익',
                 marker_color='#e05d5d',
                 opacity=0.5,
@@ -847,21 +919,21 @@ if menu == '트렌드 리포트':
         )
         fig1.add_trace(
             go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['총평가금액'],
+                x=sub1['Chart_Date'],
+                y=sub1['총평가금액'],
                 name='총평가금액',
                 mode='lines+markers+text',
                 line=dict(color='#ff9900', width=3),
                 marker=dict(size=6),
-                text=[f'{v:,.0f}' for v in sub_df['총평가금액']],
+                text=[f'{v:,.0f}' for v in sub1['총평가금액']],
                 textposition='top center',
             ),
             secondary_y=False,
         )
         fig1.add_trace(
             go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['수익률'],
+                x=sub1['Chart_Date'],
+                y=sub1['수익률'],
                 name='수익률(%)',
                 mode='lines+markers',
                 line=dict(color='#2ca02c', dash='dash', width=2),
@@ -872,9 +944,12 @@ if menu == '트렌드 리포트':
         )
 
         leg_cfg1, show_leg1, margin1 = build_legend_config(pos_fig1)
+        title_suffix1 = ' (환차손제외)' if ex_fx1 else ''
         fig1.update_layout(
             title=dict(
-                text=f'1. [{title_name}] 자산 및 전체 손익/수익률 추이',
+                text=(
+                    f'1. [{title_name}] 자산 및 전체 손익/수익률 추이{title_suffix1}'
+                ),
                 y=0.95,
                 x=0.01,
                 xanchor='left',
@@ -906,8 +981,9 @@ if menu == '트렌드 리포트':
         )
 
         # Fig 2
+        sub2 = get_sub_df(ex_fx2)
         fig2 = go.Figure()
-        valid_period_df = sub_df.dropna(subset=['주기별 평가손익'])
+        valid_period_df = sub2.dropna(subset=['주기별 평가손익'])
         period_colors = [
             '#2ca02c' if v >= 0 else '#d62728'
             for v in valid_period_df['주기별 평가손익']
@@ -923,8 +999,8 @@ if menu == '트렌드 리포트':
         )
         fig2.add_trace(
             go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['선택구간 누적손익'],
+                x=sub2['Chart_Date'],
+                y=sub2['선택구간 누적손익'],
                 name='선택구간 누적손익 (추이)',
                 mode='lines+markers',
                 line=dict(color='#9467bd', width=2.5),
@@ -933,9 +1009,10 @@ if menu == '트렌드 리포트':
         )
 
         leg_cfg2, show_leg2, margin2 = build_legend_config(pos_fig2)
+        title_suffix2 = ' (환차손제외)' if ex_fx2 else ''
         fig2.update_layout(
             title=dict(
-                text=f'2. [{title_name}] 구간 손익 금액 추이',
+                text=f'2. [{title_name}] 구간 손익 금액 추이{title_suffix2}',
                 y=0.95,
                 x=0.01,
                 xanchor='left',
@@ -957,11 +1034,12 @@ if menu == '트렌드 리포트':
         fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
         # Fig 3a
+        sub3a = get_sub_df(ex_fx3a)
         fig3a = go.Figure()
         fig3a.add_trace(
             go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['구간별 누적수익률'],
+                x=sub3a['Chart_Date'],
+                y=sub3a['구간별 누적수익률'],
                 name='구간별 누적수익률 (%)',
                 mode='lines+markers',
                 line=dict(color='#1f77b4', width=2.5),
@@ -993,11 +1071,12 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg3a, show_leg3a, margin3a = build_legend_config(pos_fig3a)
+        title_suffix3a = ' (환차손제외)' if ex_fx3a else ''
         fig3a.update_layout(
             title=dict(
                 text=(
                     f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
-                    ' 비교)'
+                    f' 비교){title_suffix3a}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1024,11 +1103,12 @@ if menu == '트렌드 리포트':
         )
 
         # Fig 3b
+        sub3b = get_sub_df(ex_fx3b)
         fig3b = go.Figure()
         fig3b.add_trace(
             go.Scatter(
-                x=sub_df['Chart_Date'],
-                y=sub_df['구간별 수익률'],
+                x=sub3b['Chart_Date'],
+                y=sub3b['구간별 수익률'],
                 name='구간별 수익률 (%)',
                 mode='lines+markers',
                 line=dict(color='#17becf', width=2, dash='dot'),
@@ -1057,11 +1137,12 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg3b, show_leg3b, margin3b = build_legend_config(pos_fig3b)
+        title_suffix3b = ' (환차손제외)' if ex_fx3b else ''
         fig3b.update_layout(
             title=dict(
                 text=(
                     f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
-                    ' 비교)'
+                    f' 비교){title_suffix3b}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1139,56 +1220,12 @@ if menu == '트렌드 리포트':
               fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
           )
 
-        return sub_df
+        return sub_df_default
 
-      def draw_group_summary_charts(df, group_col, prefix):
+      def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
-        grp_agg = (
-            df.groupby(['Date', group_col])[['원금', '평가손익', '총평가금액']]
-            .sum()
-            .reset_index()
-        )
+        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 및 환율 옵션 설정')
 
-        grp_agg['dt_temp'] = pd.to_datetime(grp_agg['Date'])
-        grp_agg = grp_agg.sort_values(
-            [group_col, 'dt_temp'], ascending=True
-        ).reset_index(drop=True)
-        grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
-        grp_agg.drop(columns=['dt_temp'], inplace=True)
-
-        date_order_list = sorted(grp_agg['Chart_Date'].unique().tolist())
-
-        grp_agg['수익률'] = np.where(
-            grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
-        )
-        grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)[
-            '총평가금액'
-        ].diff()
-        first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform('first')
-        grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
-
-        grp_agg['주기별 수익률'] = (
-            grp_agg.groupby(group_col)['총평가금액'].pct_change() * 100
-        )
-        first_eval = grp_agg.groupby(group_col)['총평가금액'].transform('first')
-        grp_agg['선택기간 누적 수익률'] = np.where(
-            first_eval > 0,
-            ((grp_agg['총평가금액'] - first_eval) / first_eval) * 100,
-            0,
-        )
-
-        latest_date = df['Date'].max()
-        latest_df = df[df['Date'] == latest_date]
-        group_order = (
-            latest_df.groupby(group_col)['총평가금액']
-            .sum()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
-        all_groups = grp_agg[group_col].unique()
-        groups = group_order + [g for g in all_groups if g not in group_order]
-
-        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 배치 설정')
         cb_c1, cb_c2, cb_c3, cb_c4, cb_c5, cb_c6 = st.columns(6)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
         default_idx = 0 if global_legend_pos == '하단 배치' else 1
@@ -1200,6 +1237,7 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g1_{prefix}',
           )
+          ex_g1 = st.toggle('🔀 환차손제외', key=f'ex_g1_{prefix}')
         with cb_c2:
           pos_g2 = st.selectbox(
               '주기별손익',
@@ -1207,6 +1245,7 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g2_{prefix}',
           )
+          ex_g2 = st.toggle('🔀 환차손제외', key=f'ex_g2_{prefix}')
         with cb_c3:
           pos_g3 = st.selectbox(
               '주기별수익률',
@@ -1214,6 +1253,7 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g3_{prefix}',
           )
+          ex_g3 = st.toggle('🔀 환차손제외', key=f'ex_g3_{prefix}')
         with cb_c4:
           pos_g4 = st.selectbox(
               '기간누적수익률',
@@ -1221,6 +1261,7 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g4_{prefix}',
           )
+          ex_g4 = st.toggle('🔀 환차손제외', key=f'ex_g4_{prefix}')
         with cb_c5:
           pos_g5 = st.selectbox(
               '통산누적손익',
@@ -1228,6 +1269,7 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g5_{prefix}',
           )
+          ex_g5 = st.toggle('🔀 환차손제외', key=f'ex_g5_{prefix}')
         with cb_c6:
           pos_g6 = st.selectbox(
               '통산수익률',
@@ -1235,11 +1277,73 @@ if menu == '트렌드 리포트':
               index=default_idx,
               key=f'pos_g6_{prefix}',
           )
+          ex_g6 = st.toggle('🔀 환차손제외', key=f'ex_g6_{prefix}')
+
+        def get_grp_agg(use_ex_fx):
+          df_curr = raw_df.copy()
+          if use_ex_fx and '원금_ex_fx' in df_curr.columns:
+            df_curr['원금'] = df_curr['원금_ex_fx']
+            df_curr['평가손익'] = df_curr['평가손익_ex_fx']
+            df_curr['총평가금액'] = df_curr['총평가금액_ex_fx']
+
+          grp_agg = (
+              df_curr.groupby(['Date', group_col])[
+                  ['원금', '평가손익', '총평가금액']
+              ]
+              .sum()
+              .reset_index()
+          )
+
+          grp_agg['dt_temp'] = pd.to_datetime(grp_agg['Date'])
+          grp_agg = grp_agg.sort_values(
+              [group_col, 'dt_temp'], ascending=True
+          ).reset_index(drop=True)
+          grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
+          grp_agg.drop(columns=['dt_temp'], inplace=True)
+
+          grp_agg['수익률'] = np.where(
+              grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
+          )
+          grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)[
+              '총평가금액'
+          ].diff()
+          first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform(
+              'first'
+          )
+          grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+
+          grp_agg['주기별 수익률'] = (
+              grp_agg.groupby(group_col)['총평가금액'].pct_change() * 100
+          )
+          first_eval = grp_agg.groupby(group_col)['총평가금액'].transform(
+              'first'
+          )
+          grp_agg['선택기간 누적 수익률'] = np.where(
+              first_eval > 0,
+              ((grp_agg['총평가금액'] - first_eval) / first_eval) * 100,
+              0,
+          )
+          return grp_agg
+
+        grp_agg_def = get_grp_agg(False)
+        date_order_list = sorted(grp_agg_def['Chart_Date'].unique().tolist())
+
+        latest_date = raw_df['Date'].max()
+        latest_df = raw_df[raw_df['Date'] == latest_date]
+        group_order = (
+            latest_df.groupby(group_col)['총평가금액']
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        all_groups = grp_agg_def[group_col].unique()
+        groups = group_order + [g for g in all_groups if g not in group_order]
 
         # 1. 선택구간 누적 평가손익
+        grp_agg_g1 = get_grp_agg(ex_g1)
         fig_sel_p = go.Figure()
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp]
+          sub = grp_agg_g1[grp_agg_g1[group_col] == grp]
           fig_sel_p.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
@@ -1251,9 +1355,10 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg_g1, show_g1, margin_g1 = build_legend_config(pos_g1)
+        suf_g1 = ' (환차손제외)' if ex_g1 else ''
         fig_sel_p.update_layout(
             title=dict(
-                text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend',
+                text=f'🔹 [{prefix}] 선택 구간 누적 평가손익 Trend{suf_g1}',
                 y=0.95,
                 x=0.01,
                 xanchor='left',
@@ -1277,9 +1382,10 @@ if menu == '트렌드 리포트':
         )
 
         # 2. 주기별 평가손익
+        grp_agg_g2 = get_grp_agg(ex_g2)
         fig_period_p = go.Figure()
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp].dropna(
+          sub = grp_agg_g2[grp_agg_g2[group_col] == grp].dropna(
               subset=['주기별 평가손익']
           )
           fig_period_p.add_trace(
@@ -1289,11 +1395,12 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg_g2, show_g2, margin_g2 = build_legend_config(pos_g2)
+        suf_g2 = ' (환차손제외)' if ex_g2 else ''
         fig_period_p.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
-                    ' 막대)'
+                    f' 막대){suf_g2}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1317,9 +1424,10 @@ if menu == '트렌드 리포트':
         fig_period_p.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
         # 3. 주기별 수익률
+        grp_agg_g3 = get_grp_agg(ex_g3)
         fig_period_ret = go.Figure()
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp].dropna(
+          sub = grp_agg_g3[grp_agg_g3[group_col] == grp].dropna(
               subset=['주기별 수익률']
           )
           fig_period_ret.add_trace(
@@ -1352,11 +1460,12 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg_g3, show_g3, margin_g3 = build_legend_config(pos_g3)
+        suf_g3 = ' (환차손제외)' if ex_g3 else ''
         fig_period_ret.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
-                    ' 벤치마크 포함)'
+                    f' 벤치마크 포함){suf_g3}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1383,9 +1492,10 @@ if menu == '트렌드 리포트':
         )
 
         # 4. 누적 수익률 & 손익
+        grp_agg_g4 = get_grp_agg(ex_g4)
         fig_cum_ret = make_subplots(specs=[[{'secondary_y': True}]])
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp]
+          sub = grp_agg_g4[grp_agg_g4[group_col] == grp]
           fig_cum_ret.add_trace(
               go.Bar(
                   x=sub['Chart_Date'],
@@ -1398,7 +1508,7 @@ if menu == '트렌드 리포트':
           )
 
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp]
+          sub = grp_agg_g4[grp_agg_g4[group_col] == grp]
           fig_cum_ret.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
@@ -1430,11 +1540,12 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg_g4, show_g4, margin_g4 = build_legend_config(pos_g4)
+        suf_g4 = ' (환차손제외)' if ex_g4 else ''
         fig_cum_ret.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 선택기간 누적 수익률 Trend (좌축) &'
-                    ' 선택기간 누적평가 손익 (우측 보조축 그룹 막대)'
+                    f' 선택기간 누적평가 손익 (우측 보조축 그룹 막대){suf_g4}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1469,19 +1580,21 @@ if menu == '트렌드 리포트':
         )
 
         # 5. 통산 누적 평가손익
+        grp_agg_g5 = get_grp_agg(ex_g5)
         fig_p = go.Figure()
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp]
+          sub = grp_agg_g5[grp_agg_g5[group_col] == grp]
           fig_p.add_trace(
               go.Bar(x=sub['Chart_Date'], y=sub['평가손익'], name=str(grp))
           )
 
         leg_cfg_g5, show_g5, margin_g5 = build_legend_config(pos_g5)
+        suf_g5 = ' (환차손제외)' if ex_g5 else ''
         fig_p.update_layout(
             title=dict(
                 text=(
                     f'🔹 [{prefix}] 전체 통산 누적 평가손익 Trend (세로 누적'
-                    ' 막대)'
+                    f' 막대){suf_g5}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1505,9 +1618,10 @@ if menu == '트렌드 리포트':
         fig_p.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
         # 6. 통산 수익률
+        grp_agg_g6 = get_grp_agg(ex_g6)
         fig_r = go.Figure()
         for grp in groups:
-          sub = grp_agg[grp_agg[group_col] == grp]
+          sub = grp_agg_g6[grp_agg_g6[group_col] == grp]
           fig_r.add_trace(
               go.Scatter(
                   x=sub['Chart_Date'],
@@ -1519,9 +1633,10 @@ if menu == '트렌드 리포트':
           )
 
         leg_cfg_g6, show_g6, margin_g6 = build_legend_config(pos_g6)
+        suf_g6 = ' (환차손제외)' if ex_g6 else ''
         fig_r.update_layout(
             title=dict(
-                text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선)',
+                text=f'🔹 [{prefix}] 통산 수익률 Trend (원금대비 꺾은선){suf_g6}',
                 y=0.95,
                 x=0.01,
                 xanchor='left',
@@ -1612,7 +1727,16 @@ if menu == '트렌드 리포트':
       def render_separate_charts(df, group_col, prefix):
         if group_col is None:
           agg_df = (
-              df.groupby('Date')[['원금', '평가손익', '총평가금액']]
+              df.groupby('Date')[
+                  [
+                      '원금',
+                      '평가손익',
+                      '총평가금액',
+                      '원금_ex_fx',
+                      '평가손익_ex_fx',
+                      '총평가금액_ex_fx',
+                  ]
+              ]
               .sum()
               .reset_index()
           )
@@ -1641,7 +1765,16 @@ if menu == '트렌드 리포트':
               with cols[idx % num_cols]:
                 grp_df = (
                     df[df[group_col] == grp]
-                    .groupby('Date')[['원금', '평가손익', '총평가금액']]
+                    .groupby('Date')[
+                        [
+                            '원금',
+                            '평가손익',
+                            '총평가금액',
+                            '원금_ex_fx',
+                            '평가손익_ex_fx',
+                            '총평가금액_ex_fx',
+                        ]
+                    ]
                     .sum()
                     .reset_index()
                 )
@@ -1653,7 +1786,16 @@ if menu == '트렌드 리포트':
             for grp in groups:
               grp_df = (
                   df[df[group_col] == grp]
-                  .groupby('Date')[['원금', '평가손익', '총평가금액']]
+                  .groupby('Date')[
+                      [
+                          '원금',
+                          '평가손익',
+                          '총평가금액',
+                          '원금_ex_fx',
+                          '평가손익_ex_fx',
+                          '총평가금액_ex_fx',
+                      ]
+                  ]
                   .sum()
                   .reset_index()
               )
