@@ -153,7 +153,8 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    data = data.ffill()
+    # 비어있는 데이터 앞뒤 채우기 보완 (bfill -> ffill)
+    data = data.bfill().ffill()
 
     today_str = datetime.now().strftime('%Y-%m-%d')
     today_dt = pd.to_datetime(today_str)
@@ -458,7 +459,8 @@ if menu == '트렌드 리포트':
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
-        s_str = start_date.strftime('%Y-%m-%d')
+        # 과거 데이터 조회를 위해 여유 있게 10일 전부터 수집 시작
+        s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
         e_str = (end_date + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
@@ -623,17 +625,20 @@ if menu == '트렌드 리포트':
                   price = base_price if base_price > 0 else 0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
+                    # 1. 당일 시세 탐색
                     if pd.to_datetime(t_str) in market_data.index:
                       price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
                     else:
+                      # 2. 당일 시세 미존재 시 과거 가장 가까운 시세 탐색 (asof)
                       price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
 
+                    # 3. 과거 시세가 없으면 미래의 첫 번째 유효 시세 탐색
                     if (
                         (pd.isna(price) or price == 0)
                         and fmt_tk in market_data.columns
                         and not market_data[fmt_tk].dropna().empty
                     ):
-                      price = float(market_data[fmt_tk].dropna().iloc[-1])
+                      price = float(market_data[fmt_tk].dropna().iloc[0])
 
                   if pd.isna(price) or price == 0:
                     price = base_price
@@ -653,7 +658,7 @@ if menu == '트렌드 리포트':
                     (item_name, cat4, item_eval, item_eval_ex_fx)
                 )
 
-              # 개별 보유 종목별 평가손익 및 원금 안분 계산 (연금 계좌 평가 손익 0 해결 핵심)
+              # 개별 보유 종목별 평가손익 및 원금 안분 계산
               item_count = len(item_eval_list)
               for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
                 if total_acc_eval > 0:
@@ -705,15 +710,15 @@ if menu == '트렌드 리포트':
                 and tk in market_data.columns
                 and not market_data[tk].dropna().empty
             ):
-              p = float(market_data[tk].dropna().iloc[-1])
+              p = float(market_data[tk].dropna().iloc[0])
 
             prices.append(p)
             dates_str.append(t_str)
 
           bm_df = (
               pd.DataFrame({'Date_str': dates_str, 'Close': prices})
-              .ffill()
               .bfill()
+              .ffill()
           )
           init_p = bm_df['Close'].iloc[0] if len(bm_df) > 0 else 0
 
