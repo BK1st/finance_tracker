@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import sqlite3
@@ -15,7 +16,7 @@ import yfinance as yf
 st.set_page_config(
     page_title="재정 관리 앱 (모바일)",
     layout="wide",
-    initial_sidebar_state="collapsed"  # 모바일 화면을 위해 사이드바 기본 닫힘
+    initial_sidebar_state="collapsed"
 )
 
 # ---------------------------------------------------------
@@ -30,11 +31,11 @@ def get_connection():
 
 
 def export_backup_json():
-    """DB 내의 데이터를 JSON 백업 파일로 자동 저장"""
+    """DB 내의 데이터를 JSON 백업 파일로 자동 저장 (whose 포함)"""
     try:
         conn = get_connection()
         df = pd.read_sql("""
-            SELECT record_date, broker, account_num, account_type, item_name, ticker,
+            SELECT record_date, whose, broker, account_num, account_type, item_name, ticker,
                    category1, category2, category3, category4, buy_price, quantity,
                    current_price, currency, exchange_rate
             FROM portfolio
@@ -51,7 +52,7 @@ def export_backup_json():
 
 
 def import_backup_json(json_content, replace=True):
-    """JSON 백업 데이터를 DB로 복원"""
+    """JSON 백업 데이터를 DB로 복원 (whose 포함)"""
     try:
         if isinstance(json_content, bytes):
             json_content = json_content.decode("utf-8")
@@ -60,7 +61,7 @@ def import_backup_json(json_content, replace=True):
             return 0
         df = pd.DataFrame(data)
         required_cols = [
-            "record_date", "broker", "account_num", "account_type", "item_name",
+            "record_date", "whose", "broker", "account_num", "account_type", "item_name",
             "ticker", "category1", "category2", "category3", "category4",
             "buy_price", "quantity", "current_price", "currency", "exchange_rate"
         ]
@@ -69,6 +70,7 @@ def import_backup_json(json_content, replace=True):
                 df[col] = None
         df["currency"] = df["currency"].fillna("KRW")
         df["exchange_rate"] = df["exchange_rate"].fillna(1.0)
+        df["whose"] = df["whose"].fillna("본인")
         
         conn = get_connection()
         cursor = conn.cursor()
@@ -86,13 +88,14 @@ def import_backup_json(json_content, replace=True):
 
 
 def init_db():
-    """DB 초기화 및 비활성화 후 서버 재부팅 시 자동 데이터 복구"""
+    """DB 초기화 및 whose 컬럼 마이그레이션 적용"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_date TEXT,
+            whose TEXT DEFAULT '본인',
             broker TEXT,
             account_num TEXT,
             account_type TEXT,
@@ -111,6 +114,13 @@ def init_db():
     """)
     conn.commit()
     
+    # 기존 DB 테이블에 whose 컬럼이 없다면 자동 추가 (마이그레이션)
+    cursor.execute("PRAGMA table_info(portfolio)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if "whose" not in columns:
+        cursor.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT DEFAULT '본인'")
+        conn.commit()
+
     cursor.execute("SELECT COUNT(*) FROM portfolio")
     count = cursor.fetchone()[0]
     conn.close()
@@ -126,7 +136,7 @@ def init_db():
 
 
 # ---------------------------------------------------------
-# 0. 배치 시세 수집 및 캐싱 함수
+# 배치 시세 수집 및 캐싱 함수
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
@@ -387,15 +397,105 @@ if menu == "자산 입력 및 관리":
     mode = st.radio(
         "작업 선택",
         [
+            "🖥️ 웹 화면 직접 수정/편집 (추천)",
             "신규 데이터 개별 추가",
             "엑셀 파일로 일괄 추가",
-            "기존 데이터 수정",
             "🗑️ 데이터 삭제 관리",
         ],
         horizontal=True,
     )
 
-    if mode == "신규 데이터 개별 추가":
+    # ---------------------------------------------------------
+    # 모드 1: 웹 화면 직접 수정/편집 (요청사항 2, 3 반영)
+    # ---------------------------------------------------------
+    if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
+        st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
+        st.info("💡 **사용 방법**: 아래 표에서 셀을 직접 수정하거나, 체크박스로 삭제할 행을 선택하고, 하단 버튼으로 줄을 추가하거나 일괄 저장할 수 있습니다.")
+
+        required_cols = [
+            "record_date", "whose", "broker", "account_num", "account_type", "item_name",
+            "ticker", "category1", "category2", "category3", "category4",
+            "buy_price", "quantity", "current_price", "currency", "exchange_rate"
+        ]
+
+        if not df_raw.empty:
+            edit_df = df_raw.copy()
+        else:
+            edit_df = pd.DataFrame(columns=["id"] + required_cols)
+
+        # 체크박스 선택용 컬럼 추가
+        edit_df.insert(0, "선택(삭제)", False)
+
+        # Streamlit Data Editor로 표 출력 및 직접 수정 허용
+        edited_data = st.data_editor(
+            edit_df,
+            num_rows="dynamic",  # 표 내부에서 바로 행 추가 가능
+            use_container_width=True,
+            key="web_data_editor",
+            column_config={
+                "선택(삭제)": st.column_config.CheckboxColumn("선택(삭제)", help="삭제할 줄을 체크하세요"),
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "record_date": st.column_config.TextColumn("기준 날짜"),
+                "whose": st.column_config.TextColumn("소유자(WHOSE)"),
+                "currency": st.column_config.SelectboxColumn("통화", options=["KRW", "USD"]),
+            },
+            hide_index=True
+        )
+
+        col_ed1, col_ed2 = st.columns([1, 1])
+
+        with col_ed1:
+            if st.button("🗑️ 선택한 행(체크박스) 일괄 삭제"):
+                selected_to_delete = edited_data[edited_data["선택(삭제)"] == True]
+                if not selected_to_delete.empty:
+                    ids_to_delete = selected_to_delete["id"].dropna().tolist()
+                    if ids_to_delete:
+                        conn = get_connection()
+                        cursor = conn.cursor()
+                        cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
+                        conn.commit()
+                        conn.close()
+                        export_backup_json()
+                        st.success(f"선택한 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
+                        st.rerun()
+                    else:
+                        st.warning("새로 입력되어 ID가 없는 행은 저장 시 반영되지 않습니다.")
+                else:
+                    st.warning("삭제할 행의 '선택(삭제)' 체크박스를 지정해 주세요.")
+
+        with col_ed2:
+            if st.button("💾 표 수정 및 변경사항 DB에 일괄 저장"):
+                conn = get_connection()
+                cursor = conn.cursor()
+
+                # 기존 DB 데이터 전체 삭제 후 표 내용 재저장
+                cursor.execute("DELETE FROM portfolio")
+                
+                save_df = edited_data.drop(columns=["선택(삭제)", "id"], errors="ignore")
+                
+                for col in required_cols:
+                    if col not in save_df.columns:
+                        save_df[col] = None
+
+                save_df["record_date"] = save_df["record_date"].fillna(datetime.now().strftime("%Y-%m-%d"))
+                save_df["whose"] = save_df["whose"].fillna("본인")
+                save_df["currency"] = save_df["currency"].fillna("KRW")
+                save_df["exchange_rate"] = save_df["exchange_rate"].fillna(1.0)
+                save_df["buy_price"] = pd.to_numeric(save_df["buy_price"], errors="coerce").fillna(0.0)
+                save_df["quantity"] = pd.to_numeric(save_df["quantity"], errors="coerce").fillna(0.0)
+                save_df["current_price"] = pd.to_numeric(save_df["current_price"], errors="coerce").fillna(0.0)
+
+                save_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+                conn.commit()
+                conn.close()
+                export_backup_json()
+                st.success("🎉 표 전체 변경사항이 성공적으로 저장되었습니다!")
+                st.rerun()
+
+    # ---------------------------------------------------------
+    # 모드 2: 신규 데이터 개별 추가
+    # ---------------------------------------------------------
+    elif mode == "신규 데이터 개별 추가":
         currency = st.selectbox("통화 단위 선택", ["KRW (원화)", "USD (달러)"])
         is_usd = "USD" in currency
         default_ex_rate = current_rate if is_usd else 1.0
@@ -405,6 +505,7 @@ if menu == "자산 입력 및 관리":
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 record_date = st.date_input("기준 날짜").strftime("%Y-%m-%d")
+                whose = st.text_input("소유자 (WHOSE)", value="본인")
                 broker = st.text_input("금융사")
                 account_num = st.text_input("계좌번호")
                 account_type = st.selectbox(
@@ -447,11 +548,12 @@ if menu == "자산 입력 및 관리":
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    INSERT INTO portfolio (record_date, broker, account_num, account_type, item_name, ticker, category1, category2, category3, category4, buy_price, quantity, current_price, currency, exchange_rate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, category1, category2, category3, category4, buy_price, quantity, current_price, currency, exchange_rate)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         record_date,
+                        whose,
                         broker,
                         account_num,
                         account_type,
@@ -474,6 +576,9 @@ if menu == "자산 입력 및 관리":
                 st.success("저장되었습니다.")
                 st.rerun()
 
+    # ---------------------------------------------------------
+    # 모드 3: 엑셀 파일로 일괄 추가 (요청사항 1 반영)
+    # ---------------------------------------------------------
     elif mode == "엑셀 파일로 일괄 추가":
         st.subheader("📁 엑셀 / CSV 파일 업로드")
         uploaded_file = st.file_uploader("파일 선택", type=["xlsx", "csv"])
@@ -484,8 +589,11 @@ if menu == "자산 입력 및 관리":
                     if uploaded_file.name.endswith(".csv")
                     else pd.read_excel(uploaded_file)
                 )
+                
+                # whose 항목을 포함한 필수 컬럼 체크
                 required_cols = [
                     "record_date",
+                    "whose",
                     "broker",
                     "account_num",
                     "account_type",
@@ -501,14 +609,23 @@ if menu == "자산 입력 및 관리":
                     "currency",
                     "exchange_rate",
                 ]
+
+                # whose 컬럼이 없는 엑셀 파일인 경우 기본값 부여
+                if "whose" not in upload_df.columns:
+                    upload_df["whose"] = "본인"
+
+                for col in required_cols:
+                    if col not in upload_df.columns:
+                        upload_df[col] = None
+
                 upload_df["record_date"] = pd.to_datetime(
                     upload_df["record_date"]
                 ).dt.strftime("%Y-%m-%d")
                 upload_df["currency"] = upload_df["currency"].fillna("KRW")
-                upload_df["exchange_rate"] = upload_df["exchange_rate"].fillna(
-                    1.0
-                )
-                st.dataframe(upload_df, width="stretch")
+                upload_df["exchange_rate"] = upload_df["exchange_rate"].fillna(1.0)
+                upload_df["whose"] = upload_df["whose"].fillna("본인")
+
+                st.dataframe(upload_df[required_cols], width="stretch")
 
                 if st.button("DB에 일괄 저장하기"):
                     conn = get_connection()
@@ -517,105 +634,14 @@ if menu == "자산 입력 및 관리":
                     )
                     conn.close()
                     export_backup_json()
-                    st.success("일괄 저장 완료!")
+                    st.success("WHOSE 포함 일괄 저장 완료!")
                     st.rerun()
             except Exception as e:
                 st.error(f"오류: {e}")
 
-    elif mode == "기존 데이터 수정":
-        if not df_raw.empty:
-            selected_id = st.selectbox("수정할 항목 ID", df_raw["id"].tolist())
-            target = df_raw[df_raw["id"] == selected_id].iloc[0]
-            with st.form("update_form"):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    u_date = st.text_input(
-                        "기준 날짜", value=str(target["record_date"])
-                    )
-                    u_broker = st.text_input(
-                        "금융사", value=str(target["broker"] or "")
-                    )
-                    u_acc_num = st.text_input(
-                        "계좌번호", value=str(target["account_num"] or "")
-                    )
-                    u_acc_type = st.text_input(
-                        "구분", value=str(target["account_type"] or "")
-                    )
-                with col2:
-                    u_item = st.text_input(
-                        "보유항목", value=str(target["item_name"] or "")
-                    )
-                    u_ticker = st.text_input(
-                        "티커", value=str(target["ticker"] or "")
-                    )
-                    u_curr = st.selectbox(
-                        "통화",
-                        ["KRW (원화)", "USD (달러)"],
-                        index=1 if target["currency"] == "USD" else 0,
-                    )
-                    u_ex_rate = st.number_input(
-                        "환율", value=float(target["exchange_rate"] or 1.0)
-                    )
-                with col3:
-                    u_cat1 = st.text_input(
-                        "분류1", value=str(target["category1"] or "")
-                    )
-                    u_cat2 = st.text_input(
-                        "분류2", value=str(target["category2"] or "")
-                    )
-                    u_cat3 = st.text_input(
-                        "분류3", value=str(target["category3"] or "")
-                    )
-                    u_cat4 = st.text_input(
-                        "분류4", value=str(target["category4"] or "")
-                    )
-                with col4:
-                    u_buy = st.number_input(
-                        "매입단가", value=float(target["buy_price"] or 0.0)
-                    )
-                    u_qty = st.number_input(
-                        "수량", value=float(target["quantity"] or 0.0)
-                    )
-                    u_curr_p = st.number_input(
-                        "현재가", value=float(target["current_price"] or 0.0)
-                    )
-
-                if st.form_submit_button("수정 저장"):
-                    conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        """
-                        UPDATE portfolio SET record_date=?, broker=?, account_num=?, account_type=?, item_name=?, ticker=?,
-                        category1=?, category2=?, category3=?, category4=?, buy_price=?, quantity=?, current_price=?, currency=?, exchange_rate=?
-                        WHERE id=?
-                    """,
-                        (
-                            u_date,
-                            u_broker,
-                            u_acc_num,
-                            u_acc_type,
-                            u_item,
-                            u_ticker,
-                            u_cat1,
-                            u_cat2,
-                            u_cat3,
-                            u_cat4,
-                            u_buy,
-                            u_qty,
-                            u_curr_p,
-                            "USD" if "USD" in u_curr else "KRW",
-                            u_ex_rate,
-                            selected_id,
-                        ),
-                    )
-                    conn.commit()
-                    conn.close()
-                    export_backup_json()
-                    st.success("수정되었습니다.")
-                    st.rerun()
-        else:
-            st.info("수정할 데이터가 없습니다.")
-
+    # ---------------------------------------------------------
+    # 모드 4: 데이터 삭제 관리
+    # ---------------------------------------------------------
     elif mode == "🗑️ 데이터 삭제 관리":
         if not df_raw.empty:
             st.subheader("🗑️ 데이터 삭제 관리")
@@ -709,6 +735,7 @@ elif menu == "일별/시점별 보유 현황 분석":
         sub_df["평가손익(원)"] = sub_df["평가액(원)"] - sub_df["매입총액(원)"]
 
         for cat in [
+            "whose",
             "category1",
             "category2",
             "category3",
@@ -735,6 +762,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
         st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
         cat_options = {
+            "소유자(WHOSE)": "whose",
             "구분": "account_type",
             "금융사": "broker",
             "보유항목(ITEM)": "item_name",
@@ -749,7 +777,7 @@ elif menu == "일별/시점별 보유 현황 분석":
         with col_t1:
             l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
         with col_t2:
-            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=2)
+            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
         with col_t3:
             l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
         with col_t4:
@@ -1193,6 +1221,7 @@ elif menu == "일별/시점별 보유 현황 분석":
         ) * 100
         st.dataframe(
             sub_df[[
+                "whose",
                 "broker",
                 "account_num",
                 "account_type",
@@ -1237,6 +1266,7 @@ elif menu == "기간별 성과 및 추이 분석":
 
         group_options = {
             "없음 (전체 총액)": "NONE",
+            "소유자 (WHOSE)": "whose",
             "대분류 (분류1)": "category1",
             "중분류 (분류2)": "category2",
             "소분류 (분류3)": "category3",
@@ -1574,7 +1604,6 @@ elif menu == "💾 데이터 백업 및 복구":
             with col_b2:
                 # 엑셀 다운로드 파일 준비
                 excel_df = df_all.drop(columns=["id"], errors="ignore")
-                import io
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                     excel_df.to_excel(writer, index=False, sheet_name="Portfolio")
@@ -1613,10 +1642,13 @@ elif menu == "💾 데이터 백업 및 복구":
                     else:
                         u_df = pd.read_csv(uploaded_backup) if uploaded_backup.name.endswith(".csv") else pd.read_excel(uploaded_backup)
                         required_cols = [
-                            "record_date", "broker", "account_num", "account_type", "item_name",
+                            "record_date", "whose", "broker", "account_num", "account_type", "item_name",
                             "ticker", "category1", "category2", "category3", "category4",
                             "buy_price", "quantity", "current_price", "currency", "exchange_rate"
                         ]
+                        if "whose" not in u_df.columns:
+                            u_df["whose"] = "본인"
+
                         for col in required_cols:
                             if col not in u_df.columns:
                                 u_df[col] = None
