@@ -815,13 +815,13 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             col_t1, col_t2, col_t3, col_t4 = st.columns(4)
             with col_t1:
-                l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
+                l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=1)
             with col_t2:
                 l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
             with col_t3:
                 l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
             with col_t4:
-                l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)
+                l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=4)
 
             col_c1, col_c2 = st.columns([2, 1])
             with col_c1:
