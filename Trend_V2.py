@@ -1490,7 +1490,7 @@ if menu == '트렌드 리포트':
         fig1.update_layout(
             title=dict(
                 text=(
-                    f'1. [전체 자산 평가 금액] WHOSE별 누적 막대 & 전체 합산'
+                    f'1. [전체 자산 평가 금액] WHOSE별 묶은 세로 막대 & 전체 합산'
                     f' 꺾은선{suf_w1}'
                 ),
                 y=0.95,
@@ -1499,7 +1499,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
-            barmode='stack',
+            barmode='group',
             hovermode='closest',
             height=500,
             margin=margin_w1,
