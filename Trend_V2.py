@@ -348,7 +348,6 @@ if menu == '트렌드 리포트':
           help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
       )
 
-      # 선택된 WHOSE에 해당하는 계좌만 필터링
       filtered_acc_info = acc_info_df[
           acc_info_df['whose'].isin(selected_whose)
       ]
@@ -589,7 +588,6 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # 미래에셋 수동 처리를 제거하고 일반 포트폴리오 데이터 기반 평가액 계산으로 통일
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
@@ -1646,7 +1644,6 @@ if menu == '트렌드 리포트':
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
 
-        # 1. 전체 합산 핵심 지표 계산 및 표시
         total_summary_df = (
             raw_df.groupby('Date')[
                 [
@@ -2053,20 +2050,25 @@ if menu == '트렌드 리포트':
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
-      for v_type in active_views:
-        st.write('---')
-        if v_type == '전체 합산':
-          render_total_whose_charts(calc_df)
-        elif v_type == '계좌별':
-          draw_group_summary_charts(calc_df, 'account_num', '계좌별')
-        elif v_type == '증권사(Broker)별':
-          draw_group_summary_charts(calc_df, 'broker', '증권사별')
-        elif v_type == '계좌유형별':
-          draw_group_summary_charts(calc_df, 'account_type', '계좌유형별')
-        elif v_type == 'Category 4별':
-          draw_group_summary_charts(calc_df, 'category4', 'Category 4별')
-        elif v_type == '보유항목별':
-          draw_group_summary_charts(calc_df, 'item_name', '보유항목별')
+      # 선택된 트렌드 관점들을 st.tabs를 통해 각각의 독립된 탭으로 분리
+      if active_views:
+        tabs = st.tabs(active_views)
+        for tab, v_type in zip(tabs, active_views):
+          with tab:
+            if v_type == '전체 합산':
+              render_total_whose_charts(calc_df)
+            elif v_type == '계좌별':
+              draw_group_summary_charts(calc_df, 'account_num', '계좌별')
+            elif v_type == '증권사(Broker)별':
+              draw_group_summary_charts(calc_df, 'broker', '증권사별')
+            elif v_type == '계좌유형별':
+              draw_group_summary_charts(calc_df, 'account_type', '계좌유형별')
+            elif v_type == 'Category 4별':
+              draw_group_summary_charts(calc_df, 'category4', 'Category 4별')
+            elif v_type == '보유항목별':
+              draw_group_summary_charts(calc_df, 'item_name', '보유항목별')
+      else:
+        st.info('표시할 트렌드 관점을 선택해 주세요.')
 
 # -----------------------------------------------------------------------------
 # 메뉴 2: 계좌 별칭 관리
