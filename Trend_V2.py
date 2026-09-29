@@ -256,6 +256,7 @@ menu = st.sidebar.selectbox(
         '포트폴리오 업로드',
         '원금 및 입출금 관리',
         '등록 데이터 조회 및 웹 수정',
+        '데이터 백업 및 복구',
     ],
 )
 
@@ -917,7 +918,6 @@ if menu == '트렌드 리포트':
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             
-            # 환차손 제외 여부에 따른 원금 참조 분기
             if ex_summary and '원금_ex_fx' in raw_df.columns:
               sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
               final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
@@ -956,7 +956,6 @@ if menu == '트렌드 리포트':
         cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        table_title_suffix = ' (환차손 제외)' if ex_summary else ''
         st.dataframe(
             summary_df.style.format({
                 '선택구간 누적 평가 손익 (원)': '{:,.0f}',
@@ -1927,3 +1926,65 @@ elif menu == '등록 데이터 조회 및 웹 수정':
         st.rerun()
       except Exception as e:
         st.error(f'데이터 갱신 중 오류 발생: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 6: 데이터 백업 및 복구
+# -----------------------------------------------------------------------------
+elif menu == '데이터 백업 및 복구':
+  st.header('💾 데이터 백업 및 복구 관리')
+  st.markdown(
+      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 초기 원금, 입출금 내역,'
+      ' 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게 백업하거나, 추후'
+      ' 초기화 시 일괄 복구할 수 있습니다.'
+  )
+
+  col_bk, col_rc = st.columns(2)
+
+  with col_bk:
+    st.subheader('📥 데이터 백업 (다운로드)')
+    st.markdown(
+        '현재 저장된 전체 데이터베이스 파일을 내 컴퓨터에 다운로드합니다.'
+    )
+    if os.path.exists(DB_FILE):
+      with open(DB_FILE, 'rb') as f:
+        db_bytes = f.read()
+
+      backup_filename = (
+          f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db'
+      )
+      st.download_button(
+          label='📦 백업 파일 다운로드 (.db)',
+          data=db_bytes,
+          file_name=backup_filename,
+          mime='application/octet-stream',
+          help='클릭하여 모든 등록 데이터가 포함된 백업 파일을 다운로드하세요.',
+      )
+    else:
+      st.warning('백업할 데이터베이스 파일이 존재하지 않습니다.')
+
+  with col_rc:
+    st.subheader('📤 데이터 복구 (업로드)')
+    st.markdown(
+        '이전에 백업해둔 데이터베이스 파일(`.db`)을 업로드하여 데이터를 일괄'
+        ' 복구합니다.'
+    )
+    uploaded_backup = st.file_uploader(
+        '백업 파일(`.db`) 선택', type=['db'], key='restore_backup_uploader'
+    )
+
+    if uploaded_backup is not None:
+      st.warning(
+          '⚠️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
+          ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
+      )
+      if st.button('🔄 데이터 복구 실행'):
+        try:
+          with open(DB_FILE, 'wb') as f:
+            f.write(uploaded_backup.getbuffer())
+          st.success(
+              '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
+              ' 새로고침됩니다.'
+          )
+          st.rerun()
+        except Exception as e:
+          st.error(f'데이터 복구 중 오류 발생: {e}')
