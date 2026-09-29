@@ -1227,7 +1227,8 @@ elif menu == "일별/시점별 보유 현황 분석":
                     )
                     fig_pie_hierarchy.update_traces(
                         textposition="inside",
-                        textinfo="percent+label",
+                        texttemplate="<b>%{label}</b><br><b>₩%{value:,.0f}</b><br>(%{percent})",
+                        insidetextfont=dict(size=14),
                         hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
                     )
                     fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
@@ -1244,7 +1245,8 @@ elif menu == "일별/시점별 보유 현황 분석":
                     )
                     fig_pie_item.update_traces(
                         textposition="inside",
-                        textinfo="percent+label",
+                        texttemplate="<b>%{label}</b><br><b>₩%{value:,.0f}</b><br>(%{percent})",
+                        insidetextfont=dict(size=14),
                         hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
                     )
                     fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
