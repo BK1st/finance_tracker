@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import shutil
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -45,7 +46,6 @@ def init_db():
         )
     ''')
 
-  # 기존 DB에 whose 컬럼이 없는 경우 자동 추가
   c.execute('PRAGMA table_info(portfolio)')
   columns = [column[1] for column in c.fetchall()]
   if 'whose' not in columns:
@@ -92,12 +92,16 @@ def get_account_aliases():
   conn = get_connection()
   alias_df = pd.read_sql('SELECT * FROM account_alias', conn)
   conn.close()
-  return dict(zip(alias_df['account_num'], alias_df['alias']))
+  if alias_df.empty:
+    return {}
+  return dict(
+      zip(
+          alias_df['account_num'].astype(str).str.strip(), alias_df['alias']
+      )
+  )
 
 
-# --- 백업 및 복원 헬퍼 함수 ---
 def create_local_backup():
-  """현재 DB 파일의 스냅샷 백업본을 생성합니다."""
   if os.path.exists(DB_FILE):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     backup_filepath = os.path.join(
@@ -109,7 +113,6 @@ def create_local_backup():
 
 
 def get_backup_files():
-  """로컬 백업 파일 목록을 최근 순으로 조회합니다."""
   if not os.path.exists(BACKUP_DIR):
     return []
   files = [
@@ -122,7 +125,6 @@ def get_backup_files():
 
 
 def export_all_to_excel_bytes():
-  """모든 DB 테이블을 Excel 바이너리로 내보냅니다."""
   output = io.BytesIO()
   conn = get_connection()
   with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -142,10 +144,9 @@ def export_all_to_excel_bytes():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 개선된 시세 수집 함수 (수정 적용)
+# 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
-  """국내외 주식/ETF 및 연금계좌 Ticker 표준화 함수 (코스피/코스닥 지원)"""
   if pd.isna(t) or str(t).strip() == '' or str(t).strip().lower() == 'nan':
     return None
   t_str = str(t).strip().upper()
@@ -153,7 +154,6 @@ def format_ticker(t):
   if t_str.endswith('.0'):
     t_str = t_str[:-2]
 
-  # 6자리 숫자형 티커 처리 (기본 .KS 접미사 연결)
   if t_str.isdigit():
     t_str = t_str.zfill(6) + '.KS'
 
@@ -161,7 +161,6 @@ def format_ticker(t):
 
 
 def get_latest_price_single(ticker_symbol):
-  """개별 티커의 최신 가격을 가져옵니다. (.KS 실패 시 .KQ 지원)"""
   symbols_to_try = [ticker_symbol]
   if ticker_symbol.endswith('.KS'):
     symbols_to_try.append(ticker_symbol.replace('.KS', '.KQ'))
@@ -246,7 +245,6 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
     fmt = format_ticker(t)
     if fmt is not None:
       formatted_tickers.append(fmt)
-      # .KS 종목의 경우 .KQ도 같이 후보에 추가하여 시세 누락 방지
       if fmt.endswith('.KS'):
         formatted_tickers.append(fmt.replace('.KS', '.KQ'))
 
@@ -265,7 +263,6 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 # 3. Plotly 레이아웃 및 범주 헬퍼 함수
 # -----------------------------------------------------------------------------
 def build_legend_config(mode_str):
-  """모바일 가독성 향상 레이아웃 설정"""
   if mode_str == '우측 배치':
     return (
         dict(
@@ -294,7 +291,7 @@ def build_legend_config(mode_str):
         True,
         dict(t=120, b=140, l=10, r=20),
     )
-  else:  # '숨김'
+  else:
     return dict(), False, dict(t=120, b=50, l=10, r=20)
 
 
@@ -363,19 +360,21 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    # 소유자(whose) 목록 추출
-    whose_list = (
-        sorted(pf_df['whose'].dropna().unique().tolist())
-        if 'whose' in pf_df.columns
-        else []
-    )
+    # 계좌번호 및 소유자 컬럼 정제
+    pf_df['account_num'] = pf_df['account_num'].astype(str).str.strip()
+    if 'whose' in pf_df.columns:
+      pf_df['whose'] = pf_df['whose'].fillna('미지정').astype(str).str.strip()
+    else:
+      pf_df['whose'] = '미지정'
+
+    whose_list = sorted(pf_df['whose'].dropna().unique().tolist())
     if not whose_list:
       whose_list = ['미지정']
 
-    # 계좌 기본 정보 추출 (중복 제거)
+    # 수정 1: 계좌 중복 제거 시 whose까지 포함하여 소유주 누락 방지
     acc_info_df = pf_df[
-        ['broker', 'account_num', 'account_type', 'whose']
-    ].drop_duplicates(subset=['account_num'])
+        ['whose', 'broker', 'account_num', 'account_type']
+    ].drop_duplicates(subset=['whose', 'broker', 'account_num', 'account_type'])
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
     max_rec_date = date.today()
@@ -407,7 +406,6 @@ if menu == '트렌드 리포트':
       f_col1, f_col2 = st.columns([3, 3])
 
       with f_col1:
-        # 1. whose(소유자) 필터 및 계좌 선택
         selected_whose = st.multiselect(
             '👤 소유자 (Whose) 필터 선택',
             options=whose_list,
@@ -415,11 +413,11 @@ if menu == '트렌드 리포트':
         )
 
         filtered_acc_info = acc_info_df[
-            acc_info_df['whose'].astype(str).isin(selected_whose)
+            acc_info_df['whose'].isin(selected_whose)
         ]
         acc_options = []
         for _, row in filtered_acc_info.iterrows():
-          acc_num = str(row['account_num'])
+          acc_num = str(row['account_num']).strip()
           alias = alias_map.get(acc_num, '')
           display_alias = (
               alias
@@ -432,7 +430,6 @@ if menu == '트렌드 리포트':
           label = f'[{whose_str}] {broker_str} | {display_alias} [{acc_type_str}] ({acc_num})'
           acc_options.append(label)
 
-        # 소유자 변경 시 세션 상태에 저장된 계좌 목록 동적 검증 및 필터링
         saved_accs = st.session_state.get('trend_sel_accs', acc_options)
         valid_default_accs = [a for a in saved_accs if a in acc_options]
         if not valid_default_accs:
@@ -492,9 +489,13 @@ if menu == '트렌드 리포트':
       st.session_state['trend_start_date'] = start_date
       st.session_state['trend_end_date'] = end_date
 
+      # 수정 2: 정규식으로 라벨 끝의 (계좌번호)만 정교하게 추출
       selected_accounts = []
       for lbl in selected_acc_labels:
-        if '(' in lbl and ')' in lbl:
+        match = re.search(r'\(([^()]+)\)$', lbl.strip())
+        if match:
+          selected_accounts.append(match.group(1).strip())
+        elif '(' in lbl and ')' in lbl:
           acc_num_part = lbl.split('(')[-1].replace(')', '').strip()
           selected_accounts.append(acc_num_part)
       selected_accounts = list(set(selected_accounts))
@@ -517,7 +518,7 @@ if menu == '트렌드 리포트':
       )
 
       filtered_pf_df = pf_df[
-          pf_df['account_num'].astype(str).isin(selected_accounts)
+          pf_df['account_num'].isin(selected_accounts)
       ].copy()
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
@@ -573,9 +574,7 @@ if menu == '트렌드 리포트':
             usd_krw = 1350.0
 
         for acc in selected_accounts:
-          acc_meta = filtered_pf_df[
-              filtered_pf_df['account_num'].astype(str) == acc
-          ]
+          acc_meta = filtered_pf_df[filtered_pf_df['account_num'] == acc]
           broker_name = (
               acc_meta['broker'].iloc[0]
               if (not acc_meta.empty and 'broker' in acc_meta.columns)
@@ -599,7 +598,7 @@ if menu == '트렌드 리포트':
           )
 
           init_val = (
-              init_p_df[init_p_df['account_num'].astype(str) == acc][
+              init_p_df[init_p_df['account_num'].astype(str).str.strip() == acc][
                   'initial_amount'
               ].sum()
               if not init_p_df.empty
@@ -607,7 +606,7 @@ if menu == '트렌드 리포트':
           )
           if not cf_df.empty:
             acc_cf = cf_df[
-                (cf_df['account_num'].astype(str) == acc)
+                (cf_df['account_num'].astype(str).str.strip() == acc)
                 & (cf_df['trans_date'] <= t_str)
             ]
             in_flow = acc_cf[acc_cf['flow_type'] == '입금']['amount'].sum()
@@ -616,15 +615,13 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # 계좌별 누적 필터링 수정: 조회일(t_str) 이하 최신 데이터 사용, 없을 경우 가장 가까운 과거/미래 레코드 매칭
+          # 수정 3: 계좌별 누적 필터링 강화 - 해당 계좌의 가장 최신 record_date 적용
           acc_pf = filtered_pf_df[
-              (filtered_pf_df['account_num'].astype(str) == acc)
+              (filtered_pf_df['account_num'] == acc)
               & (filtered_pf_df['record_date'] <= t_str)
           ]
           if acc_pf.empty:
-            acc_pf = filtered_pf_df[
-                filtered_pf_df['account_num'].astype(str) == acc
-            ]
+            acc_pf = filtered_pf_df[filtered_pf_df['account_num'] == acc]
 
           if not acc_pf.empty:
             latest_date = acc_pf['record_date'].max()
@@ -670,8 +667,6 @@ if menu == '트렌드 리포트':
               if '펀드' in item_name or '펀드' in str(cat4) or fmt_tk is None:
                 price = base_price if base_price > 0 else 0
               else:
-                # 1) 기본 포맷된 티커로 조회 (.KS)
-                # 2) 실패 시 .KQ(코스닥)로 전환 조회
                 target_tk_candidates = [fmt_tk]
                 if fmt_tk.endswith('.KS'):
                   target_tk_candidates.append(fmt_tk.replace('.KS', '.KQ'))
@@ -964,7 +959,7 @@ if menu == '트렌드 리포트':
 
         date_order_list = sub_df_default['Chart_Date'].tolist()
 
-        # --- Fig 1: 전체 자산 TREND ---
+        # Fig 1
         eval_col = '총평가금액_ex_fx' if ex_fx1 else '총평가금액'
 
         acc_eval_df = (
@@ -1045,7 +1040,7 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
         fig1.update_yaxes(title_text='평가금액 (원)', tickformat=',.0f')
 
-        # Fig 2: 구간 손익 금액 추이
+        # Fig 2
         sub2 = get_agg_df(ex_fx2)
         fig2 = go.Figure()
         valid_period_df = sub2.dropna(subset=['주기별 평가손익'])
@@ -1098,7 +1093,7 @@ if menu == '트렌드 리포트':
         apply_y_axis_config(fig2, axis_name='yaxis', is_money=True)
         fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
-        # Fig 3a: 구간 누적수익률 추이
+        # Fig 3a
         sub3a = get_agg_df(ex_fx3a)
         fig3a = go.Figure()
         fig3a.add_trace(
@@ -1167,7 +1162,7 @@ if menu == '트렌드 리포트':
             zeroline=True,
         )
 
-        # Fig 3b: 주기별 수익률 추이
+        # Fig 3b
         sub3b = get_agg_df(ex_fx3b)
         fig3b = go.Figure()
         fig3b.add_trace(
@@ -2117,11 +2112,20 @@ elif menu == '계좌 별칭 관리':
   if accounts_df.empty:
     st.info('포트폴리오에 등록된 계좌가 없습니다.')
   else:
-    alias_dict = dict(zip(alias_df['account_num'], alias_df['alias']))
+    alias_dict = (
+        dict(
+            zip(
+                alias_df['account_num'].astype(str).str.strip(),
+                alias_df['alias'],
+            )
+        )
+        if not alias_df.empty
+        else {}
+    )
 
     merged_data = []
     for _, row in accounts_df.iterrows():
-      acc = str(row['account_num'])
+      acc = str(row['account_num']).strip()
       merged_data.append({
           'whose': row.get('whose', '미지정'),
           'broker': row['broker'],
@@ -2158,7 +2162,7 @@ elif menu == '계좌 별칭 관리':
       conn = get_connection()
       c = conn.cursor()
       for _, row in edited_df.iterrows():
-        acc = row['account_num']
+        acc = str(row['account_num']).strip()
         al = row['alias']
         c.execute(
             'INSERT OR REPLACE INTO account_alias (account_num, alias) VALUES'
@@ -2203,6 +2207,13 @@ elif menu == '포트폴리오 업로드':
       else:
         if 'whose' not in df_upload.columns:
           df_upload['whose'] = '미지정'
+
+        df_upload['account_num'] = (
+            df_upload['account_num'].astype(str).str.strip()
+        )
+        df_upload['whose'] = (
+            df_upload['whose'].fillna('미지정').astype(str).str.strip()
+        )
 
         for opt_col in [
             'ticker',
