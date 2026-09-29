@@ -360,7 +360,6 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    # 계좌번호 및 소유자 컬럼 정제
     pf_df['account_num'] = pf_df['account_num'].astype(str).str.strip()
     if 'whose' in pf_df.columns:
       pf_df['whose'] = pf_df['whose'].fillna('미지정').astype(str).str.strip()
@@ -371,7 +370,7 @@ if menu == '트렌드 리포트':
     if not whose_list:
       whose_list = ['미지정']
 
-    # 수정 1: 계좌 중복 제거 시 whose까지 포함하여 소유주 누락 방지
+    # 수정 1: 계좌 중복 제거 시 whose까지 포함하여 소유주 연동 정확화
     acc_info_df = pf_df[
         ['whose', 'broker', 'account_num', 'account_type']
     ].drop_duplicates(subset=['whose', 'broker', 'account_num', 'account_type'])
@@ -489,7 +488,7 @@ if menu == '트렌드 리포트':
       st.session_state['trend_start_date'] = start_date
       st.session_state['trend_end_date'] = end_date
 
-      # 수정 2: 정규식으로 라벨 끝의 (계좌번호)만 정교하게 추출
+      # 정규식으로 라벨 끝의 (계좌번호) 정교하게 추출
       selected_accounts = []
       for lbl in selected_acc_labels:
         match = re.search(r'\(([^()]+)\)$', lbl.strip())
@@ -615,7 +614,6 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # 수정 3: 계좌별 누적 필터링 강화 - 해당 계좌의 가장 최신 record_date 적용
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'] == acc)
               & (filtered_pf_df['record_date'] <= t_str)
@@ -861,9 +859,6 @@ if menu == '트렌드 리포트':
         if axis_name == 'yaxis':
           fig.update_yaxes(**kwargs)
 
-      # -------------------------------------------------------------------------
-      # [전체 합산] 전용 차트 렌더링 함수
-      # -------------------------------------------------------------------------
       def draw_overall_total_charts(raw_df):
         st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
         cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
@@ -2236,3 +2231,239 @@ elif menu == '포트폴리오 업로드':
           st.success('데이터가 성공적으로 저장 및 백업되었습니다!')
     except Exception as e:
       st.error(f'파일을 읽는 중 오류가 발생했습니다: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 4: 원금 및 입출금 관리
+# -----------------------------------------------------------------------------
+elif menu == '원금 및 입출금 관리':
+  st.header('💵 최초 원금 및 입출금 현황 관리')
+
+  conn = get_connection()
+  acc_list_df = pd.read_sql(
+      'SELECT DISTINCT broker, account_num FROM portfolio', conn
+  )
+  conn.close()
+
+  if acc_list_df.empty:
+    st.info('등록된 계좌가 없습니다. [포트폴리오 업로드]를 먼저 수행해주세요.')
+  else:
+    tab1, tab2 = st.tabs(['1. 계좌별 최초 원금 설정', '2. 입출금 (Cash Flow) 기록'])
+
+    with tab1:
+      st.subheader('📌 계좌별 최초 투자 원금 (Initial Principal)')
+
+      conn = get_connection()
+      init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
+      conn.close()
+
+      init_dict = (
+          dict(zip(init_df['account_num'].astype(str).str.strip(), init_df['initial_amount']))
+          if not init_df.empty
+          else {}
+      )
+
+      merged_init = []
+      for _, row in acc_list_df.iterrows():
+        acc = str(row['account_num']).strip()
+        alias_val = alias_map.get(acc, '')
+        display_label = f"{alias_val} ({acc})" if alias_val else acc
+        merged_init.append({
+            'broker': row['broker'],
+            'account_num': acc,
+            'display_name': display_label,
+            'initial_amount': float(init_dict.get(acc, 0.0)),
+        })
+
+      df_init_edit = pd.DataFrame(merged_init)
+
+      edited_init_df = st.data_editor(
+          df_init_edit,
+          column_config={
+              'broker': st.column_config.TextColumn('증권사', disabled=True),
+              'account_num': st.column_config.TextColumn('계좌번호', disabled=True),
+              'display_name': st.column_config.TextColumn('계좌명(별칭)', disabled=True),
+              'initial_amount': st.column_config.NumberColumn(
+                  '최초 원금 (원)', format='%d', min_value=0
+              ),
+          },
+          hide_index=True,
+          use_container_width=True,
+      )
+
+      if st.button('💾 최초 원금 저장'):
+        conn = get_connection()
+        c = conn.cursor()
+        for _, row in edited_init_df.iterrows():
+          acc = str(row['account_num']).strip()
+          brk = str(row['broker'])
+          amt = float(row['initial_amount'])
+          c.execute(
+              'INSERT OR REPLACE INTO initial_principal (account_num, broker, initial_amount) VALUES (?, ?, ?)',
+              (acc, brk, amt),
+          )
+        conn.commit()
+        conn.close()
+        create_local_backup()
+        st.success('최초 원금이 성공적으로 저장되었습니다!')
+        st.rerun()
+
+    with tab2:
+      st.subheader('💸 입출금 기록 추가 및 삭제')
+
+      with st.form('cf_add_form'):
+        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+        with col_c1:
+          trans_d = st.date_input('거래일자', value=date.today())
+        with col_c2:
+          acc_options_cf = [
+              f"{row['broker']} | {alias_map.get(str(row['account_num']).strip(), str(row['account_num']).strip())} ({str(row['account_num']).strip()})"
+              for _, row in acc_list_df.iterrows()
+          ]
+          selected_acc_cf_lbl = st.selectbox('계좌 선택', acc_options_cf)
+        with col_c3:
+          flow_t = st.selectbox('구분', ['입금', '출금'])
+        with col_c4:
+          cf_amt = st.number_input('금액 (원)', min_value=0.0, step=100000.0)
+
+        cf_note = st.text_input('비고 (선택사항)', placeholder='예: 추가 적립금 입금')
+        cf_submit = st.form_submit_button('➕ 입출금 내역 추가')
+
+      if cf_submit:
+        match = re.search(r'\(([^()]+)\)$', selected_acc_cf_lbl.strip())
+        target_acc_cf = match.group(1).strip() if match else selected_acc_cf_lbl.split('(')[-1].replace(')', '').strip()
+
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute(
+            'INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note) VALUES (?, ?, ?, ?, ?)',
+            (trans_d.strftime('%Y-%m-%d'), target_acc_cf, flow_t, cf_amt, cf_note),
+        )
+        conn.commit()
+        conn.close()
+        create_local_backup()
+        st.success('입출금 기록이 추가되었습니다!')
+        st.rerun()
+
+      st.write('---')
+      st.markdown('##### 📋 등록된 입출금 내역 목록')
+      conn = get_connection()
+      cf_list_df = pd.read_sql('SELECT * FROM cash_flow ORDER BY trans_date DESC', conn)
+      conn.close()
+
+      if cf_list_df.empty:
+        st.info('등록된 입출금 기록이 없습니다.')
+      else:
+        cf_list_df['account_num'] = cf_list_df['account_num'].astype(str).str.strip()
+        cf_list_df['계좌별칭'] = cf_list_df['account_num'].map(lambda x: alias_map.get(x, x))
+        
+        st.dataframe(
+            cf_list_df[['id', 'trans_date', 'account_num', '계좌별칭', 'flow_type', 'amount', 'note']],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        del_id = st.number_input('삭제할 입출금 ID 번호 입력', min_value=1, step=1)
+        if st.button('🗑️ 선택한 입출금 내역 삭제'):
+          conn = get_connection()
+          c = conn.cursor()
+          c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
+          conn.commit()
+          conn.close()
+          create_local_backup()
+          st.success(f'ID {del_id} 내역이 삭제되었습니다.')
+          st.rerun()
+
+# -----------------------------------------------------------------------------
+# 메뉴 5: 등록 데이터 조회 및 관리
+# -----------------------------------------------------------------------------
+elif menu == '등록 데이터 조회 및 관리':
+  st.header('📂 등록 데이터 조회 및 삭제 관리')
+
+  conn = get_connection()
+  pf_all_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  conn.close()
+
+  if pf_all_df.empty:
+    st.info('현재 DB에 저장된 포트폴리오 데이터가 없습니다.')
+  else:
+    st.markdown('### 🔍 기준일자(Record Date)별 데이터 관리')
+
+    pf_all_df['record_date'] = pf_all_df['record_date'].astype(str)
+    dates_list = sorted(pf_all_df['record_date'].unique().tolist(), reverse=True)
+
+    selected_date = st.selectbox('조회할 기준일자(Record Date) 선택', options=dates_list)
+
+    filtered_by_date = pf_all_df[pf_all_df['record_date'] == selected_date].copy()
+    filtered_by_date['account_num'] = filtered_by_date['account_num'].astype(str).str.strip()
+    filtered_by_date['계좌별칭'] = filtered_by_date['account_num'].map(lambda x: alias_map.get(x, ''))
+
+    st.write(f'📌 **{selected_date}** 등록 데이터 목록 (총 {len(filtered_by_date)} 건):')
+    st.dataframe(filtered_by_date, use_container_width=True, hide_index=True)
+
+    st.write('---')
+    col_d1, col_d2 = st.columns(2)
+
+    with col_d1:
+      st.subheader('🗑️ 특정 기준일자 데이터 전체 삭제')
+      if st.button(f'❌ {selected_date} 데이터 일괄 삭제'):
+        create_local_backup()
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute('DELETE FROM portfolio WHERE record_date = ?', (selected_date,))
+        conn.commit()
+        conn.close()
+        st.success(f'{selected_date} 날짜의 모든 포트폴리오 데이터가 삭제되었습니다.')
+        st.rerun()
+
+    with col_d2:
+      st.subheader('💥 포트폴리오 전체 데이터 초기화')
+      if st.button('🚨 DB 포트폴리오 전체 데이터 삭제 (주의)'):
+        create_local_backup()
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute('DELETE FROM portfolio')
+        conn.commit()
+        conn.close()
+        st.success('모든 포트폴리오 데이터가 초기화되었습니다.')
+        st.rerun()
+
+# -----------------------------------------------------------------------------
+# 메뉴 6: 데이터 백업 및 복원
+# -----------------------------------------------------------------------------
+elif menu == '데이터 백업 및 복원':
+  st.header('💾 데이터 백업 및 DB 복원 관리')
+
+  st.subheader('1. 전체 데이터 엑셀 내보내기 (Export)')
+  excel_data = export_all_to_excel_bytes()
+  st.download_button(
+      label='📥 전체 DB 데이터 엑셀로 다운로드',
+      data=excel_data,
+      file_name=f"asset_tracker_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+      mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+
+  st.write('---')
+  st.subheader('2. 로컬 데이터베이스 백업 파일 내역')
+  backup_files = get_backup_files()
+
+  if not backup_files:
+    st.info('생성된 자동 백업 파일이 없습니다.')
+  else:
+    backup_info = []
+    for fpath in backup_files:
+      fname = os.path.basename(fpath)
+      mtime = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime('%Y-%m-%d %H:%M:%S')
+      fsize = f'{os.path.getsize(fpath) / 1024:.1f} KB'
+      backup_info.append({'파일명': fname, '생성시각': mtime, '용량': fsize, '경로': fpath})
+
+    st.dataframe(pd.DataFrame(backup_info)[['파일명', '생성시각', '용량']], use_container_width=True)
+
+    selected_backup = st.selectbox(
+        '복원할 백업 파일 선택', options=[b['파일명'] for b in backup_info]
+    )
+
+    if st.button('🔄 선택한 백업 파일로 DB 복원하기'):
+      target_path = next(b['경로'] for b in backup_info if b['파일명'] == selected_backup)
+      shutil.copy2(target_path, DB_FILE)
+      st.success(f'{selected_backup} 파일로 데이터베이스가 성공적으로 복원되었습니다!')
+      st.rerun()
