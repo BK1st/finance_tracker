@@ -461,7 +461,8 @@ if menu == '트렌드 리포트':
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
         # 과거 데이터 조회를 위해 여유 있게 10일 전부터 수집 시작
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
-        e_str = (end_date + pd.Timedelta(days=3)).strftime('%Y-%m-%d')
+        # yfinance end 파라미터 미포함(exclusive) 특성 및 오늘 날짜 시세 보완을 위해 +2일 지정
+        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
         )
