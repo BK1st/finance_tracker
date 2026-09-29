@@ -406,7 +406,7 @@ if menu == "자산 입력 및 관리":
     )
 
     # ---------------------------------------------------------
-    # 모드 1: 웹 화면 직접 수정/편집 (요청사항 1: 모두 선택 기능 반영)
+    # 모드 1: 웹 화면 직접 수정/편집
     # ---------------------------------------------------------
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
@@ -423,9 +423,6 @@ if menu == "자산 입력 및 관리":
         else:
             edit_df = pd.DataFrame(columns=["id"] + required_cols)
 
-        # ---------------------------------------------------------
-        # [요청 1 반영] 모두 선택 / 모두 해제 버튼 추가
-        # ---------------------------------------------------------
         col_select_all1, col_select_all2, _ = st.columns([1.5, 1.5, 5])
         with col_select_all1:
             if st.button("✅ 전체 선택"):
@@ -439,10 +436,9 @@ if menu == "자산 입력 및 관리":
         default_select_val = st.session_state.get("select_all_flag", False)
         edit_df.insert(0, "선택(삭제)", default_select_val)
 
-        # Streamlit Data Editor로 표 출력 및 직접 수정 허용
         edited_data = st.data_editor(
             edit_df,
-            num_rows="dynamic",  # 표 내부에서 바로 행 추가 가능
+            num_rows="dynamic",
             use_container_width=True,
             key="web_data_editor",
             column_config={
@@ -482,7 +478,6 @@ if menu == "자산 입력 및 관리":
                 conn = get_connection()
                 cursor = conn.cursor()
 
-                # 기존 DB 데이터 전체 삭제 후 표 내용 재저장
                 cursor.execute("DELETE FROM portfolio")
                 
                 save_df = edited_data.drop(columns=["선택(삭제)", "id"], errors="ignore")
@@ -680,7 +675,7 @@ if menu == "자산 입력 및 관리":
     st.dataframe(df_raw, width="stretch")
 
 # ---------------------------------------------------------
-# 메뉴 2: 일별/시점별 보유 현황 분석 (요청사항 2 반영)
+# 메뉴 2: 일별/시점별 보유 현황 분석 (소유자별 개별 날짜 선택 반영)
 # ---------------------------------------------------------
 elif menu == "일별/시점별 보유 현황 분석":
     st.header("🔍 시점별 자산 보유 현황")
@@ -692,7 +687,7 @@ elif menu == "일별/시점별 보유 현황 분석":
         st.info("데이터가 없습니다.")
     else:
         # ---------------------------------------------------------
-        # [요청 2 반영] 1. WHOSE 선택(복수 선택 가능) -> 2. RECORD_DATE 선택
+        # [요청 반영] 1. WHOSE 선택 -> 2. 소유자별 RECORD_DATE 개별 선택
         # ---------------------------------------------------------
         df["whose"] = df["whose"].fillna("본인").replace("", "본인")
         available_whose_list = sorted(df["whose"].unique())
@@ -709,14 +704,17 @@ elif menu == "일별/시점별 보유 현황 분석":
         if not selected_whose_list:
             st.warning("소유자(WHOSE)를 최소 1개 이상 선택해 주세요.")
         else:
-            # 선택된 WHOSE에 해당하는 데이터만 필터링하여 RECORD_DATE 추출
-            df_filtered_whose = df[df["whose"].isin(selected_whose_list)]
-            available_dates = sorted(df_filtered_whose["record_date"].unique(), reverse=True)
-
+            owner_selected_dates = {}
             with col_filter2:
-                selected_date = st.selectbox(
-                    "2. 조회할 입력 데이터 날짜 (RECORD_DATE)", available_dates
-                )
+                st.write("2. 소유자별 입력 데이터 날짜 선택")
+                for w in selected_whose_list:
+                    w_dates = sorted(df[df["whose"] == w]["record_date"].unique(), reverse=True)
+                    if w_dates:
+                        owner_selected_dates[w] = st.selectbox(
+                            f"[{w}] 기준 날짜",
+                            options=w_dates,
+                            key=f"select_date_{w}"
+                        )
 
             with col_filter3:
                 use_historical_price = st.checkbox(
@@ -729,10 +727,16 @@ elif menu == "일별/시점별 보유 현황 분석":
                 else:
                     target_eval_date = None
 
-            # 최종 데이터 조회를 WHOSE 및 RECORD_DATE 기준으로 교집합 필터링
-            sub_df = df[
-                (df["whose"].isin(selected_whose_list)) & (df["record_date"] == selected_date)
-            ].copy()
+            # 선택된 소유자별 지정 날짜 데이터를 각각 추출 후 통합
+            sub_dfs = []
+            for w, d in owner_selected_dates.items():
+                w_sub = df[(df["whose"] == w) & (df["record_date"] == d)].copy()
+                sub_dfs.append(w_sub)
+
+            if sub_dfs:
+                sub_df = pd.concat(sub_dfs, ignore_index=True)
+            else:
+                sub_df = pd.DataFrame(columns=df.columns)
 
             if use_historical_price and target_eval_date:
                 with st.spinner(f"[{target_eval_date}] 배치 시세 데이터를 조회 중..."):
