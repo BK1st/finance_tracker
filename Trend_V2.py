@@ -293,7 +293,6 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    # 계좌별 기본 정보 및 WHOSE 사전 판별
     acc_info_df = pf_df[
         ['broker', 'account_num', 'account_type']
     ].drop_duplicates()
@@ -338,7 +337,6 @@ if menu == '트렌드 리포트':
     with st.form('trend_control_form'):
       st.subheader('⚙️ 분석 조건 설정')
 
-      # 1순위: WHOSE 선택 항목 배치
       selected_whose = st.multiselect(
           '👤 WHOSE 선택 (우선순위)',
           options=all_whose_options,
@@ -867,8 +865,6 @@ if menu == '트렌드 리포트':
           )
           grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
 
-          # [수정된 월간 체이닝 방식 수익률 계산 로직 적용]
-          # 이전 기말 평가금액(prev_val) + 해당 기간 순유입액 변화를 반영하여 체이닝 분모 설정
           grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
           grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
           grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
@@ -880,7 +876,6 @@ if menu == '트렌드 리포트':
               0
           )
           
-          # 월간 체이닝 방식 누적 수익률(Compound TWR) 계산
           grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
           grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
           grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
@@ -902,22 +897,33 @@ if menu == '트렌드 리포트':
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표 (점유율 및 전체 합산 추가)
+        # 각 항목별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
         # -------------------------------------------------------------------------
+        st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
+        ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
+        
+        grp_agg_summary = get_grp_agg(ex_summary)
+        latest_df_summary = grp_agg_summary[grp_agg_summary['Date'] == latest_date]
+
         summary_table_data = []
         total_eval_sum = 0
         total_pl_sum = 0
         total_principal_sum = 0
 
         for grp in groups:
-          sub = grp_agg_def[grp_agg_def[group_col] == grp]
+          sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             
-            sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
-            final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+            # 환차손 제외 여부에 따른 원금 참조 분기
+            if ex_summary and '원금_ex_fx' in raw_df.columns:
+              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
+              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+            else:
+              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
+              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss
@@ -950,7 +956,7 @@ if menu == '트렌드 리포트':
         cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
+        table_title_suffix = ' (환차손 제외)' if ex_summary else ''
         st.dataframe(
             summary_df.style.format({
                 '선택구간 누적 평가 손익 (원)': '{:,.0f}',
@@ -1323,7 +1329,6 @@ if menu == '트렌드 리포트':
               grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
           )
           
-          # [전체 합산 WHOSE별 분석에도 동일한 월간 체이닝 방식 적용]
           grp_agg['prev_eval'] = grp_agg.groupby('whose')['총평가금액'].shift(1)
           grp_agg['prev_principal'] = grp_agg.groupby('whose')['원금'].shift(1)
           grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
@@ -1345,23 +1350,32 @@ if menu == '트렌드 리포트':
         whose_list = sorted(agg1_def['whose'].unique())
 
         # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (점유율 및 전체 합산 추가)
+        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
         # -------------------------------------------------------------------------
-        whose_summary_data = []
+        st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
+        ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
+        
+        agg_whose_summary = get_whose_agg(ex_whose_summary)
         latest_date = raw_df['Date'].max()
+
+        whose_summary_data = []
         total_eval_sum = 0
         total_pl_sum = 0
         total_principal_sum = 0
 
         for w in whose_list:
-          sub = agg1_def[agg1_def['whose'] == w]
+          sub = agg_whose_summary[agg_whose_summary['whose'] == w]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
             
-            sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
-            final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+            if ex_whose_summary and '원금_ex_fx' in raw_df.columns:
+              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
+              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+            else:
+              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
+              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss
@@ -1392,7 +1406,6 @@ if menu == '트렌드 리포트':
         cols_w = ['WHOSE', '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
         whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
-        st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         st.dataframe(
             whose_summary_df.style.format({
                 '선택구간 누적 평가 손익 (원)': '{:,.0f}',
@@ -1713,7 +1726,6 @@ if menu == '트렌드 리포트':
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
-      # 선택된 트렌드 관점들을 st.tabs를 통해 각각의 독립된 탭으로 분리
       if active_views:
         tabs = st.tabs(active_views)
         for tab, v_type in zip(tabs, active_views):
