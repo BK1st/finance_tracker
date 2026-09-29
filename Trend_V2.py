@@ -142,17 +142,18 @@ def export_all_to_excel_bytes():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 개선된 시세 수집 함수
+# 2. 티커 포맷팅 및 개선된 시세 수집 함수 (수정 적용)
 # -----------------------------------------------------------------------------
 def format_ticker(t):
-  """연금 계좌 종목 및 국내 ETF/주식 Ticker 포맷 표준화 함수"""
+  """국내외 주식/ETF 및 연금계좌 Ticker 표준화 함수 (코스피/코스닥 지원)"""
   if pd.isna(t) or str(t).strip() == '' or str(t).strip().lower() == 'nan':
     return None
-  t_str = str(t).strip()
+  t_str = str(t).strip().upper()
 
   if t_str.endswith('.0'):
     t_str = t_str[:-2]
 
+  # 6자리 숫자형 티커 처리 (기본 .KS 접미사 연결)
   if t_str.isdigit():
     t_str = t_str.zfill(6) + '.KS'
 
@@ -160,25 +161,30 @@ def format_ticker(t):
 
 
 def get_latest_price_single(ticker_symbol):
-  """개별 티커의 최신 가격을 가져옵니다."""
-  try:
-    tk = yf.Ticker(ticker_symbol)
-    fast_info = tk.fast_info
-    if hasattr(fast_info, 'last_price') and fast_info.last_price is not None:
-      if not np.isnan(fast_info.last_price) and fast_info.last_price > 0:
-        return float(fast_info.last_price)
+  """개별 티커의 최신 가격을 가져옵니다. (.KS 실패 시 .KQ 지원)"""
+  symbols_to_try = [ticker_symbol]
+  if ticker_symbol.endswith('.KS'):
+    symbols_to_try.append(ticker_symbol.replace('.KS', '.KQ'))
 
-    info = tk.info
-    if 'postMarketPrice' in info and info['postMarketPrice']:
-      return float(info['postMarketPrice'])
-    if 'regularMarketPrice' in info and info['regularMarketPrice']:
-      return float(info['regularMarketPrice'])
+  for sym in symbols_to_try:
+    try:
+      tk = yf.Ticker(sym)
+      fast_info = tk.fast_info
+      if hasattr(fast_info, 'last_price') and fast_info.last_price is not None:
+        if not np.isnan(fast_info.last_price) and fast_info.last_price > 0:
+          return float(fast_info.last_price)
 
-    hist = tk.history(period='5d')
-    if not hist.empty and 'Close' in hist.columns:
-      return float(hist['Close'].iloc[-1])
-  except Exception:
-    pass
+      info = tk.info
+      if 'postMarketPrice' in info and info['postMarketPrice']:
+        return float(info['postMarketPrice'])
+      if 'regularMarketPrice' in info and info['regularMarketPrice']:
+        return float(info['regularMarketPrice'])
+
+      hist = tk.history(period='5d')
+      if not hist.empty and 'Close' in hist.columns:
+        return float(hist['Close'].iloc[-1])
+    except Exception:
+      pass
   return None
 
 
@@ -235,9 +241,15 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
 
 
 def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
-  formatted_tickers = [
-      format_ticker(t) for t in tickers if format_ticker(t) is not None
-  ]
+  formatted_tickers = []
+  for t in tickers:
+    fmt = format_ticker(t)
+    if fmt is not None:
+      formatted_tickers.append(fmt)
+      # .KS 종목의 경우 .KQ도 같이 후보에 추가하여 시세 누락 방지
+      if fmt.endswith('.KS'):
+        formatted_tickers.append(fmt.replace('.KS', '.KQ'))
+
   all_tickers = list(set(formatted_tickers + ['KRW=X']))
 
   if not all_tickers:
@@ -658,18 +670,32 @@ if menu == '트렌드 리포트':
               if '펀드' in item_name or '펀드' in str(cat4) or fmt_tk is None:
                 price = base_price if base_price > 0 else 0
               else:
-                if fmt_tk in market_data.columns and not market_data.empty:
-                  if pd.to_datetime(t_str) in market_data.index:
-                    price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
-                  else:
-                    price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+                # 1) 기본 포맷된 티커로 조회 (.KS)
+                # 2) 실패 시 .KQ(코스닥)로 전환 조회
+                target_tk_candidates = [fmt_tk]
+                if fmt_tk.endswith('.KS'):
+                  target_tk_candidates.append(fmt_tk.replace('.KS', '.KQ'))
 
+                for tk_candidate in target_tk_candidates:
                   if (
-                      (pd.isna(price) or price == 0)
-                      and fmt_tk in market_data.columns
-                      and not market_data[fmt_tk].dropna().empty
+                      tk_candidate in market_data.columns
+                      and not market_data.empty
                   ):
-                    price = float(market_data[fmt_tk].dropna().iloc[0])
+                    if pd.to_datetime(t_str) in market_data.index:
+                      price = market_data.loc[pd.to_datetime(t_str), tk_candidate]
+                    else:
+                      price = market_data[tk_candidate].asof(
+                          pd.to_datetime(t_str)
+                      )
+
+                    if (
+                        (pd.isna(price) or price == 0)
+                        and not market_data[tk_candidate].dropna().empty
+                    ):
+                      price = float(market_data[tk_candidate].dropna().iloc[0])
+
+                    if pd.notna(price) and price > 0:
+                      break
 
                 if pd.isna(price) or price == 0:
                   price = base_price
@@ -938,7 +964,7 @@ if menu == '트렌드 리포트':
 
         date_order_list = sub_df_default['Chart_Date'].tolist()
 
-        # --- Fig 1: 전체 자산 TREND (우측 수익률 축 제거 반영) ---
+        # --- Fig 1: 전체 자산 TREND ---
         eval_col = '총평가금액_ex_fx' if ex_fx1 else '총평가금액'
 
         acc_eval_df = (
@@ -2199,216 +2225,3 @@ elif menu == '포트폴리오 업로드':
           st.success('데이터가 성공적으로 저장 및 백업되었습니다!')
     except Exception as e:
       st.error(f'파일을 읽는 중 오류가 발생했습니다: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 입출금 관리
-# -----------------------------------------------------------------------------
-elif menu == '원금 및 입출금 관리':
-  st.header('💵 초기 원금 및 입출금 관리')
-
-  tab1, tab2 = st.tabs(['🏦 계좌별 초기 원금 설정', '💸 입출금 내역 등록'])
-
-  conn = get_connection()
-  acc_df = pd.read_sql(
-      'SELECT DISTINCT account_num, broker FROM portfolio', conn
-  )
-  init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
-  cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
-  conn.close()
-
-  alias_dict = alias_map
-
-  with tab1:
-    st.subheader('계좌별 초기 투자 원금 관리')
-    if acc_df.empty:
-      st.info('등록된 계좌가 없습니다. 포트폴리오를 먼저 업로드해 주세요.')
-    else:
-      init_dict = dict(zip(init_df['account_num'], init_df['initial_amount']))
-
-      merged_init = []
-      for _, row in acc_df.iterrows():
-        acc = str(row['account_num'])
-        merged_init.append({
-            'broker': row['broker'],
-            'account_num': acc,
-            'alias': alias_dict.get(acc, ''),
-            'initial_amount': float(init_dict.get(acc, 0.0)),
-        })
-
-      init_edit_df = pd.DataFrame(merged_init)
-      edited_init = st.data_editor(
-          init_edit_df,
-          column_config={
-              'broker': st.column_config.TextColumn('증권사', disabled=True),
-              'account_num': st.column_config.TextColumn(
-                  '계좌번호', disabled=True
-              ),
-              'alias': st.column_config.TextColumn('별칭', disabled=True),
-              'initial_amount': st.column_config.NumberColumn(
-                  '초기 원금 (원)', format='%d', min_value=0
-              ),
-          },
-          hide_index=True,
-          use_container_width=True,
-      )
-
-      if st.button('💾 초기 원금 저장'):
-        conn = get_connection()
-        c = conn.cursor()
-        for _, row in edited_init.iterrows():
-          c.execute(
-              'INSERT OR REPLACE INTO initial_principal (account_num, broker,'
-              ' initial_amount) VALUES (?, ?, ?)',
-              (row['account_num'], row['broker'], row['initial_amount']),
-          )
-        conn.commit()
-        conn.close()
-        create_local_backup()
-        st.success('초기 원금이 저장 및 백업되었습니다!')
-        st.rerun()
-
-  with tab2:
-    st.subheader('입출금 내역 등록 및 관리')
-    with st.form('cf_form'):
-      cf_date = st.date_input('거래일자', date.today())
-      acc_list = acc_df['account_num'].tolist() if not acc_df.empty else []
-      acc_labels = [
-          f"{a} ({alias_dict.get(str(a), '별칭없음')})" for a in acc_list
-      ]
-
-      sel_acc_label = st.selectbox('계좌 선택', options=acc_labels)
-      cf_type = st.radio('구분', ['입금', '출금'], horizontal=True)
-      cf_amount = st.number_input('금액 (원)', value=0, step=10000)
-      cf_note = st.text_input('비고 (선택사항)')
-
-      submitted = st.form_submit_button('➕ 입출금 내역 추가')
-
-      if submitted:
-        if sel_acc_label:
-          sel_acc_num = sel_acc_label.split(' (')[0]
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute(
-              'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
-              ' amount, note) VALUES (?, ?, ?, ?, ?)',
-              (
-                  cf_date.strftime('%Y-%m-%d'),
-                  sel_acc_num,
-                  cf_type,
-                  cf_amount,
-                  cf_note,
-              ),
-          )
-          conn.commit()
-          conn.close()
-          create_local_backup()
-          st.success('입출금 내역이 등록되었습니다!')
-          st.rerun()
-
-    st.write('---')
-    st.subheader('등록된 입출금 내역 목록')
-    if not cf_df.empty:
-      st.dataframe(cf_df, use_container_width=True)
-
-# -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 관리
-# -----------------------------------------------------------------------------
-elif menu == '등록 데이터 조회 및 관리':
-  st.header('🗂️ 등록 데이터 조회 및 관리')
-
-  tab_pf, tab_init, tab_cf, tab_alias, tab_bak = st.tabs([
-      '📊 포트폴리오 DB',
-      '💵 초기 원금 DB',
-      '💸 입출금 내역 DB',
-      '🏷️ 계좌 별칭 DB',
-      '💾 백업 및 복원',
-  ])
-
-  conn = get_connection()
-
-  with tab_pf:
-    pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
-    st.subheader(f'포트폴리오 레코드 (총 {len(pf_df)} 건)')
-    st.dataframe(pf_df, use_container_width=True)
-    if not pf_df.empty:
-      if st.button('🗑️ 포트폴리오 데이터 전체 삭제', type='primary'):
-        create_local_backup()
-        c = conn.cursor()
-        c.execute('DELETE FROM portfolio')
-        conn.commit()
-        st.success('포트폴리오 데이터가 초기화되었습니다.')
-        st.rerun()
-
-  with tab_init:
-    init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
-    st.subheader(f'초기 원금 레코드 (총 {len(init_df)} 건)')
-    st.dataframe(init_df, use_container_width=True)
-
-  with tab_cf:
-    cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
-    st.subheader(f'입출금 레코드 (총 {len(cf_df)} 건)')
-    st.dataframe(cf_df, use_container_width=True)
-
-  with tab_alias:
-    alias_df = pd.read_sql('SELECT * FROM account_alias', conn)
-    st.subheader(f'계좌 별칭 레코드 (총 {len(alias_df)} 건)')
-    st.dataframe(alias_df, use_container_width=True)
-
-  with tab_bak:
-    st.subheader('💾 데이터 백업 및 복원 관리')
-
-    c1, c2 = st.columns(2)
-    with c1:
-      st.markdown('#### 📥 DB 및 엑셀 다운로드 백업')
-      if os.path.exists(DB_FILE):
-        with open(DB_FILE, 'rb') as f:
-          db_bytes = f.read()
-        today_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-        st.download_button(
-            label='📥 SQLite DB 파일 다운로드 (.db)',
-            data=db_bytes,
-            file_name=f'asset_tracker_{today_str}.db',
-            mime='application/x-sqlite3',
-            use_container_width=True,
-        )
-
-      excel_bytes = export_all_to_excel_bytes()
-      st.download_button(
-          label='📊 전체 DB 엑셀 파일 다운로드 (.xlsx)',
-          data=excel_bytes,
-          file_name=f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
-          mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          use_container_width=True,
-      )
-
-    with c2:
-      st.markdown('#### 📂 DB 복원')
-      uploaded_db = st.file_uploader(
-          'SQLite DB 파일 (.db) 업로드', type=['db']
-      )
-      if uploaded_db is not None:
-        if st.button('🔄 복원 실행'):
-          create_local_backup()
-          with open(DB_FILE, 'wb') as f:
-            f.write(uploaded_db.getvalue())
-          st.success('DB 파일이 성공적으로 복원되었습니다!')
-          st.rerun()
-
-  conn.close()
-
-# -----------------------------------------------------------------------------
-# 메뉴 6: 데이터 백업 및 복원
-# -----------------------------------------------------------------------------
-elif menu == '데이터 백업 및 복원':
-  st.header('💾 백업 파일 히스토리 관리')
-  backup_files = get_backup_files()
-
-  if not backup_files:
-    st.info('생성된 자동 로컬 백업 파일이 없습니다.')
-  else:
-    st.write('로컬 자동 백업 파일 히스토리 목록입니다.')
-    for b_file in backup_files:
-      st.text(
-          f"📂 {os.path.basename(b_file)} (생성시각:"
-          f" {datetime.fromtimestamp(os.path.getmtime(b_file)).strftime('%Y-%m-%d %H:%M:%S')})"
-      )
