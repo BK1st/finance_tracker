@@ -604,17 +604,14 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
+          # 계좌별 누적 필터링 수정: 조회일(t_str) 이하 최신 데이터 사용, 없을 경우 가장 가까운 과거/미래 레코드 매칭
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
           ]
           if acc_pf.empty:
-            min_date = filtered_pf_df[
-                filtered_pf_df['account_num'].astype(str) == acc
-            ]['record_date'].min()
             acc_pf = filtered_pf_df[
-                (filtered_pf_df['account_num'].astype(str) == acc)
-                & (filtered_pf_df['record_date'] == min_date)
+                filtered_pf_df['account_num'].astype(str) == acc
             ]
 
           if not acc_pf.empty:
@@ -842,8 +839,6 @@ if menu == '트렌드 리포트':
 
         if axis_name == 'yaxis':
           fig.update_yaxes(**kwargs)
-        elif axis_name == 'yaxis2':
-          fig.update_yaxes(secondary_y=True, **kwargs)
 
       # -------------------------------------------------------------------------
       # [전체 합산] 전용 차트 렌더링 함수
@@ -943,7 +938,7 @@ if menu == '트렌드 리포트':
 
         date_order_list = sub_df_default['Chart_Date'].tolist()
 
-        # --- Fig 1: 전체 자산 TREND (계좌별 누적 막대 + 총평가금액) ---
+        # --- Fig 1: 전체 자산 TREND (우측 수익률 축 제거 반영) ---
         eval_col = '총평가금액_ex_fx' if ex_fx1 else '총평가금액'
 
         acc_eval_df = (
@@ -970,7 +965,7 @@ if menu == '트렌드 리포트':
         all_accs = acc_eval_df['account_num'].unique().tolist()
         ordered_accs = acc_order + [a for a in all_accs if a not in acc_order]
 
-        fig1 = make_subplots(specs=[[{'secondary_y': True}]])
+        fig1 = go.Figure()
 
         for acc in ordered_accs:
           sub_acc = acc_eval_df[acc_eval_df['account_num'] == acc]
@@ -980,8 +975,7 @@ if menu == '트렌드 리포트':
                   y=sub_acc[eval_col],
                   name=str(acc),
                   hovertemplate='%{y:,.0f} 원',
-              ),
-              secondary_y=False,
+              )
           )
 
         sub1_tot = get_agg_df(ex_fx1)
@@ -996,21 +990,7 @@ if menu == '트렌드 리포트':
                 text=[f'{v:,.0f}' for v in sub1_tot['총평가금액']],
                 textposition='top center',
                 hovertemplate='%{y:,.0f} 원',
-            ),
-            secondary_y=False,
-        )
-
-        fig1.add_trace(
-            go.Scatter(
-                x=sub1_tot['Chart_Date'],
-                y=sub1_tot['수익률'],
-                name='전체 수익률(%)',
-                mode='lines+markers',
-                line=dict(color='#2ca02c', dash='dash', width=2),
-                marker=dict(size=5),
-                hovertemplate='%{y:.2f}%',
-            ),
-            secondary_y=True,
+            )
         )
 
         leg_cfg1, show_leg1, margin1 = build_legend_config(pos_fig1)
@@ -1037,16 +1017,7 @@ if menu == '트렌드 리포트':
             categoryarray=date_order_list,
         )
         apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
-        fig1.update_yaxes(
-            title_text='평가금액 (원)', tickformat=',.0f', secondary_y=False
-        )
-        fig1.update_yaxes(
-            title_text='전체 수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
-            secondary_y=True,
-        )
+        fig1.update_yaxes(title_text='평가금액 (원)', tickformat=',.0f')
 
         # Fig 2: 구간 손익 금액 추이
         sub2 = get_agg_df(ex_fx2)
@@ -2435,28 +2406,9 @@ elif menu == '데이터 백업 및 복원':
   if not backup_files:
     st.info('생성된 자동 로컬 백업 파일이 없습니다.')
   else:
-    st.write('로컬 자동 백업 파일 목록입니다.')
-    b_data = []
-    for bf in backup_files:
-      fn = os.path.basename(bf)
-      mtime = datetime.fromtimestamp(os.path.getmtime(bf)).strftime(
-          '%Y-%m-%d %H:%M:%S'
+    st.write('로컬 자동 백업 파일 히스토리 목록입니다.')
+    for b_file in backup_files:
+      st.text(
+          f"📂 {os.path.basename(b_file)} (생성시각:"
+          f" {datetime.fromtimestamp(os.path.getmtime(b_file)).strftime('%Y-%m-%d %H:%M:%S')})"
       )
-      fsize = f'{os.path.getsize(bf) / 1024:.1f} KB'
-      b_data.append(
-          {'파일명': fn, '수정일시': mtime, '크기': fsize, '경로': bf}
-      )
-
-    b_df = pd.DataFrame(b_data)
-    st.dataframe(
-        b_df[['파일명', '수정일시', '크기']], use_container_width=True
-    )
-
-    selected_file = st.selectbox(
-        '복원할 백업 파일 선택', options=b_df['파일명'].tolist()
-    )
-    if st.button('🔄 선택한 백업본으로 복원'):
-      target_path = b_df[b_df['파일명'] == selected_file]['경로'].iloc[0]
-      shutil.copy2(target_path, DB_FILE)
-      st.success(f"'{selected_file}' 버전으로 성공적으로 복원되었습니다!")
-      st.rerun()
