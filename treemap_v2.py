@@ -325,7 +325,7 @@ def update_all_prices_and_rate_batch(curr_rate):
 
 
 # ---------------------------------------------------------
-# [추가 기능] 매매(트레이딩) 전용 다이얼로그
+# [수정 기능] 매매(트레이딩) 전용 다이얼로그 (계층적 조건 선택 방식)
 # ---------------------------------------------------------
 @st.dialog("📈 매매(트레이딩) 입력 - 신규 매수 / 추가 매수 / 매도")
 def open_trading_dialog():
@@ -375,21 +375,52 @@ def open_trading_dialog():
             st.warning("등록된 보유 포트폴리오 항목이 없습니다.")
             return
 
-        df["display_label"] = df.apply(
-            lambda r: f"[{r['id']}] {r['whose']} | {r['broker']} | {r['item_name']} (현재수량: {r['quantity']:,.2f}개, 평단가: {r['buy_price']:,.2f})", axis=1
+        # 빈값/Null값 처리
+        df["record_date"] = df["record_date"].fillna("미지정").replace("", "미지정")
+        df["broker"] = df["broker"].fillna("미지정").replace("", "미지정")
+        df["account_num"] = df["account_num"].fillna("미지정").replace("", "미지정")
+        df["item_name"] = df["item_name"].fillna("미지정").replace("", "미지정")
+        df["whose"] = df["whose"].fillna("본인").replace("", "본인")
+
+        st.markdown("#### 🎯 거래 대상 종목 선택 (기준날짜 ➔ 증권사 ➔ 계좌번호 ➔ 종목)")
+
+        # 1단계: 기준날짜 선택
+        available_dates = sorted(df["record_date"].unique(), reverse=True)
+        selected_date = st.selectbox("1️⃣ 기준날짜 선택", available_dates, key="tr_sel_date")
+
+        # 2단계: 해당 기준날짜 내 증권사 선택
+        df_filtered_date = df[df["record_date"] == selected_date]
+        available_brokers = sorted(df_filtered_date["broker"].unique())
+        selected_broker = st.selectbox("2️⃣ 증권사 선택", available_brokers, key="tr_sel_broker")
+
+        # 3단계: 해당 증권사 내 계좌번호 선택
+        df_filtered_broker = df_filtered_date[df_filtered_date["broker"] == selected_broker]
+        available_accounts = sorted(df_filtered_broker["account_num"].unique())
+        selected_account = st.selectbox("3️⃣ 계좌번호 선택", available_accounts, key="tr_sel_acc")
+
+        # 4단계: 해당 계좌 내 종목 선택
+        df_filtered_account = df_filtered_broker[df_filtered_broker["account_num"] == selected_account].copy()
+
+        df_filtered_account["item_label"] = df_filtered_account.apply(
+            lambda r: f"[{r['id']}] {r['item_name']} ({r['ticker'] if r['ticker'] else '티커없음'}) | 소유: {r['whose']} | 수량: {r['quantity']:,.2f}개 | 평단가: {r['buy_price']:,.2f}",
+            axis=1
         )
-        selected_label = st.selectbox("거래할 보유 종목 선택", df["display_label"].tolist())
-        target_row = df[df["display_label"] == selected_label].iloc[0]
+
+        selected_item_label = st.selectbox("4️⃣ 종목 선택", df_filtered_account["item_label"].tolist(), key="tr_sel_item")
+
+        # 선택된 최종 행 추출
+        target_row = df_filtered_account[df_filtered_account["item_label"] == selected_item_label].iloc[0]
 
         target_id = int(target_row["id"])
         old_qty = float(target_row["quantity"])
         old_buy_price = float(target_row["buy_price"])
         item_name = target_row["item_name"]
 
-        st.markdown(f"📌 **선택 항목 정보**: `{item_name}` | **기존 수량**: `{old_qty:,.2f}` | **기존 매입단가**: `{old_buy_price:,.2f}`")
+        st.markdown("---")
+        st.markdown(f"📌 **선택 종목 정보**: `{item_name}` | **기존 수량**: `{old_qty:,.2f}` | **기존 평단가**: `{old_buy_price:,.2f}`")
 
         with st.form("dialog_trade_edit_form"):
-            t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
+            t_date = st.date_input("거래일자", datetime.now()).strftime("%Y-%m-%d")
             c1, c2 = st.columns(2)
             with c1:
                 trade_price = st.number_input("거래 단가", min_value=0.0, step=1.0)
@@ -417,7 +448,7 @@ def open_trading_dialog():
                         """, (new_qty, new_buy_price, t_date, target_id))
                         st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
 
-                    else: # 매도
+                    else:  # 매도
                         if trade_qty >= old_qty:
                             cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
                             st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다.")
@@ -523,7 +554,6 @@ if menu == "자산 입력 및 관리":
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
-        # [방안 A 반영] 트레이딩 전용 다이얼로그 버튼 배치
         if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
             open_trading_dialog()
 
