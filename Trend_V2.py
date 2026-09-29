@@ -867,17 +867,24 @@ if menu == '트렌드 리포트':
           )
           grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
 
-          grp_agg['주기별 수익률'] = (
-              grp_agg.groupby(group_col)['총평가금액'].pct_change() * 100
+          # [수정된 월간 체이닝 방식 수익률 계산 로직 적용]
+          # 이전 기말 평가금액(prev_val) + 해당 기간 순유입액 변화를 반영하여 체이닝 분모 설정
+          grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
+          grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
+          grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
+          grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
+          
+          grp_agg['주기별 수익률'] = np.where(
+              grp_agg['period_start_base'] > 0,
+              (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
+              0
           )
-          first_eval = grp_agg.groupby(group_col)['총평가금액'].transform(
-              'first'
-          )
-          grp_agg['선택기간 누적 수익률'] = np.where(
-              first_eval > 0,
-              ((grp_agg['총평가금액'] - first_eval) / first_eval) * 100,
-              0,
-          )
+          
+          # 월간 체이닝 방식 누적 수익률(Compound TWR) 계산
+          grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
+          grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
+          grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
+
           return grp_agg
 
         grp_agg_def = get_grp_agg(False)
@@ -909,7 +916,6 @@ if menu == '트렌드 리포트':
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             
-            # 원금 데이터 확보용
             sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
             final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
 
@@ -931,7 +937,6 @@ if menu == '트렌드 리포트':
           del row['_eval']
           del row['_principal']
 
-        # 전체 합산 행 추가
         total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
         summary_table_data.append({
             prefix: '전체 합산',
@@ -942,7 +947,6 @@ if menu == '트렌드 리포트':
         })
 
         summary_df = pd.DataFrame(summary_table_data)
-        # 컬럼 순서 조정: 점유율을 평가금액 오른쪽 또는 적절한 위치에 배치
         cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
@@ -1318,17 +1322,23 @@ if menu == '트렌드 리포트':
           grp_agg['수익률'] = np.where(
               grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
           )
-          first_eval = grp_agg.groupby('whose')['총평가금액'].transform(
-              'first'
+          
+          # [전체 합산 WHOSE별 분석에도 동일한 월간 체이닝 방식 적용]
+          grp_agg['prev_eval'] = grp_agg.groupby('whose')['총평가금액'].shift(1)
+          grp_agg['prev_principal'] = grp_agg.groupby('whose')['원금'].shift(1)
+          grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
+          grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
+          
+          grp_agg['주기별 수익률'] = np.where(
+              grp_agg['period_start_base'] > 0,
+              (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
+              0
           )
-          grp_agg['구간별 누적수익률'] = np.where(
-              first_eval > 0,
-              ((grp_agg['총평가금액'] - first_eval) / first_eval) * 100,
-              0,
-          )
-          grp_agg['주기별 수익률'] = (
-              grp_agg.groupby('whose')['총평가금액'].pct_change() * 100
-          )
+          
+          grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
+          grp_agg['누적_성장지수'] = grp_agg.groupby('whose')['growth_factor'].cumprod()
+          grp_agg['구간별 누적수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
+
           return grp_agg
 
         agg1_def = get_whose_agg(False)
@@ -1369,7 +1379,6 @@ if menu == '트렌드 리포트':
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
           del row['_eval']
 
-        # 전체 합산 행 추가
         total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
         whose_summary_data.append({
             'WHOSE': '전체 합산',
