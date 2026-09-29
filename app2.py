@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -85,7 +87,120 @@ def get_account_aliases():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 개선된 시세 수집 함수
+# 2. 백업 & 복원 백엔드 함수
+# -----------------------------------------------------------------------------
+def export_backup_json():
+  """DB 내 모든 테이블(포트폴리오, 원금, 입출금, 계좌 별칭)을 JSON 문자열로 내보냅니다."""
+  conn = get_connection()
+  pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
+  cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
+  alias_df = pd.read_sql('SELECT * FROM account_alias', conn)
+  conn.close()
+
+  # primary key(id) 제거 후 딕셔너리로 변환 (복원 시 auto-increment 중복 방지)
+  if 'id' in pf_df.columns:
+    pf_df = pf_df.drop(columns=['id'])
+  if 'id' in cf_df.columns:
+    cf_df = cf_df.drop(columns=['id'])
+
+  backup_data = {
+      'portfolio': pf_df.to_dict(orient='records'),
+      'initial_principal': init_df.to_dict(orient='records'),
+      'cash_flow': cf_df.to_dict(orient='records'),
+      'account_alias': alias_df.to_dict(orient='records'),
+      'exported_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+  }
+
+  return json.dumps(backup_data, ensure_ascii=False, indent=2)
+
+
+def import_backup_json(json_str, clear_existing=False):
+  """JSON 형태의 백업 데이터를 불러와 DB에 등록합니다."""
+  data = json.loads(json_str)
+
+  conn = get_connection()
+  c = conn.cursor()
+
+  if clear_existing:
+    c.execute('DELETE FROM portfolio')
+    c.execute('DELETE FROM initial_principal')
+    c.execute('DELETE FROM cash_flow')
+    c.execute('DELETE FROM account_alias')
+
+  # 1. Portfolio
+  for row in data.get('portfolio', []):
+    c.execute(
+        '''
+            INSERT INTO portfolio (
+                record_date, broker, account_num, account_type, item_name,
+                ticker, category1, category2, category3, category4,
+                quantity, current_price, currency
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            row.get('record_date'),
+            row.get('broker'),
+            row.get('account_num'),
+            row.get('account_type'),
+            row.get('item_name'),
+            row.get('ticker'),
+            row.get('category1'),
+            row.get('category2'),
+            row.get('category3'),
+            row.get('category4'),
+            row.get('quantity'),
+            row.get('current_price'),
+            row.get('currency'),
+        ),
+    )
+
+  # 2. Initial Principal
+  for row in data.get('initial_principal', []):
+    c.execute(
+        '''
+            INSERT INTO initial_principal (account_num, broker, initial_amount)
+            VALUES (?, ?, ?)
+            ON CONFLICT(account_num) DO UPDATE SET
+            broker=excluded.broker,
+            initial_amount=excluded.initial_amount
+        ''',
+        (row.get('account_num'), row.get('broker'), row.get('initial_amount')),
+    )
+
+  # 3. Cash Flow
+  for row in data.get('cash_flow', []):
+    c.execute(
+        '''
+            INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note)
+            VALUES (?, ?, ?, ?, ?)
+        ''',
+        (
+            row.get('trans_date'),
+            row.get('account_num'),
+            row.get('flow_type'),
+            row.get('amount'),
+            row.get('note'),
+        ),
+    )
+
+  # 4. Account Alias
+  for row in data.get('account_alias', []):
+    c.execute(
+        '''
+            INSERT INTO account_alias (account_num, alias)
+            VALUES (?, ?)
+            ON CONFLICT(account_num) DO UPDATE SET alias=excluded.alias
+        ''',
+        (row.get('account_num'), row.get('alias')),
+    )
+
+  conn.commit()
+  conn.close()
+
+
+# -----------------------------------------------------------------------------
+# 3. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
   """연금 계좌 종목 및 국내 ETF/주식 Ticker 포맷 표준화 함수"""
@@ -93,11 +208,9 @@ def format_ticker(t):
     return None
   t_str = str(t).strip()
 
-  # 실수형으로 들어온 경우 처리 (예: 69500.0 -> 69500)
   if t_str.endswith('.0'):
     t_str = t_str[:-2]
 
-  # 6자리 숫자인 경우 한국 거래소 종목 코드(.KS) 부여
   if t_str.isdigit():
     t_str = t_str.zfill(6) + '.KS'
 
@@ -153,7 +266,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    # 비어있는 데이터 앞뒤 채우기 보완 (bfill -> ffill)
     data = data.bfill().ffill()
 
     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -196,7 +308,7 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
 
 
 # -----------------------------------------------------------------------------
-# 3. Plotly 레이아웃 및 범주 헬퍼 함수
+# 4. Plotly 레이아웃 및 범주 헬퍼 함수
 # -----------------------------------------------------------------------------
 def build_legend_config(mode_str):
   """모바일 가독성 향상 레이아웃 설정"""
@@ -246,7 +358,7 @@ def render_resizable_plotly_chart(fig, key):
 
 
 # -----------------------------------------------------------------------------
-# 4. Streamlit 대시보드 메인
+# 5. Streamlit 대시보드 메인
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 st.title('📈 자산 평가액 및 수익률 분석 시스템')
@@ -259,6 +371,7 @@ menu = st.sidebar.selectbox(
         '포트폴리오 업로드',
         '원금 및 입출금 관리',
         '등록 데이터 조회',
+        '데이터 백업 및 복원',
     ],
 )
 
@@ -459,10 +572,10 @@ if menu == '트렌드 리포트':
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
-        # 과거 데이터 조회를 위해 여유 있게 10일 전부터 수집 시작
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
-        # yfinance end 파라미터 미포함(exclusive) 특성 및 오늘 날짜 시세 보완을 위해 +2일 지정
-        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
+        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime(
+            '%Y-%m-%d'
+        )
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
         )
@@ -626,14 +739,11 @@ if menu == '트렌드 리포트':
                   price = base_price if base_price > 0 else 0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
-                    # 1. 당일 시세 탐색
                     if pd.to_datetime(t_str) in market_data.index:
                       price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
                     else:
-                      # 2. 당일 시세 미존재 시 과거 가장 가까운 시세 탐색 (asof)
                       price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
 
-                    # 3. 과거 시세가 없으면 미래의 첫 번째 유효 시세 탐색
                     if (
                         (pd.isna(price) or price == 0)
                         and fmt_tk in market_data.columns
@@ -659,7 +769,6 @@ if menu == '트렌드 리포트':
                     (item_name, cat4, item_eval, item_eval_ex_fx)
                 )
 
-              # 개별 보유 종목별 평가손익 및 원금 안분 계산
               item_count = len(item_eval_list)
               for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
                 if total_acc_eval > 0:
@@ -2299,3 +2408,83 @@ elif menu == '등록 데이터 조회':
         st.rerun()
       else:
         st.error('확인 문구가 일치하지 않습니다.')
+
+# -----------------------------------------------------------------------------
+# 메뉴 6: 데이터 백업 및 복원
+# -----------------------------------------------------------------------------
+elif menu == '데이터 백업 및 복원':
+  st.header('💾 전체 데이터 백업 및 복원 (Backup & Restore)')
+  st.write(
+      '등록된 모든 정보(포트폴리오, 최초 원금, 입출금 내역, 계좌 별칭)를 백업 파일로'
+      ' 내보내거나, 프로그램 초기화 시 한 번에 불러올 수 있습니다.'
+  )
+
+  tab_bk, tab_rs = st.tabs(['1. 데이터 백업 (Export)', '2. 데이터 복원 (Import)'])
+
+  with tab_bk:
+    st.subheader('📤 전체 데이터 백업 파일 생성')
+    st.info(
+        '아래 버튼을 클릭하여 현재 등록된 모든 DB 데이터를 JSON 파일로 다운로드'
+        ' 하세요.'
+    )
+
+    json_data = export_backup_json()
+    file_name = f"asset_tracker_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+    st.download_button(
+        label='⬇️ 백업 파일 다운로드 (JSON)',
+        data=json_data,
+        file_name=file_name,
+        mime='application/json',
+        type='primary',
+    )
+
+  with tab_rs:
+    st.subheader('📥 백업 파일 데이터 복원')
+    st.write(
+        '저장해둔 JSON 백업 파일을 선택하여 데이터를 한번에 불러옵니다.'
+    )
+
+    uploaded_json = st.file_uploader(
+        '백업 파일 선택 (.json)', type=['json'], key='restore_uploader'
+    )
+
+    if uploaded_json is not None:
+      try:
+        json_content = uploaded_json.read().decode('utf-8')
+        data_preview = json.loads(json_content)
+
+        pf_count = len(data_preview.get('portfolio', []))
+        init_count = len(data_preview.get('initial_principal', []))
+        cf_count = len(data_preview.get('cash_flow', []))
+        alias_count = len(data_preview.get('account_alias', []))
+        exp_time = data_preview.get('exported_at', '시간 정보 없음')
+
+        st.success(f'✅ 백업 파일 확인 완료 (생성 일시: {exp_time})')
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        m_col1.metric('포트폴리오', f'{pf_count} 건')
+        m_col2.metric('최초 원금 계좌', f'{init_count} 건')
+        m_col3.metric('입출금 내역', f'{cf_count} 건')
+        m_col4.metric('계좌 별칭', f'{alias_count} 건')
+
+        st.write('---')
+        st.subheader('⚙️ 복원 옵션 선택')
+        restore_mode = st.radio(
+            '복원 방식을 선택하세요',
+            options=[
+                '기존 데이터에 병합 (추가/업데이트)',
+                '기존 DB 전체 초기화 후 복원 (덮어쓰기)',
+            ],
+            index=1,
+            help='덮어쓰기를 선택하면 현재 DB의 데이터가 모두 삭제된 후 백업 데이터로 대체됩니다.',
+        )
+
+        clear_flag = '초기화' in restore_mode
+
+        if st.button('🚀 데이터 복원 실행', type='primary'):
+          import_backup_json(json_content, clear_existing=clear_flag)
+          st.success('🎉 데이터 복원이 성공적으로 완료되었습니다!')
+          st.rerun()
+
+      except Exception as e:
+        st.error(f'백업 파일을 읽는 도중 오류가 발생했습니다: {e}')
