@@ -93,11 +93,9 @@ def format_ticker(t):
     return None
   t_str = str(t).strip()
 
-  # 실수형으로 들어온 경우 처리 (예: 69500.0 -> 69500)
   if t_str.endswith('.0'):
     t_str = t_str[:-2]
 
-  # 6자리 숫자인 경우 한국 거래소 종목 코드(.KS) 부여
   if t_str.isdigit():
     t_str = t_str.zfill(6) + '.KS'
 
@@ -153,7 +151,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    # 비어있는 데이터 앞뒤 채우기 보완 (bfill -> ffill)
     data = data.bfill().ffill()
 
     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -258,7 +255,7 @@ menu = st.sidebar.selectbox(
         '계좌 별칭 관리',
         '포트폴리오 업로드',
         '원금 및 입출금 관리',
-        '등록 데이터 조회',
+        '등록 데이터 조회 및 웹 수정',
     ],
 )
 
@@ -459,9 +456,7 @@ if menu == '트렌드 리포트':
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
-        # 과거 데이터 조회를 위해 여유 있게 10일 전부터 수집 시작
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
-        # yfinance end 파라미터 미포함(exclusive) 특성 및 오늘 날짜 시세 보완을 위해 +2일 지정
         e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
@@ -626,14 +621,11 @@ if menu == '트렌드 리포트':
                   price = base_price if base_price > 0 else 0
                 else:
                   if fmt_tk in market_data.columns and not market_data.empty:
-                    # 1. 당일 시세 탐색
                     if pd.to_datetime(t_str) in market_data.index:
                       price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
                     else:
-                      # 2. 당일 시세 미존재 시 과거 가장 가까운 시세 탐색 (asof)
                       price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
 
-                    # 3. 과거 시세가 없으면 미래의 첫 번째 유효 시세 탐색
                     if (
                         (pd.isna(price) or price == 0)
                         and fmt_tk in market_data.columns
@@ -659,7 +651,6 @@ if menu == '트렌드 리포트':
                     (item_name, cat4, item_eval, item_eval_ex_fx)
                 )
 
-              # 개별 보유 종목별 평가손익 및 원금 안분 계산
               item_count = len(item_eval_list)
               for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
                 if total_acc_eval > 0:
@@ -2166,17 +2157,21 @@ elif menu == '원금 및 입출금 관리':
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회
+# 메뉴 5: 등록 데이터 조회 및 웹 수정 (Direct Table Edit / Insert / Delete)
 # -----------------------------------------------------------------------------
-elif menu == '등록 데이터 조회':
-  st.header('🔍 DB에 등록된 데이터 조회 및 관리')
+elif menu == '등록 데이터 조회 및 웹 수정':
+  st.header('🔍 등록 데이터 직접 편집 및 관리')
+  st.info(
+      '💡 **표에서 직접 수정**: 셀을 클릭하여 값을 수정하거나, 최하단 `+` 버튼으로 행을 추가할 수 있습니다.\n'
+      '💡 **행 삭제**: 삭제할 행 맨 앞의 체크박스를 선택한 후 [🗑️ 선택한 행 삭제] 버튼을 눌러주세요.'
+  )
 
   conn = get_connection()
   pf_df = pd.read_sql(
-      'SELECT * FROM portfolio ORDER BY record_date DESC', conn
+      'SELECT * FROM portfolio ORDER BY record_date DESC, id DESC', conn
   )
   init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
-  cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
+  cf_df = pd.read_sql('SELECT * FROM cash_flow ORDER BY trans_date DESC', conn)
   alias_df = pd.read_sql('SELECT * FROM account_alias', conn)
   conn.close()
 
@@ -2184,108 +2179,302 @@ elif menu == '등록 데이터 조회':
       ['포트폴리오 데이터', '최초 원금 데이터', '입출금 데이터', '계좌 별칭 데이터']
   )
 
+  # Tab 1: 포트폴리오
   with tab1:
-    st.subheader('📦 보유 포트폴리오 등록 내역')
-    if pf_df.empty:
-      st.info('등록된 포트폴리오 데이터가 없습니다.')
+    st.subheader('📦 포트폴리오 표 직접 수정')
+
+    col_btn1, col_btn2 = st.columns([2, 8])
+
+    # 검색 기능
+    search_keyword = st.text_input('🔎 종목명 / 계좌번호 / 증권사 필터링', '', key='pf_search')
+    if search_keyword:
+      pf_display = pf_df[
+          pf_df['item_name'].astype(str).str.contains(search_keyword)
+          | pf_df['account_num'].astype(str).str.contains(search_keyword)
+          | pf_df['broker'].astype(str).str.contains(search_keyword)
+      ].copy()
     else:
-      st.write(f'총 **{len(pf_df)}** 건의 포트폴리오 데이터가 존재합니다.')
+      pf_display = pf_df.copy()
 
-      with st.spinner('최신 시세를 수집하는 중입니다...'):
-        unique_tickers = pf_df['ticker'].dropna().unique().tolist()
-        s_date = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
-        e_date = (date.today() + timedelta(days=1)).strftime('%Y-%m-%d')
-        m_data = fetch_market_data(unique_tickers, s_date, e_date)
+    # 데이터 에디터에 보여줄 필수 컬럼 정의 및 ID 순서 정렬
+    pf_display['id'] = pf_display['id'].astype(int)
+    
+    # st.data_editor 호출
+    edited_pf = st.data_editor(
+        pf_display,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='pf_editor',
+        column_config={
+            'id': st.column_config.NumberColumn('ID (자동)', disabled=True),
+            'record_date': st.column_config.TextColumn('기록일자 (YYYY-MM-DD)', required=True),
+            'broker': st.column_config.TextColumn('증권사', required=True),
+            'account_num': st.column_config.TextColumn('계좌번호', required=True),
+            'account_type': st.column_config.TextColumn('계좌유형'),
+            'item_name': st.column_config.TextColumn('종목명', required=True),
+            'ticker': st.column_config.TextColumn('티커'),
+            'category1': st.column_config.TextColumn('Category1'),
+            'category2': st.column_config.TextColumn('Category2'),
+            'category3': st.column_config.TextColumn('Category3'),
+            'category4': st.column_config.TextColumn('Category4'),
+            'quantity': st.column_config.NumberColumn('수량', format='%.4f'),
+            'current_price': st.column_config.NumberColumn('현재가', format='%.2f'),
+            'currency': st.column_config.SelectboxColumn('통화', options=['KRW', 'USD'], default='KRW'),
+        },
+    )
 
-        usd_krw = 1350.0
-        if 'KRW=X' in m_data.columns and not m_data['KRW=X'].dropna().empty:
-          usd_krw = float(m_data['KRW=X'].dropna().iloc[-1])
+    if st.button('💾 포트폴리오 변경사항 DB 저장', type='primary', key='save_pf'):
+      try:
+        conn = get_connection()
+        c = conn.cursor()
 
-        latest_prices = []
-        latest_evals = []
+        # 기존 전체 데이터 받아오기
+        editor_state = st.session_state.get('pf_editor', {})
+        edited_rows = editor_state.get('edited_rows', {})
+        added_rows = editor_state.get('added_rows', [])
+        deleted_rows = editor_state.get('deleted_rows', [])
 
-        for _, row in pf_df.iterrows():
-          fmt_tk = format_ticker(row.get('ticker'))
-          qty = (
-              row['quantity']
-              if ('quantity' in row and pd.notna(row['quantity']))
-              else 0
+        # 1. 삭제
+        for idx in deleted_rows:
+          row_id = pf_display.iloc[idx]['id']
+          c.execute('DELETE FROM portfolio WHERE id = ?', (int(row_id),))
+
+        # 2. 수정
+        for idx, changes in edited_rows.items():
+          row_id = pf_display.iloc[idx]['id']
+          set_clauses = []
+          params = []
+          for col, val in changes.items():
+            if col != 'id':
+              if col == 'ticker':
+                val = format_ticker(val)
+              set_clauses.append(f'{col} = ?')
+              params.append(val)
+          if set_clauses:
+            params.append(int(row_id))
+            sql = f"UPDATE portfolio SET {', '.join(set_clauses)} WHERE id = ?"
+            c.execute(sql, params)
+
+        # 3. 추가
+        for new_row in added_rows:
+          fmt_tk = format_ticker(new_row.get('ticker'))
+          c.execute(
+              '''
+              INSERT INTO portfolio (
+                  record_date, broker, account_num, account_type, item_name,
+                  ticker, category1, category2, category3, category4,
+                  quantity, current_price, currency
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ''',
+              (
+                  new_row.get('record_date', date.today().strftime('%Y-%m-%d')),
+                  new_row.get('broker', ''),
+                  str(new_row.get('account_num', '')),
+                  new_row.get('account_type', ''),
+                  new_row.get('item_name', ''),
+                  fmt_tk,
+                  new_row.get('category1', ''),
+                  new_row.get('category2', ''),
+                  new_row.get('category3', ''),
+                  new_row.get('category4', ''),
+                  new_row.get('quantity', 0.0),
+                  new_row.get('current_price', 0.0),
+                  new_row.get('currency', 'KRW'),
+              ),
           )
-          curr = row.get('currency', 'KRW')
-          base_price = (
-              row['current_price']
-              if ('current_price' in row and pd.notna(row['current_price']))
-              else 0
-          )
 
-          price = None
-          if fmt_tk and fmt_tk in m_data.columns and not m_data.empty:
-            valid_p = m_data[fmt_tk].dropna()
-            if not valid_p.empty:
-              price = float(valid_p.iloc[-1])
+        conn.commit()
+        conn.close()
+        st.success('포트폴리오 수정/추가/삭제 내역이 DB에 반영되었습니다!')
+        st.rerun()
+      except Exception as e:
+        st.error(f'저장 중 오류 발생: {e}')
 
-          if price is None or price <= 0:
-            price = base_price
-
-          item_eval = (
-              (qty * price * usd_krw) if curr == 'USD' else (qty * price)
-          )
-
-          latest_prices.append(price)
-          latest_evals.append(item_eval)
-
-        view_pf_df = pf_df.copy()
-        view_pf_df['최신_현재가(yfinance)'] = latest_prices
-        view_pf_df['최신_평가금액(원)'] = latest_evals
-
-        cols = list(view_pf_df.columns)
-        if 'current_price' in cols:
-          cp_idx = cols.index('current_price')
-          cols.remove('최신_현재가(yfinance)')
-          cols.remove('최신_평가금액(원)')
-          cols.insert(cp_idx + 1, '최신_현재가(yfinance)')
-          cols.insert(cp_idx + 2, '최신_평가금액(원)')
-          view_pf_df = view_pf_df[cols]
-
-      search_keyword = st.text_input('🔎 종목명 / 계좌번호 / 증권사 검색', '')
-      if search_keyword:
-        filtered_pf = view_pf_df[
-            view_pf_df['item_name'].astype(str).str.contains(search_keyword)
-            | view_pf_df['account_num'].astype(str).str.contains(search_keyword)
-            | view_pf_df['broker'].astype(str).str.contains(search_keyword)
-        ]
-        st.dataframe(filtered_pf, use_container_width=True)
-      else:
-        st.dataframe(view_pf_df, use_container_width=True)
-
+  # Tab 2: 최초 원금
   with tab2:
-    st.subheader('🏦 최초 원금 등록 내역')
-    if init_df.empty:
-      st.info('등록된 최초 원금 데이터가 없습니다.')
-    else:
-      st.dataframe(init_df, use_container_width=True)
+    st.subheader('🏦 최초 원금 표 직접 수정')
+    edited_init = st.data_editor(
+        init_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='init_editor',
+        column_config={
+            'account_num': st.column_config.TextColumn('계좌번호 (Primary Key)', required=True),
+            'broker': st.column_config.TextColumn('증권사'),
+            'initial_amount': st.column_config.NumberColumn('최초 원금 (원)', format='%d'),
+        },
+    )
 
+    if st.button('💾 최초 원금 변경사항 DB 저장', type='primary', key='save_init'):
+      try:
+        conn = get_connection()
+        c = conn.cursor()
+        editor_state = st.session_state.get('init_editor', {})
+        edited_rows = editor_state.get('edited_rows', {})
+        added_rows = editor_state.get('added_rows', [])
+        deleted_rows = editor_state.get('deleted_rows', [])
+
+        for idx in deleted_rows:
+          acc_num = init_df.iloc[idx]['account_num']
+          c.execute('DELETE FROM initial_principal WHERE account_num = ?', (str(acc_num),))
+
+        for idx, changes in edited_rows.items():
+          acc_num = init_df.iloc[idx]['account_num']
+          set_clauses = []
+          params = []
+          for col, val in changes.items():
+            set_clauses.append(f'{col} = ?')
+            params.append(val)
+          if set_clauses:
+            params.append(str(acc_num))
+            c.execute(f"UPDATE initial_principal SET {', '.join(set_clauses)} WHERE account_num = ?", params)
+
+        for new_row in added_rows:
+          c.execute(
+              '''
+              INSERT INTO initial_principal (account_num, broker, initial_amount)
+              VALUES (?, ?, ?)
+              ON CONFLICT(account_num) DO UPDATE SET broker=excluded.broker, initial_amount=excluded.initial_amount
+              ''',
+              (
+                  str(new_row.get('account_num', '')),
+                  new_row.get('broker', ''),
+                  new_row.get('initial_amount', 0.0),
+              ),
+          )
+
+        conn.commit()
+        conn.close()
+        st.success('최초 원금 수정사항이 DB에 저장되었습니다!')
+        st.rerun()
+      except Exception as e:
+        st.error(f'저장 중 오류 발생: {e}')
+
+  # Tab 3: 입출금 내역
   with tab3:
-    st.subheader('💸 입출금(Cash Flow) 내역')
-    if cf_df.empty:
-      st.info('등록된 입출금 내역이 없습니다.')
-    else:
-      st.dataframe(cf_df, use_container_width=True)
+    st.subheader('💸 입출금 내역 표 직접 수정')
+    cf_df['id'] = cf_df['id'].astype(int)
+    edited_cf = st.data_editor(
+        cf_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='cf_editor',
+        column_config={
+            'id': st.column_config.NumberColumn('ID (자동)', disabled=True),
+            'trans_date': st.column_config.TextColumn('거래일자 (YYYY-MM-DD)', required=True),
+            'account_num': st.column_config.TextColumn('계좌번호', required=True),
+            'flow_type': st.column_config.SelectboxColumn('구분', options=['입금', '출금'], default='입금'),
+            'amount': st.column_config.NumberColumn('금액 (원)', format='%d'),
+            'note': st.column_config.TextColumn('비고'),
+        },
+    )
 
+    if st.button('💾 입출금 내역 변경사항 DB 저장', type='primary', key='save_cf'):
+      try:
+        conn = get_connection()
+        c = conn.cursor()
+        editor_state = st.session_state.get('cf_editor', {})
+        edited_rows = editor_state.get('edited_rows', {})
+        added_rows = editor_state.get('added_rows', [])
+        deleted_rows = editor_state.get('deleted_rows', [])
+
+        for idx in deleted_rows:
+          row_id = cf_df.iloc[idx]['id']
+          c.execute('DELETE FROM cash_flow WHERE id = ?', (int(row_id),))
+
+        for idx, changes in edited_rows.items():
+          row_id = cf_df.iloc[idx]['id']
+          set_clauses = []
+          params = []
+          for col, val in changes.items():
+            if col != 'id':
+              set_clauses.append(f'{col} = ?')
+              params.append(val)
+          if set_clauses:
+            params.append(int(row_id))
+            c.execute(f"UPDATE cash_flow SET {', '.join(set_clauses)} WHERE id = ?", params)
+
+        for new_row in added_rows:
+          c.execute(
+              '''
+              INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note)
+              VALUES (?, ?, ?, ?, ?)
+              ''',
+              (
+                  new_row.get('trans_date', date.today().strftime('%Y-%m-%d')),
+                  str(new_row.get('account_num', '')),
+                  new_row.get('flow_type', '입금'),
+                  new_row.get('amount', 0.0),
+                  new_row.get('note', ''),
+              ),
+          )
+
+        conn.commit()
+        conn.close()
+        st.success('입출금 내역 수정사항이 DB에 저장되었습니다!')
+        st.rerun()
+      except Exception as e:
+        st.error(f'저장 중 오류 발생: {e}')
+
+  # Tab 4: 계좌 별칭
   with tab4:
-    st.subheader('🏷️ 계좌 별칭 내역')
-    if alias_df.empty:
-      st.info('등록된 계좌 별칭 데이터가 없습니다.')
-    else:
-      st.dataframe(alias_df, use_container_width=True)
+    st.subheader('🏷️ 계좌 별칭 표 직접 수정')
+    edited_alias = st.data_editor(
+        alias_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='alias_editor',
+        column_config={
+            'account_num': st.column_config.TextColumn('계좌번호 (Primary Key)', required=True),
+            'alias': st.column_config.TextColumn('별칭 (Alias)', required=True),
+        },
+    )
+
+    if st.button('💾 계좌 별칭 변경사항 DB 저장', type='primary', key='save_alias'):
+      try:
+        conn = get_connection()
+        c = conn.cursor()
+        editor_state = st.session_state.get('alias_editor', {})
+        edited_rows = editor_state.get('edited_rows', {})
+        added_rows = editor_state.get('added_rows', [])
+        deleted_rows = editor_state.get('deleted_rows', [])
+
+        for idx in deleted_rows:
+          acc_num = alias_df.iloc[idx]['account_num']
+          c.execute('DELETE FROM account_alias WHERE account_num = ?', (str(acc_num),))
+
+        for idx, changes in edited_rows.items():
+          acc_num = alias_df.iloc[idx]['account_num']
+          if 'alias' in changes:
+            c.execute('UPDATE account_alias SET alias = ? WHERE account_num = ?', (changes['alias'], str(acc_num)))
+
+        for new_row in added_rows:
+          c.execute(
+              '''
+              INSERT INTO account_alias (account_num, alias)
+              VALUES (?, ?)
+              ON CONFLICT(account_num) DO UPDATE SET alias=excluded.alias
+              ''',
+              (
+                  str(new_row.get('account_num', '')),
+                  new_row.get('alias', ''),
+              ),
+          )
+
+        conn.commit()
+        conn.close()
+        st.success('계좌 별칭 수정사항이 DB에 저장되었습니다!')
+        st.rerun()
+      except Exception as e:
+        st.error(f'저장 중 오류 발생: {e}')
 
   st.write('---')
   with st.expander('⚠️ 위험: 전체 데이터 초기화'):
     st.warning('데이터베이스의 모든 데이터가 완전 삭제됩니다. 주의하세요.')
     confirm_del = st.text_input(
-        "초기화를 원하시면 아래에 '데이터 초기화'를 입력하세요.", ''
+        "초기화를 원하시면 아래에 '데이터 초기화'를 입력하세요.", '', key='del_confirm_input'
     )
-    if st.button('🔥 DB 전체 데이터 초기화', type='primary'):
+    if st.button('🔥 DB 전체 데이터 초기화', type='primary', key='del_all_btn'):
       if confirm_del == '데이터 초기화':
         conn = get_connection()
         c = conn.cursor()
