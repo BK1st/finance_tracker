@@ -895,28 +895,63 @@ if menu == '트렌드 리포트':
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표 (추가된 부분)
+        # 각 항목별 최종 핵심지표 요약 표 (점유율 및 전체 합산 추가)
         # -------------------------------------------------------------------------
         summary_table_data = []
+        total_eval_sum = 0
+        total_pl_sum = 0
+        total_principal_sum = 0
+
         for grp in groups:
           sub = grp_agg_def[grp_agg_def[group_col] == grp]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
+            
+            # 원금 데이터 확보용
+            sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
+            final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+
+            total_eval_sum += final_eval
+            total_pl_sum += final_p_loss
+            total_principal_sum += final_principal
+
             summary_table_data.append({
                 prefix: grp,
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
+                '_eval': final_eval,
+                '_principal': final_principal,
             })
+
+        for row in summary_table_data:
+          row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
+          del row['_eval']
+          del row['_principal']
+
+        # 전체 합산 행 추가
+        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        summary_table_data.append({
+            prefix: '전체 합산',
+            '선택구간 누적 평가 손익 (원)': total_pl_sum,
+            '최종 기말 평가 금액 (원)': total_eval_sum,
+            '선택구간 누적 수익률 (%)': total_ret,
+            '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
+        })
+
         summary_df = pd.DataFrame(summary_table_data)
+        # 컬럼 순서 조정: 점유율을 평가금액 오른쪽 또는 적절한 위치에 배치
+        cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
+        summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         st.dataframe(
             summary_df.style.format({
                 '선택구간 누적 평가 손익 (원)': '{:,.0f}',
                 '최종 기말 평가 금액 (원)': '{:,.0f}',
+                '점유율 (%)': '{:.2f}%',
                 '선택구간 누적 수익률 (%)': '{:.2f}%',
             }),
             use_container_width=True,
@@ -1300,28 +1335,60 @@ if menu == '트렌드 리포트':
         whose_list = sorted(agg1_def['whose'].unique())
 
         # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (추가된 부분)
+        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (점유율 및 전체 합산 추가)
         # -------------------------------------------------------------------------
         whose_summary_data = []
+        latest_date = raw_df['Date'].max()
+        total_eval_sum = 0
+        total_pl_sum = 0
+        total_principal_sum = 0
+
         for w in whose_list:
           sub = agg1_def[agg1_def['whose'] == w]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
+            
+            sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
+            final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+
+            total_eval_sum += final_eval
+            total_pl_sum += final_p_loss
+            total_principal_sum += final_principal
+
             whose_summary_data.append({
                 'WHOSE': w,
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
+                '_eval': final_eval,
             })
+
+        for row in whose_summary_data:
+          row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
+          del row['_eval']
+
+        # 전체 합산 행 추가
+        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        whose_summary_data.append({
+            'WHOSE': '전체 합산',
+            '선택구간 누적 평가 손익 (원)': total_pl_sum,
+            '최종 기말 평가 금액 (원)': total_eval_sum,
+            '선택구간 누적 수익률 (%)': total_ret,
+            '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
+        })
+
         whose_summary_df = pd.DataFrame(whose_summary_data)
+        cols_w = ['WHOSE', '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
+        whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         st.dataframe(
             whose_summary_df.style.format({
                 '선택구간 누적 평가 손익 (원)': '{:,.0f}',
                 '최종 기말 평가 금액 (원)': '{:,.0f}',
+                '점유율 (%)': '{:.2f}%',
                 '선택구간 누적 수익률 (%)': '{:.2f}%',
             }),
             use_container_width=True,
