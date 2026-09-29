@@ -406,7 +406,7 @@ if menu == "자산 입력 및 관리":
     )
 
     # ---------------------------------------------------------
-    # 모드 1: 웹 화면 직접 수정/편집 (요청사항 2, 3 반영)
+    # 모드 1: 웹 화면 직접 수정/편집 (요청사항 1: 모두 선택 기능 반영)
     # ---------------------------------------------------------
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
@@ -423,8 +423,21 @@ if menu == "자산 입력 및 관리":
         else:
             edit_df = pd.DataFrame(columns=["id"] + required_cols)
 
-        # 체크박스 선택용 컬럼 추가
-        edit_df.insert(0, "선택(삭제)", False)
+        # ---------------------------------------------------------
+        # [요청 1 반영] 모두 선택 / 모두 해제 버튼 추가
+        # ---------------------------------------------------------
+        col_select_all1, col_select_all2, _ = st.columns([1.5, 1.5, 5])
+        with col_select_all1:
+            if st.button("✅ 전체 선택"):
+                st.session_state["select_all_flag"] = True
+                st.rerun()
+        with col_select_all2:
+            if st.button("⬜ 전체 해제"):
+                st.session_state["select_all_flag"] = False
+                st.rerun()
+
+        default_select_val = st.session_state.get("select_all_flag", False)
+        edit_df.insert(0, "선택(삭제)", default_select_val)
 
         # Streamlit Data Editor로 표 출력 및 직접 수정 허용
         edited_data = st.data_editor(
@@ -456,6 +469,7 @@ if menu == "자산 입력 및 관리":
                         conn.commit()
                         conn.close()
                         export_backup_json()
+                        st.session_state["select_all_flag"] = False
                         st.success(f"선택한 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
                         st.rerun()
                     else:
@@ -489,6 +503,7 @@ if menu == "자산 입력 및 관리":
                 conn.commit()
                 conn.close()
                 export_backup_json()
+                st.session_state["select_all_flag"] = False
                 st.success("🎉 표 전체 변경사항이 성공적으로 저장되었습니다!")
                 st.rerun()
 
@@ -577,7 +592,7 @@ if menu == "자산 입력 및 관리":
                 st.rerun()
 
     # ---------------------------------------------------------
-    # 모드 3: 엑셀 파일로 일괄 추가 (요청사항 1 반영)
+    # 모드 3: 엑셀 파일로 일괄 추가
     # ---------------------------------------------------------
     elif mode == "엑셀 파일로 일괄 추가":
         st.subheader("📁 엑셀 / CSV 파일 업로드")
@@ -590,7 +605,6 @@ if menu == "자산 입력 및 관리":
                     else pd.read_excel(uploaded_file)
                 )
                 
-                # whose 항목을 포함한 필수 컬럼 체크
                 required_cols = [
                     "record_date",
                     "whose",
@@ -610,7 +624,6 @@ if menu == "자산 입력 및 관리":
                     "exchange_rate",
                 ]
 
-                # whose 컬럼이 없는 엑셀 파일인 경우 기본값 부여
                 if "whose" not in upload_df.columns:
                     upload_df["whose"] = "본인"
 
@@ -667,7 +680,7 @@ if menu == "자산 입력 및 관리":
     st.dataframe(df_raw, width="stretch")
 
 # ---------------------------------------------------------
-# 메뉴 2: 일별/시점별 보유 현황 분석
+# 메뉴 2: 일별/시점별 보유 현황 분석 (요청사항 2 반영)
 # ---------------------------------------------------------
 elif menu == "일별/시점별 보유 현황 분석":
     st.header("🔍 시점별 자산 보유 현황")
@@ -678,567 +691,590 @@ elif menu == "일별/시점별 보유 현황 분석":
     if df.empty:
         st.info("데이터가 없습니다.")
     else:
-        col_d1, col_d2 = st.columns([2, 2])
-        with col_d1:
-            available_dates = sorted(df["record_date"].unique(), reverse=True)
-            selected_date = st.selectbox(
-                "조회할 입력 데이터 날짜", available_dates
+        # ---------------------------------------------------------
+        # [요청 2 반영] 1. WHOSE 선택(복수 선택 가능) -> 2. RECORD_DATE 선택
+        # ---------------------------------------------------------
+        df["whose"] = df["whose"].fillna("본인").replace("", "본인")
+        available_whose_list = sorted(df["whose"].unique())
+
+        col_filter1, col_filter2, col_filter3 = st.columns([2, 2, 2])
+
+        with col_filter1:
+            selected_whose_list = st.multiselect(
+                "1. 소유자(WHOSE) 선택 (복수 선택 가능)",
+                options=available_whose_list,
+                default=available_whose_list
             )
 
-        with col_d2:
-            use_historical_price = st.checkbox(
-                "🗓️ 특정 날짜 기준 과거 시세로 조회하기"
-            )
-            if use_historical_price:
-                target_eval_date = st.date_input(
-                    "조회 기준 시세 날짜", datetime.now()
-                ).strftime("%Y-%m-%d")
-            else:
-                target_eval_date = None
-
-        sub_df = df[df["record_date"] == selected_date].copy()
-
-        if use_historical_price and target_eval_date:
-            with st.spinner(f"[{target_eval_date}] 배치 시세 데이터를 조회 중..."):
-                sub_df["formatted_ticker"] = sub_df.apply(
-                    lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
-                )
-                tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
-                
-                target_dt = pd.to_datetime(target_eval_date)
-                start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-                end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
-                
-                m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
-
-                for idx, row in sub_df.iterrows():
-                    h_price = get_price_from_batch_data(
-                        m_data, row["formatted_ticker"], target_eval_date
-                    )
-                    if h_price is not None:
-                        sub_df.at[idx, "current_price"] = h_price
-
-        sub_df["rate_multiplier"] = sub_df.apply(
-            lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
-            axis=1,
-        )
-        sub_df["매입총액(원)"] = (
-            sub_df["buy_price"]
-            * sub_df["quantity"]
-            * sub_df["rate_multiplier"]
-        )
-        sub_df["평가액(원)"] = (
-            sub_df["current_price"]
-            * sub_df["quantity"]
-            * sub_df["rate_multiplier"]
-        )
-        sub_df["평가손익(원)"] = sub_df["평가액(원)"] - sub_df["매입총액(원)"]
-
-        for cat in [
-            "whose",
-            "category1",
-            "category2",
-            "category3",
-            "category4",
-            "account_type",
-            "broker",
-            "account_num",
-            "item_name",
-        ]:
-            sub_df[cat] = sub_df[cat].fillna("미지정").replace("", "미지정")
-
-        total_buy = sub_df["매입총액(원)"].sum()
-        total_eval = sub_df["평가액(원)"].sum()
-        total_profit = sub_df["평가손익(원)"].sum()
-        total_rate = (total_profit / total_buy * 100) if total_buy != 0 else 0
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("총 평가액 (원화)", f"{total_eval:,.0f} 원")
-        col2.metric("총 매입금액 (원화)", f"{total_buy:,.0f} 원")
-        col3.metric("총 평가손익 (원화)", f"{total_profit:,.0f} 원")
-        col4.metric("전체 수익률", f"{total_rate:.2f} %")
-
-        st.markdown("---")
-
-        st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
-        cat_options = {
-            "소유자(WHOSE)": "whose",
-            "구분": "account_type",
-            "금융사": "broker",
-            "보유항목(ITEM)": "item_name",
-            "계좌번호": "account_num",
-            "분류1": "category1",
-            "분류2": "category2",
-            "분류3": "category3",
-            "분류4": "category4",
-        }
-
-        col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-        with col_t1:
-            l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
-        with col_t2:
-            l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
-        with col_t3:
-            l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
-        with col_t4:
-            l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)
-
-        col_c1, col_c2 = st.columns([2, 1])
-        with col_c1:
-            color_option = st.selectbox(
-                "🗺️ 트리맵 색상 기준 선택",
-                [
-                    "총 누적 수익률 (%)",
-                    "일간 등락률 (1일)",
-                    "주간 등락률 (1주일)",
-                    "월간 등락률 (1개월)",
-                    "월초 대비 등락률 (Month to Date)",
-                    "연초 대비 등락률 (YTD)",
-                    "특정 날짜 지정 등락률",
-                ],
-                index=1
-            )
-
-        custom_base_date = None
-        if color_option == "특정 날짜 지정 등락률":
-            with col_c2:
-                custom_base_date = st.date_input(
-                    "기준 날짜 선택",
-                    value=datetime.now() - timedelta(days=30),
-                    max_value=datetime.now(),
-                )
-
-        today = datetime.now()
-        change_rates = []
-        period_profits = []
-
-        if color_option == "총 누적 수익률 (%)":
-            color_col = "수익률(%)"
-            for _, row in sub_df.iterrows():
-                buy_val = row["매입총액(원)"]
-                profit_val = row["평가손익(원)"]
-                rate_val = (profit_val / buy_val * 100) if buy_val != 0 else 0.0
-                change_rates.append(rate_val)
-                period_profits.append(profit_val)
-            sub_df[color_col] = change_rates
-            sub_df["선택기준_평가손익(원)"] = period_profits
+        if not selected_whose_list:
+            st.warning("소유자(WHOSE)를 최소 1개 이상 선택해 주세요.")
         else:
-            if color_option == "일간 등락률 (1일)":
-                start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
-                past_date_str = None
-            elif color_option == "주간 등락률 (1주일)":
-                start_fetch_dt = (today - timedelta(days=15)).strftime("%Y-%m-%d")
-                past_date_str = (today - timedelta(days=7)).strftime("%Y-%m-%d")
-            elif color_option == "월간 등락률 (1개월)":
-                start_fetch_dt = (today - timedelta(days=45)).strftime("%Y-%m-%d")
-                past_date_str = (today - timedelta(days=30)).strftime("%Y-%m-%d")
-            elif color_option == "월초 대비 등락률 (Month to Date)":
-                mtd_dt = datetime(today.year, today.month, 1)
-                start_fetch_dt = (mtd_dt - timedelta(days=10)).strftime("%Y-%m-%d")
-                past_date_str = mtd_dt.strftime("%Y-%m-%d")
-            elif color_option == "연초 대비 등락률 (YTD)":
-                ytd_dt = datetime(today.year, 1, 1)
-                start_fetch_dt = (ytd_dt - timedelta(days=10)).strftime("%Y-%m-%d")
-                past_date_str = ytd_dt.strftime("%Y-%m-%d")
-            elif color_option == "특정 날짜 지정 등락률" and custom_base_date:
-                start_fetch_dt = (custom_base_date - timedelta(days=10)).strftime("%Y-%m-%d")
-                past_date_str = custom_base_date.strftime("%Y-%m-%d")
-            else:
-                start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
-                past_date_str = None
+            # 선택된 WHOSE에 해당하는 데이터만 필터링하여 RECORD_DATE 추출
+            df_filtered_whose = df[df["whose"].isin(selected_whose_list)]
+            available_dates = sorted(df_filtered_whose["record_date"].unique(), reverse=True)
 
-            end_fetch_dt = (today + timedelta(days=2)).strftime("%Y-%m-%d")
-
-            with st.spinner(f"[{color_option}] 배치 계산 중..."):
-                sub_df["formatted_ticker"] = sub_df.apply(
-                    lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
+            with col_filter2:
+                selected_date = st.selectbox(
+                    "2. 조회할 입력 데이터 날짜 (RECORD_DATE)", available_dates
                 )
-                tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
-                
-                m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt)
 
+            with col_filter3:
+                use_historical_price = st.checkbox(
+                    "🗓️ 특정 날짜 기준 과거 시세로 조회하기"
+                )
+                if use_historical_price:
+                    target_eval_date = st.date_input(
+                        "조회 기준 시세 날짜", datetime.now()
+                    ).strftime("%Y-%m-%d")
+                else:
+                    target_eval_date = None
+
+            # 최종 데이터 조회를 WHOSE 및 RECORD_DATE 기준으로 교집합 필터링
+            sub_df = df[
+                (df["whose"].isin(selected_whose_list)) & (df["record_date"] == selected_date)
+            ].copy()
+
+            if use_historical_price and target_eval_date:
+                with st.spinner(f"[{target_eval_date}] 배치 시세 데이터를 조회 중..."):
+                    sub_df["formatted_ticker"] = sub_df.apply(
+                        lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
+                    )
+                    tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
+                    
+                    target_dt = pd.to_datetime(target_eval_date)
+                    start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+                    end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+                    
+                    m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
+
+                    for idx, row in sub_df.iterrows():
+                        h_price = get_price_from_batch_data(
+                            m_data, row["formatted_ticker"], target_eval_date
+                        )
+                        if h_price is not None:
+                            sub_df.at[idx, "current_price"] = h_price
+
+            sub_df["rate_multiplier"] = sub_df.apply(
+                lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
+                axis=1,
+            )
+            sub_df["매입총액(원)"] = (
+                sub_df["buy_price"]
+                * sub_df["quantity"]
+                * sub_df["rate_multiplier"]
+            )
+            sub_df["평가액(원)"] = (
+                sub_df["current_price"]
+                * sub_df["quantity"]
+                * sub_df["rate_multiplier"]
+            )
+            sub_df["평가손익(원)"] = sub_df["평가액(원)"] - sub_df["매입총액(원)"]
+
+            for cat in [
+                "whose",
+                "category1",
+                "category2",
+                "category3",
+                "category4",
+                "account_type",
+                "broker",
+                "account_num",
+                "item_name",
+            ]:
+                sub_df[cat] = sub_df[cat].fillna("미지정").replace("", "미지정")
+
+            total_buy = sub_df["매입총액(원)"].sum()
+            total_eval = sub_df["평가액(원)"].sum()
+            total_profit = sub_df["평가손익(원)"].sum()
+            total_rate = (total_profit / total_buy * 100) if total_buy != 0 else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("총 평가액 (원화)", f"{total_eval:,.0f} 원")
+            col2.metric("총 매입금액 (원화)", f"{total_buy:,.0f} 원")
+            col3.metric("총 평가손익 (원화)", f"{total_profit:,.0f} 원")
+            col4.metric("전체 수익률", f"{total_rate:.2f} %")
+
+            st.markdown("---")
+
+            st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
+            cat_options = {
+                "소유자(WHOSE)": "whose",
+                "구분": "account_type",
+                "금융사": "broker",
+                "보유항목(ITEM)": "item_name",
+                "계좌번호": "account_num",
+                "분류1": "category1",
+                "분류2": "category2",
+                "분류3": "category3",
+                "분류4": "category4",
+            }
+
+            col_t1, col_t2, col_t3, col_t4 = st.columns(4)
+            with col_t1:
+                l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=0)
+            with col_t2:
+                l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
+            with col_t3:
+                l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
+            with col_t4:
+                l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=0)
+
+            col_c1, col_c2 = st.columns([2, 1])
+            with col_c1:
+                color_option = st.selectbox(
+                    "🗺️ 트리맵 색상 기준 선택",
+                    [
+                        "총 누적 수익률 (%)",
+                        "일간 등락률 (1일)",
+                        "주간 등락률 (1주일)",
+                        "월간 등락률 (1개월)",
+                        "월초 대비 등락률 (Month to Date)",
+                        "연초 대비 등락률 (YTD)",
+                        "특정 날짜 지정 등락률",
+                    ],
+                    index=1
+                )
+
+            custom_base_date = None
+            if color_option == "특정 날짜 지정 등락률":
+                with col_c2:
+                    custom_base_date = st.date_input(
+                        "기준 날짜 선택",
+                        value=datetime.now() - timedelta(days=30),
+                        max_value=datetime.now(),
+                    )
+
+            today = datetime.now()
+            change_rates = []
+            period_profits = []
+
+            if color_option == "총 누적 수익률 (%)":
+                color_col = "수익률(%)"
                 for _, row in sub_df.iterrows():
-                    f_ticker = row["formatted_ticker"]
-                    curr_p = row["current_price"]
-                    qty = row["quantity"]
-                    ex_r = row["rate_multiplier"]
-                    rate = 0.0
-                    profit_amt = 0.0
+                    buy_val = row["매입총액(원)"]
+                    profit_val = row["평가손익(원)"]
+                    rate_val = (profit_val / buy_val * 100) if buy_val != 0 else 0.0
+                    change_rates.append(rate_val)
+                    period_profits.append(profit_val)
+                sub_df[color_col] = change_rates
+                sub_df["선택기준_평가손익(원)"] = period_profits
+            else:
+                if color_option == "일간 등락률 (1일)":
+                    start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+                    past_date_str = None
+                elif color_option == "주간 등락률 (1주일)":
+                    start_fetch_dt = (today - timedelta(days=15)).strftime("%Y-%m-%d")
+                    past_date_str = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+                elif color_option == "월간 등락률 (1개월)":
+                    start_fetch_dt = (today - timedelta(days=45)).strftime("%Y-%m-%d")
+                    past_date_str = (today - timedelta(days=30)).strftime("%Y-%m-%d")
+                elif color_option == "월초 대비 등락률 (Month to Date)":
+                    mtd_dt = datetime(today.year, today.month, 1)
+                    start_fetch_dt = (mtd_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+                    past_date_str = mtd_dt.strftime("%Y-%m-%d")
+                elif color_option == "연초 대비 등락률 (YTD)":
+                    ytd_dt = datetime(today.year, 1, 1)
+                    start_fetch_dt = (ytd_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+                    past_date_str = ytd_dt.strftime("%Y-%m-%d")
+                elif color_option == "특정 날짜 지정 등락률" and custom_base_date:
+                    start_fetch_dt = (custom_base_date - timedelta(days=10)).strftime("%Y-%m-%d")
+                    past_date_str = custom_base_date.strftime("%Y-%m-%d")
+                else:
+                    start_fetch_dt = (today - timedelta(days=14)).strftime("%Y-%m-%d")
+                    past_date_str = None
 
-                    if not f_ticker:
+                end_fetch_dt = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+
+                with st.spinner(f"[{color_option}] 배치 계산 중..."):
+                    sub_df["formatted_ticker"] = sub_df.apply(
+                        lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
+                    )
+                    tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
+                    
+                    m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt)
+
+                    for _, row in sub_df.iterrows():
+                        f_ticker = row["formatted_ticker"]
+                        curr_p = row["current_price"]
+                        qty = row["quantity"]
+                        ex_r = row["rate_multiplier"]
+                        rate = 0.0
+                        profit_amt = 0.0
+
+                        if not f_ticker:
+                            change_rates.append(rate)
+                            period_profits.append(profit_amt)
+                            continue
+
+                        if not m_data.empty:
+                            if isinstance(m_data.columns, pd.MultiIndex):
+                                if f_ticker in m_data.columns.levels[0]:
+                                    df_ticker = m_data[f_ticker]
+                                elif f_ticker in m_data.columns.levels[1]:
+                                    df_ticker = m_data.xs(f_ticker, axis=1, level=1)
+                                else:
+                                    df_ticker = pd.DataFrame()
+                            else:
+                                df_ticker = m_data
+
+                            if not df_ticker.empty:
+                                if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
+                                    df_ticker.index = df_ticker.index.tz_localize(None)
+
+                                if "Close" in df_ticker.columns:
+                                    valid_series = df_ticker["Close"].dropna()
+                                else:
+                                    valid_series = df_ticker.dropna()
+
+                                if color_option == "일간 등락률 (1일)":
+                                    if len(valid_series) >= 2:
+                                        latest_price = float(valid_series.iloc[-1])
+                                        prev_price = float(valid_series.iloc[-2])
+                                        if prev_price > 0:
+                                            rate = round(((latest_price - prev_price) / prev_price) * 100, 2)
+                                            profit_amt = (latest_price - prev_price) * qty * ex_r
+                                else:
+                                    p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
+                                    
+                                    if p_price is None and not valid_series.empty:
+                                        p_price = float(valid_series.iloc[0])
+
+                                    if curr_p and p_price and float(p_price) > 0:
+                                        rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
+                                        profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
+
                         change_rates.append(rate)
                         period_profits.append(profit_amt)
-                        continue
 
-                    if not m_data.empty:
-                        if isinstance(m_data.columns, pd.MultiIndex):
-                            if f_ticker in m_data.columns.levels[0]:
-                                df_ticker = m_data[f_ticker]
-                            elif f_ticker in m_data.columns.levels[1]:
-                                df_ticker = m_data.xs(f_ticker, axis=1, level=1)
-                            else:
-                                df_ticker = pd.DataFrame()
-                        else:
-                            df_ticker = m_data
+                    sub_df[color_option] = change_rates
+                    sub_df["선택기준_평가손익(원)"] = period_profits
+                color_col = color_option
 
-                        if not df_ticker.empty:
-                            if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
-                                df_ticker.index = df_ticker.index.tz_localize(None)
+            selected_levels = [l1, l2, l3, l4]
+            group_cols = []
+            for lvl in selected_levels:
+                if lvl != "없음":
+                    c_name = cat_options[lvl]
+                    if c_name not in group_cols:
+                        group_cols.append(c_name)
 
-                            if "Close" in df_ticker.columns:
-                                valid_series = df_ticker["Close"].dropna()
-                            else:
-                                valid_series = df_ticker.dropna()
-
-                            if color_option == "일간 등락률 (1일)":
-                                if len(valid_series) >= 2:
-                                    latest_price = float(valid_series.iloc[-1])
-                                    prev_price = float(valid_series.iloc[-2])
-                                    if prev_price > 0:
-                                        rate = round(((latest_price - prev_price) / prev_price) * 100, 2)
-                                        profit_amt = (latest_price - prev_price) * qty * ex_r
-                            else:
-                                p_price = get_price_from_batch_data(m_data, f_ticker, past_date_str)
-                                
-                                if p_price is None and not valid_series.empty:
-                                    p_price = float(valid_series.iloc[0])
-
-                                if curr_p and p_price and float(p_price) > 0:
-                                    rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
-                                    profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
-
-                    change_rates.append(rate)
-                    period_profits.append(profit_amt)
-
-                sub_df[color_option] = change_rates
-                sub_df["선택기준_평가손익(원)"] = period_profits
-            color_col = color_option
-
-        selected_levels = [l1, l2, l3, l4]
-        group_cols = []
-        for lvl in selected_levels:
-            if lvl != "없음":
-                c_name = cat_options[lvl]
-                if c_name not in group_cols:
-                    group_cols.append(c_name)
-
-        col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
-        
-        profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
-        rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
-
-        st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
-        
-        summary_group_by_label = st.selectbox(
-            "📊 요약 현황표 구분 기준 선택",
-            options=list(cat_options.keys()),
-            index=0,
-            key="summary_table_group_select"
-        )
-        selected_summary_col = cat_options[summary_group_by_label]
-
-        summary_group_df = sub_df.groupby(selected_summary_col).agg({
-            "매입총액(원)": "sum",
-            "평가액(원)": "sum",
-            "선택기준_평가손익(원)": "sum",
-        }).reset_index()
-
-        total_summary_df = pd.DataFrame([{
-            selected_summary_col: "🌐 전체 총합",
-            "매입총액(원)": sub_df["매입총액(원)"].sum(),
-            "평가액(원)": sub_df["평가액(원)"].sum(),
-            "선택기준_평가손익(원)": sub_df["선택기준_평가손익(원)"].sum(),
-        }])
-
-        summary_group_df = pd.concat([summary_group_df, total_summary_df], ignore_index=True)
-
-        if color_option == "총 누적 수익률 (%)":
-            summary_group_df["선택기준_수익률(%)"] = (
-                summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
-            ) * 100
-        else:
-            past_eval_s = summary_group_df["평가액(원)"] - summary_group_df["선택기준_평가손익(원)"]
-            summary_group_df["선택기준_수익률(%)"] = (
-                summary_group_df["선택기준_평가손익(원)"] / past_eval_s.replace(0, 1)
-            ) * 100
-
-        summary_group_df["점유율(%)"] = (
-            (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
-        )
-
-        summary_display_df = summary_group_df.rename(columns={
-            selected_summary_col: summary_group_by_label,
-            "선택기준_평가손익(원)": profit_col_label,
-            "선택기준_수익률(%)": rate_col_label,
-        })
-
-        summary_final_cols = [
-            summary_group_by_label,
-            "매입총액(원)",
-            "평가액(원)",
-            profit_col_label,
-            rate_col_label,
-            "점유율(%)",
-        ]
-
-        st.dataframe(
-            summary_display_df[summary_final_cols]
-            .style.format({
-                "매입총액(원)": "₩{:,.0f}",
-                "평가액(원)": "₩{:,.0f}",
-                profit_col_label: "₩{:,.0f}",
-                rate_col_label: "{:+.2f}%",
-                "점유율(%)": "{:.2f}%"
-            }),
-            width="stretch"
-        )
-        st.markdown("")
-
-        ids, labels, parents, values = [], [], [], []
-        custom_rates, custom_prices, custom_profits = [], [], []
-
-        ids.append("Root")
-        labels.append("전체 포트폴리오")
-        parents.append("")
-        values.append(total_eval)
-        custom_rates.append(total_rate if color_option == "총 누적 수익률 (%)" else ((total_profit / (total_eval - total_profit)) * 100 if (total_eval - total_profit) != 0 else 0))
-        custom_prices.append("-")
-        custom_profits.append(sub_df["선택기준_평가손익(원)"].sum())
-
-        built_nodes = set(["Root"])
-
-        for idx_row, row in sub_df.iterrows():
-            current_parent = "Root"
-            current_id_path = ""
+            col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
             
-            for depth, col in enumerate(group_cols):
-                val_str = str(row[col])
-                current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
-                
-                if current_id_path not in built_nodes:
-                    built_nodes.add(current_id_path)
-                    
-                    filter_mask = pd.Series(True, index=sub_df.index)
-                    for k in range(depth + 1):
-                        filter_mask &= (sub_df[group_cols[k]] == row[group_cols[k]])
-                    
-                    sub_grp = sub_df[filter_mask]
-                    
-                    grp_eval = sub_grp["평가액(원)"].sum()
-                    grp_buy = sub_grp["매입총액(원)"].sum()
-                    grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
-                    
-                    if color_option == "총 누적 수익률 (%)":
-                        grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
-                    else:
-                        grp_past_eval = grp_eval - grp_profit
-                        grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
+            profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
+            rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
-                    if depth == len(group_cols) - 1:
-                        price_sym = "$" if row["currency"] == "USD" else "₩"
-                        disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
-                    else:
-                        disp_price = "-"
-
-                    ids.append(current_id_path)
-                    labels.append(val_str)
-                    parents.append(current_parent)
-                    values.append(grp_eval)
-                    custom_rates.append(grp_rate)
-                    custom_prices.append(disp_price)
-                    custom_profits.append(grp_profit)
-
-                current_parent = current_id_path
-
-        c_rates_arr = [r for r in custom_rates if r is not None]
-        max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
-
-        if color_option == "일간 등락률 (1일)":
-            dynamic_range = [-min(max_abs_val, 3.0), min(max_abs_val, 3.0)]
-        elif color_option in ["주간 등락률 (1주일)", "월간 등락률 (1개월)", "월초 대비 등락률 (Month to Date)"]:
-            dynamic_range = [-min(max_abs_val, 15.0), min(max_abs_val, 15.0)]
-        else:
-            dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
-
-        fig_treemap = go.Figure(
-            go.Treemap(
-                ids=ids,
-                labels=labels,
-                parents=parents,
-                values=values,
-                branchvalues="total",
-                marker=dict(
-                    colors=custom_rates,
-                    colorscale=[
-                        [0.0, "#D32F2F"],
-                        [0.5, "#455A64"],
-                        [1.0, "#2E7D32"],
-                    ],
-                    cmid=0,
-                    cmin=dynamic_range[0],
-                    cmax=dynamic_range[1],
-                    colorbar=dict(title=color_option),
-                ),
-                customdata=list(zip(custom_rates, custom_prices, custom_profits)),
-                texttemplate=(
-                    "<b>%{label}</b><br>"
-                    "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
-                    "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
-                    "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
-                    "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
-                ),
-                hovertemplate=(
-                    "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
-                    "<span style='font-size: 15px;'>"
-                    "• 평가금액: ₩%{value:,.0f}<br>"
-                    "• 현재가: %{customdata[1]}<br>"
-                    f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
-                    f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
-                    "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
-                    "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
-                ),
-                hoverlabel=dict(font_size=15),
-                textfont=dict(color="white"),
-                insidetextfont=dict(color="white"),
+            st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
+            
+            summary_group_by_label = st.selectbox(
+                "📊 요약 현황표 구분 기준 선택",
+                options=list(cat_options.keys()),
+                index=0,
+                key="summary_table_group_select"
             )
-        )
+            selected_summary_col = cat_options[summary_group_by_label]
 
-        fig_treemap.update_layout(
-            title="계층별 다단계 TREEMAP 자산 분포",
-            margin=dict(t=30, l=10, r=10, b=10),
-        )
-
-        st.plotly_chart(fig_treemap, width="stretch")
-
-        st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
-
-        hierarchy_summary = (
-            sub_df.groupby(group_cols)
-            .agg({
+            summary_group_df = sub_df.groupby(selected_summary_col).agg({
                 "매입총액(원)": "sum",
                 "평가액(원)": "sum",
-                "평가손익(원)": "sum",
+                "선택기준_평가손익(원)": "sum",
+            }).reset_index()
+
+            total_summary_df = pd.DataFrame([{
+                selected_summary_col: "🌐 전체 총합",
+                "매입총액(원)": sub_df["매입총액(원)"].sum(),
+                "평가액(원)": sub_df["평가액(원)"].sum(),
+                "선택기준_평가손익(원)": sub_df["선택기준_평가손익(원)"].sum(),
+            }])
+
+            summary_group_df = pd.concat([summary_group_df, total_summary_df], ignore_index=True)
+
+            if color_option == "총 누적 수익률 (%)":
+                summary_group_df["선택기준_수익률(%)"] = (
+                    summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
+                ) * 100
+            else:
+                past_eval_s = summary_group_df["평가액(원)"] - summary_group_df["선택기준_평가손익(원)"]
+                summary_group_df["선택기준_수익률(%)"] = (
+                    summary_group_df["선택기준_평가손익(원)"] / past_eval_s.replace(0, 1)
+                ) * 100
+
+            summary_group_df["점유율(%)"] = (
+                (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+            )
+
+            summary_display_df = summary_group_df.rename(columns={
+                selected_summary_col: summary_group_by_label,
+                "선택기준_평가손익(원)": profit_col_label,
+                "선택기준_수익률(%)": rate_col_label,
             })
-            .reset_index()
-        )
 
-        hierarchy_summary["수익률(%)"] = (
-            hierarchy_summary["평가손익(원)"] / hierarchy_summary["매입총액(원)"].replace(0, 1)
-        ) * 100
-        hierarchy_summary["점유율(%)"] = (
-            (hierarchy_summary["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
-        )
+            summary_final_cols = [
+                summary_group_by_label,
+                "매입총액(원)",
+                "평가액(원)",
+                profit_col_label,
+                rate_col_label,
+                "점유율(%)",
+            ]
 
-        display_df = hierarchy_summary.rename(columns=col_rename_map)
-
-        display_hierarchy_cols = [col_rename_map[c] for c in group_cols]
-        final_cols = display_hierarchy_cols + [
-            "매입총액(원)",
-            "평가액(원)",
-            "평가손익(원)",
-            "수익률(%)",
-            "점유율(%)",
-        ]
-
-        col_h1, col_h2 = st.columns([1.3, 1])
-
-        with col_h1:
             st.dataframe(
-                display_df[final_cols]
-                .sort_values(by="평가액(원)", ascending=False)
+                summary_display_df[summary_final_cols]
                 .style.format({
                     "매입총액(원)": "₩{:,.0f}",
                     "평가액(원)": "₩{:,.0f}",
-                    "평가손익(원)": "₩{:,.0f}",
-                    "수익률(%)": "{:.2f}%",
+                    profit_col_label: "₩{:,.0f}",
+                    rate_col_label: "{:+.2f}%",
                     "점유율(%)": "{:.2f}%"
                 }),
                 width="stretch"
             )
+            st.markdown("")
 
-        with col_h2:
-            pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
+            ids, labels, parents, values = [], [], [], []
+            custom_rates, custom_prices, custom_profits = [], [], []
 
-            with pie_tab1:
-                group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
+            ids.append("Root")
+            labels.append("전체 포트폴리오")
+            parents.append("")
+            values.append(total_eval)
+            custom_rates.append(total_rate if color_option == "총 누적 수익률 (%)" else ((total_profit / (total_eval - total_profit)) * 100 if (total_eval - total_profit) != 0 else 0))
+            custom_prices.append("-")
+            custom_profits.append(sub_df["선택기준_평가손익(원)"].sum())
 
-                pie_group_mode = st.selectbox(
-                    "🎯 계층 도넛 그래프 구분 기준 선택",
-                    options=group_mode_options,
-                    index=0,
-                    key="pie_hierarchy_mode_select"
+            built_nodes = set(["Root"])
+
+            for idx_row, row in sub_df.iterrows():
+                current_parent = "Root"
+                current_id_path = ""
+                
+                for depth, col in enumerate(group_cols):
+                    val_str = str(row[col])
+                    current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
+                    
+                    if current_id_path not in built_nodes:
+                        built_nodes.add(current_id_path)
+                        
+                        filter_mask = pd.Series(True, index=sub_df.index)
+                        for k in range(depth + 1):
+                            filter_mask &= (sub_df[group_cols[k]] == row[group_cols[k]])
+                        
+                        sub_grp = sub_df[filter_mask]
+                        
+                        grp_eval = sub_grp["평가액(원)"].sum()
+                        grp_buy = sub_grp["매입총액(원)"].sum()
+                        grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
+                        
+                        if color_option == "총 누적 수익률 (%)":
+                            grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
+                        else:
+                            grp_past_eval = grp_eval - grp_profit
+                            grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
+
+                        if depth == len(group_cols) - 1:
+                            price_sym = "$" if row["currency"] == "USD" else "₩"
+                            disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                        else:
+                            disp_price = "-"
+
+                        ids.append(current_id_path)
+                        labels.append(val_str)
+                        parents.append(current_parent)
+                        values.append(grp_eval)
+                        custom_rates.append(grp_rate)
+                        custom_prices.append(disp_price)
+                        custom_profits.append(grp_profit)
+
+                    current_parent = current_id_path
+
+            c_rates_arr = [r for r in custom_rates if r is not None]
+            max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
+
+            if color_option == "일간 등락률 (1일)":
+                dynamic_range = [-min(max_abs_val, 3.0), min(max_abs_val, 3.0)]
+            elif color_option in ["주간 등락률 (1주일)", "월간 등락률 (1개월)", "월초 대비 등락률 (Month to Date)"]:
+                dynamic_range = [-min(max_abs_val, 15.0), min(max_abs_val, 15.0)]
+            else:
+                dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
+
+            fig_treemap = go.Figure(
+                go.Treemap(
+                    ids=ids,
+                    labels=labels,
+                    parents=parents,
+                    values=values,
+                    branchvalues="total",
+                    marker=dict(
+                        colors=custom_rates,
+                        colorscale=[
+                            [0.0, "#D32F2F"],
+                            [0.5, "#455A64"],
+                            [1.0, "#2E7D32"],
+                        ],
+                        cmid=0,
+                        cmin=dynamic_range[0],
+                        cmax=dynamic_range[1],
+                        colorbar=dict(title=color_option),
+                    ),
+                    customdata=list(zip(custom_rates, custom_prices, custom_profits)),
+                    texttemplate=(
+                        "<b>%{label}</b><br>"
+                        "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
+                        "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
+                        "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
+                        "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
+                    ),
+                    hovertemplate=(
+                        "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
+                        "<span style='font-size: 15px;'>"
+                        "• 평가금액: ₩%{value:,.0f}<br>"
+                        "• 현재가: %{customdata[1]}<br>"
+                        f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
+                        f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
+                        "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
+                        "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
+                    ),
+                    hoverlabel=dict(font_size=15),
+                    textfont=dict(color="white"),
+                    insidetextfont=dict(color="white"),
                 )
+            )
 
-                if pie_group_mode == "전체 계층 경로 (A > B > C)":
-                    hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
-                    pie_chart_df = hierarchy_summary.groupby("계층경로")["평가액(원)"].sum().reset_index()
-                    names_col = "계층경로"
-                else:
-                    target_col = cat_options[pie_group_mode]
-                    pie_chart_df = sub_df.groupby(target_col)["평가액(원)"].sum().reset_index()
-                    names_col = target_col
+            fig_treemap.update_layout(
+                title="계층별 다단계 TREEMAP 자산 분포",
+                margin=dict(t=30, l=10, r=10, b=10),
+            )
 
-                fig_pie_hierarchy = px.pie(
-                    pie_chart_df,
-                    values="평가액(원)",
-                    names=names_col,
-                    title=f"선택 계층 점유율 ({pie_group_mode})",
-                    hole=0.35,
-                )
-                fig_pie_hierarchy.update_traces(
-                    textposition="inside",
-                    textinfo="percent+label",
-                    hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
-                )
-                fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                st.plotly_chart(fig_pie_hierarchy, width="stretch")
+            st.plotly_chart(fig_treemap, width="stretch")
 
-            with pie_tab2:
-                item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
-                fig_pie_item = px.pie(
-                    item_summary,
-                    values="평가액(원)",
-                    names="item_name",
-                    title="보유 항목별 점유율",
-                    hole=0.35,
-                )
-                fig_pie_item.update_traces(
-                    textposition="inside",
-                    textinfo="percent+label",
-                    hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
-                )
-                fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                st.plotly_chart(fig_pie_item, width="stretch")
+            st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
 
-        st.markdown("---")
+            hierarchy_summary = (
+                sub_df.groupby(group_cols)
+                .agg({
+                    "매입총액(원)": "sum",
+                    "평가액(원)": "sum",
+                    "평가손익(원)": "sum",
+                })
+                .reset_index()
+            )
 
-        st.subheader("📋 선택 시점 상세 보유 목록")
-        sub_df["점유율(%)"] = (
-            (sub_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
-        )
-        sub_df["수익률(%)"] = (
-            sub_df["평가손익(원)"] / sub_df["매입총액(원)"].replace(0, 1)
-        ) * 100
-        st.dataframe(
-            sub_df[[
-                "whose",
-                "broker",
-                "account_num",
-                "account_type",
-                "item_name",
-                "ticker",
-                "currency",
-                "exchange_rate",
-                "buy_price",
-                "quantity",
-                "current_price",
+            hierarchy_summary["수익률(%)"] = (
+                hierarchy_summary["평가손익(원)"] / hierarchy_summary["매입총액(원)"].replace(0, 1)
+            ) * 100
+            hierarchy_summary["점유율(%)"] = (
+                (hierarchy_summary["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+            )
+
+            display_df = hierarchy_summary.rename(columns=col_rename_map)
+
+            display_hierarchy_cols = [col_rename_map[c] for c in group_cols]
+            final_cols = display_hierarchy_cols + [
                 "매입총액(원)",
                 "평가액(원)",
                 "평가손익(원)",
                 "수익률(%)",
                 "점유율(%)",
-            ]]
-        )
+            ]
+
+            col_h1, col_h2 = st.columns([1.3, 1])
+
+            with col_h1:
+                st.dataframe(
+                    display_df[final_cols]
+                    .sort_values(by="평가액(원)", ascending=False)
+                    .style.format({
+                        "매입총액(원)": "₩{:,.0f}",
+                        "평가액(원)": "₩{:,.0f}",
+                        "평가손익(원)": "₩{:,.0f}",
+                        "수익률(%)": "{:.2f}%",
+                        "점유율(%)": "{:.2f}%"
+                    }),
+                    width="stretch"
+                )
+
+            with col_h2:
+                pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
+
+                with pie_tab1:
+                    group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
+
+                    pie_group_mode = st.selectbox(
+                        "🎯 계층 도넛 그래프 구분 기준 선택",
+                        options=group_mode_options,
+                        index=0,
+                        key="pie_hierarchy_mode_select"
+                    )
+
+                    if pie_group_mode == "전체 계층 경로 (A > B > C)":
+                        hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
+                        pie_chart_df = hierarchy_summary.groupby("계층경로")["평가액(원)"].sum().reset_index()
+                        names_col = "계층경로"
+                    else:
+                        target_col = cat_options[pie_group_mode]
+                        pie_chart_df = sub_df.groupby(target_col)["평가액(원)"].sum().reset_index()
+                        names_col = target_col
+
+                    fig_pie_hierarchy = px.pie(
+                        pie_chart_df,
+                        values="평가액(원)",
+                        names=names_col,
+                        title=f"선택 계층 점유율 ({pie_group_mode})",
+                        hole=0.35,
+                    )
+                    fig_pie_hierarchy.update_traces(
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
+                    )
+                    fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
+                    st.plotly_chart(fig_pie_hierarchy, width="stretch")
+
+                with pie_tab2:
+                    item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
+                    fig_pie_item = px.pie(
+                        item_summary,
+                        values="평가액(원)",
+                        names="item_name",
+                        title="보유 항목별 점유율",
+                        hole=0.35,
+                    )
+                    fig_pie_item.update_traces(
+                        textposition="inside",
+                        textinfo="percent+label",
+                        hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
+                    )
+                    fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
+                    st.plotly_chart(fig_pie_item, width="stretch")
+
+            st.markdown("---")
+
+            st.subheader("📋 선택 시점 상세 보유 목록")
+            sub_df["점유율(%)"] = (
+                (sub_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+            )
+            sub_df["수익률(%)"] = (
+                sub_df["평가손익(원)"] / sub_df["매입총액(원)"].replace(0, 1)
+            ) * 100
+            st.dataframe(
+                sub_df[[
+                    "whose",
+                    "broker",
+                    "account_num",
+                    "account_type",
+                    "item_name",
+                    "ticker",
+                    "currency",
+                    "exchange_rate",
+                    "buy_price",
+                    "quantity",
+                    "current_price",
+                    "매입총액(원)",
+                    "평가액(원)",
+                    "평가손익(원)",
+                    "수익률(%)",
+                    "점유율(%)",
+                ]]
+            )
 
 # ---------------------------------------------------------
 # 메뉴 3: 기간별 성과 및 추이 분석
@@ -1602,7 +1638,6 @@ elif menu == "💾 데이터 백업 및 복구":
                 )
             
             with col_b2:
-                # 엑셀 다운로드 파일 준비
                 excel_df = df_all.drop(columns=["id"], errors="ignore")
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
