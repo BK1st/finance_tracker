@@ -324,6 +324,118 @@ def update_all_prices_and_rate_batch(curr_rate):
     return updated_count
 
 
+# ---------------------------------------------------------
+# [추가 기능] 매매(트레이딩) 전용 다이얼로그
+# ---------------------------------------------------------
+@st.dialog("📈 매매(트레이딩) 입력 - 신규 매수 / 추가 매수 / 매도")
+def open_trading_dialog():
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM portfolio", conn)
+    conn.close()
+
+    trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
+
+    if trade_type == "신규 매수":
+        st.caption("새로운 종목이나 계좌를 포트폴리오에 신규 추가합니다.")
+        with st.form("dialog_new_buy_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
+                t_whose = st.text_input("소유자", value="본인")
+                t_broker = st.text_input("증권사/금융사", value="키움증권")
+                t_acc_num = st.text_input("계좌번호")
+                t_acc_type = st.selectbox("계좌구분", ["일반", "연금", "ISA", "IRP", "기타"])
+            with c2:
+                t_item = st.text_input("보유항목명 (예: 삼성전자, Apple)")
+                t_ticker = st.text_input("티커/종목코드")
+                t_curr = st.selectbox("통화", ["KRW", "USD"])
+                t_price = st.number_input("매수 단가", min_value=0.0, step=1.0)
+                t_qty = st.number_input("매수 수량", min_value=0.0, step=1.0)
+
+            submitted = st.form_submit_button("🚀 신규 매수 반영")
+            if submitted:
+                if not t_item or t_price <= 0 or t_qty <= 0:
+                    st.error("보유항목명, 단가, 수량을 정확히 입력해 주세요.")
+                else:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    ex_r = st.session_state.get("live_rate_store", 1350.0) if t_curr == "USD" else 1.0
+                    cursor.execute("""
+                        INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, buy_price, quantity, current_price, currency, exchange_rate)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (t_date, t_whose, t_broker, t_acc_num, t_acc_type, t_item, t_ticker, t_price, t_qty, t_price, t_curr, ex_r))
+                    conn.commit()
+                    conn.close()
+                    export_backup_json()
+                    st.success(f"🎉 '{t_item}' 신규 매수가 성공적으로 반영되었습니다!")
+                    st.rerun()
+
+    else:
+        if df.empty:
+            st.warning("등록된 보유 포트폴리오 항목이 없습니다.")
+            return
+
+        df["display_label"] = df.apply(
+            lambda r: f"[{r['id']}] {r['whose']} | {r['broker']} | {r['item_name']} (현재수량: {r['quantity']:,.2f}개, 평단가: {r['buy_price']:,.2f})", axis=1
+        )
+        selected_label = st.selectbox("거래할 보유 종목 선택", df["display_label"].tolist())
+        target_row = df[df["display_label"] == selected_label].iloc[0]
+
+        target_id = int(target_row["id"])
+        old_qty = float(target_row["quantity"])
+        old_buy_price = float(target_row["buy_price"])
+        item_name = target_row["item_name"]
+
+        st.markdown(f"📌 **선택 항목 정보**: `{item_name}` | **기존 수량**: `{old_qty:,.2f}` | **기존 매입단가**: `{old_buy_price:,.2f}`")
+
+        with st.form("dialog_trade_edit_form"):
+            t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
+            c1, c2 = st.columns(2)
+            with c1:
+                trade_price = st.number_input("거래 단가", min_value=0.0, step=1.0)
+            with c2:
+                trade_qty = st.number_input("거래 수량", min_value=0.0, step=1.0)
+
+            btn_label = "➕ 추가 매수(평단가 가중 재계산) 반영" if "추가 매수" in trade_type else "➖ 매도(수량 감축/삭제) 반영"
+            submitted = st.form_submit_button(btn_label)
+
+            if submitted:
+                if trade_price <= 0 or trade_qty <= 0:
+                    st.error("단가와 수량을 0보다 크게 입력해 주세요.")
+                else:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+
+                    if "추가 매수" in trade_type:
+                        # 이동평균 매입단가 산출
+                        new_qty = old_qty + trade_qty
+                        new_buy_price = ((old_qty * old_buy_price) + (trade_qty * trade_price)) / new_qty
+                        cursor.execute("""
+                            UPDATE portfolio 
+                            SET quantity = ?, buy_price = ?, record_date = ? 
+                            WHERE id = ?
+                        """, (new_qty, new_buy_price, t_date, target_id))
+                        st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
+
+                    else: # 매도
+                        if trade_qty >= old_qty:
+                            cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
+                            st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다.")
+                        else:
+                            new_qty = old_qty - trade_qty
+                            cursor.execute("""
+                                UPDATE portfolio 
+                                SET quantity = ?, record_date = ? 
+                                WHERE id = ?
+                            """, (new_qty, t_date, target_id))
+                            st.success(f"🎉 '{item_name}' 부분 매도가 완료되었습니다! (잔여 수량: {new_qty:,.2f})")
+
+                    conn.commit()
+                    conn.close()
+                    export_backup_json()
+                    st.rerun()
+
+
 # 앱 시작 시 DB 생성 및 자동 복구 수행
 init_db()
 
@@ -410,6 +522,11 @@ if menu == "자산 입력 및 관리":
     # ---------------------------------------------------------
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
+        
+        # [방안 A 반영] 트레이딩 전용 다이얼로그 버튼 배치
+        if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
+            open_trading_dialog()
+
         st.info("💡 **사용 방법**: 아래 표에서 셀을 직접 수정하거나, 체크박스로 삭제할 행을 선택하고, 하단 버튼으로 줄을 추가하거나 일괄 저장할 수 있습니다.")
 
         required_cols = [
@@ -675,7 +792,7 @@ if menu == "자산 입력 및 관리":
     st.dataframe(df_raw, width="stretch")
 
 # ---------------------------------------------------------
-# 메뉴 2: 일별/시점별 보유 현황 분석 (소유자별 개별 날짜 선택 반영)
+# 메뉴 2: 일별/시점별 보유 현황 분석
 # ---------------------------------------------------------
 elif menu == "일별/시점별 보유 현황 분석":
     st.header("🔍 시점별 자산 보유 현황")
@@ -686,9 +803,6 @@ elif menu == "일별/시점별 보유 현황 분석":
     if df.empty:
         st.info("데이터가 없습니다.")
     else:
-        # ---------------------------------------------------------
-        # [요청 반영] 1. WHOSE 선택 -> 2. 소유자별 RECORD_DATE 개별 선택
-        # ---------------------------------------------------------
         df["whose"] = df["whose"].fillna("본인").replace("", "본인")
         available_whose_list = sorted(df["whose"].unique())
 
@@ -727,7 +841,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                 else:
                     target_eval_date = None
 
-            # 선택된 소유자별 지정 날짜 데이터를 각각 추출 후 통합
             sub_dfs = []
             for w, d in owner_selected_dates.items():
                 w_sub = df[(df["whose"] == w) & (df["record_date"] == d)].copy()
