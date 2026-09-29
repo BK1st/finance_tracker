@@ -831,469 +831,8 @@ if menu == '트렌드 리포트':
         elif axis_name == 'yaxis2':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
-      def draw_single_chart(raw_df, title_name, force_single_col=False):
-        st.markdown(f'##### ⚙️ [{title_name}] 개별 차트 범주 및 환율 옵션 설정')
-        cb_col1, cb_col2, cb_col3, cb_col4 = st.columns(4)
-        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
-        default_idx = 0 if global_legend_pos == '하단 배치' else 1
-
-        with cb_col1:
-          pos_fig1 = st.selectbox(
-              '차트1 범주',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_f1_{title_name}_{force_single_col}',
-          )
-          ex_fx1 = st.toggle(
-              '🔀 환차손제외 (차트1)',
-              key=f'ex1_{title_name}_{force_single_col}',
-          )
-        with cb_col2:
-          pos_fig2 = st.selectbox(
-              '차트2 범주',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_f2_{title_name}_{force_single_col}',
-          )
-          ex_fx2 = st.toggle(
-              '🔀 환차손제외 (차트2)',
-              key=f'ex2_{title_name}_{force_single_col}',
-          )
-        with cb_col3:
-          pos_fig3a = st.selectbox(
-              '차트3-1 범주',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_f3a_{title_name}_{force_single_col}',
-          )
-          ex_fx3a = st.toggle(
-              '🔀 환차손제외 (차트3-1)',
-              key=f'ex3a_{title_name}_{force_single_col}',
-          )
-        with cb_col4:
-          pos_fig3b = st.selectbox(
-              '차트3-2 범주',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_f3b_{title_name}_{force_single_col}',
-          )
-          ex_fx3b = st.toggle(
-              '🔀 환차손제외 (차트3-2)',
-              key=f'ex3b_{title_name}_{force_single_col}',
-          )
-
-        def get_sub_df(use_ex_fx):
-          sub_df = raw_df.copy()
-          if use_ex_fx and '원금_ex_fx' in sub_df.columns:
-            sub_df['원금'] = sub_df['원금_ex_fx']
-            sub_df['평가손익'] = sub_df['평가손익_ex_fx']
-            sub_df['총평가금액'] = sub_df['총평가금액_ex_fx']
-
-          sub_df['dt_temp'] = pd.to_datetime(sub_df['Date'])
-          sub_df = sub_df.sort_values('dt_temp', ascending=True).reset_index(
-              drop=True
-          )
-          sub_df['Chart_Date'] = sub_df['dt_temp'].dt.strftime('%Y-%m-%d')
-          sub_df.drop(columns=['dt_temp'], inplace=True)
-
-          sub_df['수익률'] = np.where(
-              sub_df['원금'] > 0, (sub_df['평가손익'] / sub_df['원금']) * 100, 0
-          )
-          sub_df['주기별 평가손익'] = sub_df['총평가금액'].diff()
-          base_start_p_loss = sub_df['평가손익'].iloc[0]
-          sub_df['선택구간 누적손익'] = sub_df['평가손익'] - base_start_p_loss
-          sub_df['구간별 수익률'] = sub_df['총평가금액'].pct_change() * 100
-          initial_eval = sub_df['총평가금액'].iloc[0]
-          sub_df['구간별 누적수익률'] = np.where(
-              initial_eval > 0,
-              ((sub_df['총평가금액'] - initial_eval) / initial_eval) * 100,
-              0,
-          )
-          return sub_df
-
-        sub_df_default = get_sub_df(False)
-
-        selected_cum_p_loss = sub_df_default['선택구간 누적손익'].iloc[-1]
-        final_eval_amount = sub_df_default['총평가금액'].iloc[-1]
-        selected_cum_return = sub_df_default['구간별 누적수익률'].iloc[-1]
-
-        st.markdown('### 📌 핵심 지표 요약')
-        c_m1, c_m2, c_m3 = st.columns(3)
-        c_m1.metric('📌 선택 구간 누적 평가 손익', f'{selected_cum_p_loss:,.0f} 원')
-        c_m2.metric('💰 최종 기말 평가 금액', f'{final_eval_amount:,.0f} 원')
-        c_m3.metric('📈 선택 구간 누적 수익률', f'{selected_cum_return:.2f}%')
-        st.write('---')
-
-        date_order_list = sub_df_default['Chart_Date'].tolist()
-
-        # Fig 1
-        sub1 = get_sub_df(ex_fx1)
-        fig1 = make_subplots(specs=[[{'secondary_y': True}]])
-        fig1.add_trace(
-            go.Bar(
-                x=sub1['Chart_Date'],
-                y=sub1['원금'],
-                name='원금',
-                marker_color='#2b5c8f',
-                opacity=0.6,
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
-            go.Bar(
-                x=sub1['Chart_Date'],
-                y=sub1['평가손익'],
-                name='전체 누적 평가손익',
-                marker_color='#e05d5d',
-                opacity=0.5,
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
-            go.Scatter(
-                x=sub1['Chart_Date'],
-                y=sub1['총평가금액'],
-                name='총평가금액',
-                mode='lines+markers+text',
-                line=dict(color='#ff9900', width=3),
-                marker=dict(size=6),
-                text=[f'{v:,.0f}' for v in sub1['총평가금액']],
-                textposition='top center',
-            ),
-            secondary_y=False,
-        )
-        fig1.add_trace(
-            go.Scatter(
-                x=sub1['Chart_Date'],
-                y=sub1['수익률'],
-                name='수익률(%)',
-                mode='lines+markers',
-                line=dict(color='#2ca02c', dash='dash', width=2),
-                marker=dict(size=6),
-                hovertemplate='%{y:.2f}%',
-            ),
-            secondary_y=True,
-        )
-
-        leg_cfg1, show_leg1, margin1 = build_legend_config(pos_fig1)
-        title_suffix1 = ' (환차손제외)' if ex_fx1 else ''
-        fig1.update_layout(
-            title=dict(
-                text=(
-                    f'1. [{title_name}] 자산 및 전체 손익/수익률 추이{title_suffix1}'
-                ),
-                y=0.95,
-                x=0.01,
-                xanchor='left',
-                yanchor='top',
-                yref='container',
-            ),
-            barmode='relative',
-            hovermode='closest',
-            height=500,
-            margin=margin1,
-            showlegend=show_leg1,
-            legend=leg_cfg1,
-        )
-        fig1.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
-        fig1.update_yaxes(
-            title_text='금액 (원)', tickformat=',.0f', secondary_y=False
-        )
-        fig1.update_yaxes(
-            title_text='수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
-            secondary_y=True,
-        )
-
-        # Fig 2
-        sub2 = get_sub_df(ex_fx2)
-        fig2 = go.Figure()
-        valid_period_df = sub2.dropna(subset=['주기별 평가손익'])
-        period_colors = [
-            '#2ca02c' if v >= 0 else '#d62728'
-            for v in valid_period_df['주기별 평가손익']
-        ]
-        fig2.add_trace(
-            go.Bar(
-                x=valid_period_df['Chart_Date'],
-                y=valid_period_df['주기별 평가손익'],
-                name='주기별 평가손익',
-                marker_color=period_colors,
-                opacity=0.85,
-            )
-        )
-        fig2.add_trace(
-            go.Scatter(
-                x=sub2['Chart_Date'],
-                y=sub2['선택구간 누적손익'],
-                name='선택구간 누적손익 (추이)',
-                mode='lines+markers',
-                line=dict(color='#9467bd', width=2.5),
-                marker=dict(size=5),
-            )
-        )
-
-        leg_cfg2, show_leg2, margin2 = build_legend_config(pos_fig2)
-        title_suffix2 = ' (환차손제외)' if ex_fx2 else ''
-        fig2.update_layout(
-            title=dict(
-                text=f'2. [{title_name}] 구간 손익 금액 추이{title_suffix2}',
-                y=0.95,
-                x=0.01,
-                xanchor='left',
-                yanchor='top',
-                yref='container',
-            ),
-            hovermode='closest',
-            height=500,
-            margin=margin2,
-            showlegend=show_leg2,
-            legend=leg_cfg2,
-        )
-        fig2.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        apply_y_axis_config(fig2, axis_name='yaxis', is_money=True)
-        fig2.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
-
-        # Fig 3a
-        sub3a = get_sub_df(ex_fx3a)
-        fig3a = go.Figure()
-        fig3a.add_trace(
-            go.Scatter(
-                x=sub3a['Chart_Date'],
-                y=sub3a['구간별 누적수익률'],
-                name='구간별 누적수익률 (%)',
-                mode='lines+markers',
-                line=dict(color='#1f77b4', width=2.5),
-                marker=dict(size=5),
-                hovertemplate='%{y:.2f}%',
-            )
-        )
-
-        for bm_name, bm_df in bm_calc_dict.items():
-          bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
-          bm_df = bm_df.sort_values('dt_temp', ascending=True).reset_index(
-              drop=True
-          )
-          bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
-          bm_df.drop(columns=['dt_temp'], inplace=True)
-
-          fig3a.add_trace(
-              go.Scatter(
-                  x=bm_df['Chart_Date'],
-                  y=bm_df['기간 누적 수익률'],
-                  mode='lines',
-                  name=f'📌 {bm_name} 누적수익률 (%)',
-                  line=dict(
-                      color=bm_styles.get(bm_name, {}).get('color', '#7f7f7f'),
-                      dash='dot',
-                  ),
-                  hovertemplate='%{y:.2f}%',
-              )
-          )
-
-        leg_cfg3a, show_leg3a, margin3a = build_legend_config(pos_fig3a)
-        title_suffix3a = ' (환차손제외)' if ex_fx3a else ''
-        fig3a.update_layout(
-            title=dict(
-                text=(
-                    f'3-1. [{title_name}] 구간 누적수익률 추이 (벤치마크'
-                    f' 비교){title_suffix3a}'
-                ),
-                y=0.95,
-                x=0.01,
-                xanchor='left',
-                yanchor='top',
-                yref='container',
-            ),
-            hovermode='closest',
-            height=500,
-            margin=margin3a,
-            showlegend=show_leg3a,
-            legend=leg_cfg3a,
-        )
-        fig3a.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        fig3a.update_yaxes(
-            title_text='수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
-        )
-
-        # Fig 3b
-        sub3b = get_sub_df(ex_fx3b)
-        fig3b = go.Figure()
-        fig3b.add_trace(
-            go.Scatter(
-                x=sub3b['Chart_Date'],
-                y=sub3b['구간별 수익률'],
-                name='구간별 수익률 (%)',
-                mode='lines+markers',
-                line=dict(color='#17becf', width=2, dash='dot'),
-                marker=dict(size=5),
-                hovertemplate='%{y:.2f}%',
-            )
-        )
-
-        for bm_name, bm_df in bm_calc_dict.items():
-          bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
-          bm_df = bm_df.sort_values('dt_temp', ascending=True).reset_index(
-              drop=True
-          )
-          bm_df['Chart_Date'] = bm_df['dt_temp'].dt.strftime('%Y-%m-%d')
-          bm_df.drop(columns=['dt_temp'], inplace=True)
-
-          fig3b.add_trace(
-              go.Scatter(
-                  x=bm_df['Chart_Date'],
-                  y=bm_df['주기별 수익률'],
-                  mode='lines',
-                  name=f'📌 {bm_name} 주기별수익률 (%)',
-                  line=bm_styles.get(bm_name, dict(dash='dash')),
-                  hovertemplate='%{y:.2f}%',
-              )
-          )
-
-        leg_cfg3b, show_leg3b, margin3b = build_legend_config(pos_fig3b)
-        title_suffix3b = ' (환차손제외)' if ex_fx3b else ''
-        fig3b.update_layout(
-            title=dict(
-                text=(
-                    f'3-2. [{title_name}] 주기별 수익률 추이 (벤치마크'
-                    f' 비교){title_suffix3b}'
-                ),
-                y=0.95,
-                x=0.01,
-                xanchor='left',
-                yanchor='top',
-                yref='container',
-            ),
-            hovermode='closest',
-            height=500,
-            margin=margin3b,
-            showlegend=show_leg3b,
-            legend=leg_cfg3b,
-        )
-        fig3b.update_xaxes(
-            type='category',
-            categoryorder='array',
-            categoryarray=date_order_list,
-        )
-        fig3b.update_yaxes(
-            title_text='수익률 (%)',
-            tickformat=',.2f',
-            ticksuffix='%',
-            zeroline=True,
-        )
-
-        effective_cols = 1 if force_single_col else num_cols
-
-        if effective_cols == 1:
-          render_resizable_plotly_chart(
-              fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
-          )
-          render_resizable_plotly_chart(
-              fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
-          )
-          render_resizable_plotly_chart(
-              fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
-          )
-          render_resizable_plotly_chart(
-              fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
-          )
-        elif effective_cols == 2:
-          col_a, col_b = st.columns(2)
-          with col_a:
-            render_resizable_plotly_chart(
-                fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
-            )
-          with col_b:
-            render_resizable_plotly_chart(
-                fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
-            )
-          col_c, col_d = st.columns(2)
-          with col_c:
-            render_resizable_plotly_chart(
-                fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
-            )
-          with col_d:
-            render_resizable_plotly_chart(
-                fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
-            )
-        else:
-          col_a, col_b, col_c = st.columns(3)
-          with col_a:
-            render_resizable_plotly_chart(
-                fig1, key=f'trend_fig1_{title_name}_{force_single_col}'
-            )
-          with col_b:
-            render_resizable_plotly_chart(
-                fig2, key=f'trend_fig2_{title_name}_{force_single_col}'
-            )
-          with col_c:
-            render_resizable_plotly_chart(
-                fig3a, key=f'trend_fig3a_{title_name}_{force_single_col}'
-            )
-          render_resizable_plotly_chart(
-              fig3b, key=f'trend_fig3b_{title_name}_{force_single_col}'
-          )
-
-        return sub_df_default
-
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
-        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 및 환율 옵션 설정')
-
-        cb_c1, cb_c2, cb_c3, cb_c4 = st.columns(4)
-        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
-        default_idx = 0 if global_legend_pos == '하단 배치' else 1
-
-        with cb_c1:
-          pos_g1 = st.selectbox(
-              '선택누적손익',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_g1_{prefix}',
-          )
-          ex_g1 = st.toggle('🔀 환차손제외', key=f'ex_g1_{prefix}')
-        with cb_c2:
-          pos_g2 = st.selectbox(
-              '주기별손익',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_g2_{prefix}',
-          )
-          ex_g2 = st.toggle('🔀 환차손제외', key=f'ex_g2_{prefix}')
-        with cb_c3:
-          pos_g3 = st.selectbox(
-              '주기별수익률',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_g3_{prefix}',
-          )
-          ex_g3 = st.toggle('🔀 환차손제외', key=f'ex_g3_{prefix}')
-        with cb_c4:
-          pos_g4 = st.selectbox(
-              '기간누적수익률',
-              leg_pos_options,
-              index=default_idx,
-              key=f'pos_g4_{prefix}',
-          )
-          ex_g4 = st.toggle('🔀 환차손제외', key=f'ex_g4_{prefix}')
 
         def get_grp_agg(use_ex_fx):
           df_curr = raw_df.copy()
@@ -1354,6 +893,74 @@ if menu == '트렌드 리포트':
         )
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
+
+        # -------------------------------------------------------------------------
+        # 각 항목별 최종 핵심지표 요약 표 (추가된 부분)
+        # -------------------------------------------------------------------------
+        summary_table_data = []
+        for grp in groups:
+          sub = grp_agg_def[grp_agg_def[group_col] == grp]
+          if not sub.empty:
+            final_p_loss = sub['선택구간 누적손익'].iloc[-1]
+            final_eval = sub['총평가금액'].iloc[-1]
+            final_ret = sub['선택기간 누적 수익률'].iloc[-1]
+            summary_table_data.append({
+                prefix: grp,
+                '선택구간 누적 평가 손익 (원)': final_p_loss,
+                '최종 기말 평가 금액 (원)': final_eval,
+                '선택구간 누적 수익률 (%)': final_ret,
+            })
+        summary_df = pd.DataFrame(summary_table_data)
+
+        st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
+        st.dataframe(
+            summary_df.style.format({
+                '선택구간 누적 평가 손익 (원)': '{:,.0f}',
+                '최종 기말 평가 금액 (원)': '{:,.0f}',
+                '선택구간 누적 수익률 (%)': '{:.2f}%',
+            }),
+            use_container_width=True,
+        )
+        st.write('---')
+
+        st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 및 환율 옵션 설정')
+
+        cb_c1, cb_c2, cb_c3, cb_c4 = st.columns(4)
+        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
+        default_idx = 0 if global_legend_pos == '하단 배치' else 1
+
+        with cb_c1:
+          pos_g1 = st.selectbox(
+              '선택누적손익',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g1_{prefix}',
+          )
+          ex_g1 = st.toggle('🔀 환차손제외', key=f'ex_g1_{prefix}')
+        with cb_c2:
+          pos_g2 = st.selectbox(
+              '주기별손익',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g2_{prefix}',
+          )
+          ex_g2 = st.toggle('🔀 환차손제외', key=f'ex_g2_{prefix}')
+        with cb_c3:
+          pos_g3 = st.selectbox(
+              '주기별수익률',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g3_{prefix}',
+          )
+          ex_g3 = st.toggle('🔀 환차손제외', key=f'ex_g3_{prefix}')
+        with cb_c4:
+          pos_g4 = st.selectbox(
+              '기간누적수익률',
+              leg_pos_options,
+              index=default_idx,
+              key=f'pos_g4_{prefix}',
+          )
+          ex_g4 = st.toggle('🔀 환차손제외', key=f'ex_g4_{prefix}')
 
         grp_agg_g1 = get_grp_agg(ex_g1)
         fig_sel_p = go.Figure()
@@ -1644,96 +1251,6 @@ if menu == '트렌드 리포트':
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
 
-        total_summary_df = (
-            raw_df.groupby('Date')[
-                [
-                    '원금',
-                    '평가손익',
-                    '총평가금액',
-                    '원금_ex_fx',
-                    '평가손익_ex_fx',
-                    '총평가금액_ex_fx',
-                ]
-            ]
-            .sum()
-            .reset_index()
-        )
-        total_summary_df['dt_temp'] = pd.to_datetime(
-            total_summary_df['Date']
-        )
-        total_summary_df = total_summary_df.sort_values(
-            'dt_temp', ascending=True
-        ).reset_index(drop=True)
-        base_start_p_loss_tot = total_summary_df['평가손익'].iloc[0]
-        total_summary_df['선택구간 누적손익'] = (
-            total_summary_df['평가손익'] - base_start_p_loss_tot
-        )
-        initial_eval_tot = total_summary_df['총평가금액'].iloc[0]
-        total_summary_df['구간별 누적수익률'] = np.where(
-            initial_eval_tot > 0,
-            (
-                (
-                    total_summary_df['총평가금액']
-                    - initial_eval_tot
-                )
-                / initial_eval_tot
-            )
-            * 100,
-            0,
-        )
-
-        tot_sel_cum_p_loss = total_summary_df['선택구간 누적손익'].iloc[-1]
-        tot_final_eval = total_summary_df['총평가금액'].iloc[-1]
-        tot_sel_cum_return = total_summary_df['구간별 누적수익률'].iloc[-1]
-
-        st.markdown('### 📌 전체 합산 핵심 지표 요약')
-        c_m1, c_m2, c_m3 = st.columns(3)
-        c_m1.metric(
-            '📌 선택 구간 누적 평가 손익', f'{tot_sel_cum_p_loss:,.0f} 원'
-        )
-        c_m2.metric('💰 최종 기말 평가 금액', f'{tot_final_eval:,.0f} 원')
-        c_m3.metric('📈 선택 구간 누적 수익률', f'{tot_sel_cum_return:.2f}%')
-        st.write('---')
-
-        st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
-
-        cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
-        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
-        default_idx = 0 if global_legend_pos == '하단 배치' else 1
-
-        with cb_w1:
-          pos_w1 = st.selectbox(
-              '1. 전체 자산 평가 금액',
-              leg_pos_options,
-              index=default_idx,
-              key='pos_w1_total',
-          )
-          ex_w1 = st.toggle('🔀 환차손제외 (1번)', key='ex_w1_total')
-        with cb_w2:
-          pos_w2 = st.selectbox(
-              '2. 구간 손익 금액 추이',
-              leg_pos_options,
-              index=default_idx,
-              key='pos_w2_total',
-          )
-          ex_w2 = st.toggle('🔀 환차손제외 (2번)', key='ex_w2_total')
-        with cb_w3:
-          pos_w3 = st.selectbox(
-              '3-1. 구간 누적수익률',
-              leg_pos_options,
-              index=default_idx,
-              key='pos_w3_total',
-          )
-          ex_w3 = st.toggle('🔀 환차손제외 (3-1번)', key='ex_w3_total')
-        with cb_w4:
-          pos_w4 = st.selectbox(
-              '3-2. 주기별 수익률',
-              leg_pos_options,
-              index=default_idx,
-              key='pos_w4_total',
-          )
-          ex_w4 = st.toggle('🔀 환차손제외 (3-2번)', key='ex_w4_total')
-
         def get_whose_agg(use_ex_fx):
           df_curr = raw_df.copy()
           if use_ex_fx and '원금_ex_fx' in df_curr.columns:
@@ -1779,12 +1296,82 @@ if menu == '트렌드 리포트':
           )
           return grp_agg
 
+        agg1_def = get_whose_agg(False)
+        whose_list = sorted(agg1_def['whose'].unique())
+
+        # -------------------------------------------------------------------------
+        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (추가된 부분)
+        # -------------------------------------------------------------------------
+        whose_summary_data = []
+        for w in whose_list:
+          sub = agg1_def[agg1_def['whose'] == w]
+          if not sub.empty:
+            final_p_loss = sub['선택구간 누적손익'].iloc[-1]
+            final_eval = sub['총평가금액'].iloc[-1]
+            final_ret = sub['구간별 누적수익률'].iloc[-1]
+            whose_summary_data.append({
+                'WHOSE': w,
+                '선택구간 누적 평가 손익 (원)': final_p_loss,
+                '최종 기말 평가 금액 (원)': final_eval,
+                '선택구간 누적 수익률 (%)': final_ret,
+            })
+        whose_summary_df = pd.DataFrame(whose_summary_data)
+
+        st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
+        st.dataframe(
+            whose_summary_df.style.format({
+                '선택구간 누적 평가 손익 (원)': '{:,.0f}',
+                '최종 기말 평가 금액 (원)': '{:,.0f}',
+                '선택구간 누적 수익률 (%)': '{:.2f}%',
+            }),
+            use_container_width=True,
+        )
+        st.write('---')
+
+        st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+
+        cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
+        leg_pos_options = ['하단 배치', '우측 배치', '숨김']
+        default_idx = 0 if global_legend_pos == '하단 배치' else 1
+
+        with cb_w1:
+          pos_w1 = st.selectbox(
+              '1. 전체 자산 평가 금액',
+              leg_pos_options,
+              index=default_idx,
+              key='pos_w1_total',
+          )
+          ex_w1 = st.toggle('🔀 환차손제외 (1번)', key='ex_w1_total')
+        with cb_w2:
+          pos_w2 = st.selectbox(
+              '2. 구간 손익 금액 추이',
+              leg_pos_options,
+              index=default_idx,
+              key='pos_w2_total',
+          )
+          ex_w2 = st.toggle('🔀 환차손제외 (2번)', key='ex_w2_total')
+        with cb_w3:
+          pos_w3 = st.selectbox(
+              '3-1. 구간 누적수익률',
+              leg_pos_options,
+              index=default_idx,
+              key='pos_w3_total',
+          )
+          ex_w3 = st.toggle('🔀 환차손제외 (3-1번)', key='ex_w3_total')
+        with cb_w4:
+          pos_w4 = st.selectbox(
+              '3-2. 주기별 수익률',
+              leg_pos_options,
+              index=default_idx,
+              key='pos_w4_total',
+          )
+          ex_w4 = st.toggle('🔀 환차손제외 (3-2번)', key='ex_w4_total')
+
         agg1 = get_whose_agg(ex_w1)
         total_per_date1 = (
             agg1.groupby('Chart_Date')['총평가금액'].sum().reset_index()
         )
         date_order_list = sorted(agg1['Chart_Date'].unique().tolist())
-        whose_list = sorted(agg1['whose'].unique())
         colors = {'BJ': '#2b5c8f', 'SH': '#ff7f0e'}
 
         fig1 = go.Figure()
