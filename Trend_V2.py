@@ -1462,7 +1462,8 @@ if menu == '트렌드 리포트':
         date_order_list = sorted(agg1['Chart_Date'].unique().tolist())
         colors = {'BJ': '#2b5c8f', 'SH': '#ff7f0e'}
 
-        fig1 = go.Figure()
+        # 첫화면 전체 자산 평가 금액 차트에 보조축(secondary_y) 설정 적용
+        fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         for w in whose_list:
           sub = agg1[agg1['whose'] == w]
           fig1.add_trace(
@@ -1471,7 +1472,8 @@ if menu == '트렌드 리포트':
                   y=sub['총평가금액'],
                   name=f'총평가금액 ({w})',
                   marker_color=colors.get(w, '#1f77b4'),
-              )
+              ),
+              secondary_y=False,
           )
         fig1.add_trace(
             go.Scatter(
@@ -1483,15 +1485,16 @@ if menu == '트렌드 리포트':
                 marker=dict(size=6),
                 text=[f'{v:,.0f}' for v in total_per_date1['총평가금액']],
                 textposition='top center',
-            )
+            ),
+            secondary_y=True,
         )
         leg_cfg_w1, show_w1, margin_w1 = build_legend_config(pos_w1)
         suf_w1 = ' (환차손제외)' if ex_w1 else ''
         fig1.update_layout(
             title=dict(
                 text=(
-                    f'1. [전체 자산 평가 금액] WHOSE별 묶은 세로 막대 & 전체 합산'
-                    f' 꺾은선{suf_w1}'
+                    f'1. [전체 자산 평가 금액] WHOSE별 묶은 세로 막대 (주축) & 전체 합산'
+                    f' 꺾은선 (보조축){suf_w1}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1511,8 +1514,14 @@ if menu == '트렌드 리포트':
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        apply_y_axis_config(fig1, is_money=True)
-        fig1.update_yaxes(title_text='금액 (원)', tickformat=',.0f')
+        apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
+        apply_y_axis_config(fig1, axis_name='yaxis2', is_money=True)
+        fig1.update_yaxes(
+            title_text='개별 평가금액 (원)', tickformat=',.0f', secondary_y=False
+        )
+        fig1.update_yaxes(
+            title_text='전체 합산 평가금액 (원)', tickformat=',.0f', secondary_y=True
+        )
 
         agg2 = get_whose_agg(ex_w2)
         fig2 = make_subplots(specs=[[{'secondary_y': True}]])
