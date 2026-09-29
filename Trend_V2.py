@@ -353,16 +353,17 @@ if menu == '트렌드 리포트':
   else:
     # 소유자(whose) 목록 추출
     whose_list = (
-        pf_df['whose'].dropna().unique().tolist()
+        sorted(pf_df['whose'].dropna().unique().tolist())
         if 'whose' in pf_df.columns
         else []
     )
     if not whose_list:
       whose_list = ['미지정']
 
+    # 계좌 기본 정보 추출 (중복 제거)
     acc_info_df = pf_df[
         ['broker', 'account_num', 'account_type', 'whose']
-    ].drop_duplicates()
+    ].drop_duplicates(subset=['account_num'])
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
     max_rec_date = date.today()
@@ -419,10 +420,14 @@ if menu == '트렌드 리포트':
           label = f'[{whose_str}] {broker_str} | {display_alias} [{acc_type_str}] ({acc_num})'
           acc_options.append(label)
 
+        # 소유자 변경 시 세션 상태에 저장된 계좌 목록 동적 검증 및 필터링
+        saved_accs = st.session_state.get('trend_sel_accs', acc_options)
+        valid_default_accs = [a for a in saved_accs if a in acc_options]
+        if not valid_default_accs:
+          valid_default_accs = acc_options
+
         selected_acc_labels = st.multiselect(
-            '🏦 조회할 계좌 선택',
-            options=acc_options,
-            default=st.session_state.get('trend_sel_accs', acc_options),
+            '🏦 조회할 계좌 선택', options=acc_options, default=valid_default_accs
         )
 
         view_types = st.multiselect(
@@ -507,7 +512,9 @@ if menu == '트렌드 리포트':
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
-        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
+        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime(
+            '%Y-%m-%d'
+        )
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
         )
@@ -839,7 +846,7 @@ if menu == '트렌드 리포트':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
       # -------------------------------------------------------------------------
-      # [전체 합산] 전용 차트 렌더링 함수 (요청 2 반영)
+      # [전체 합산] 전용 차트 렌더링 함수
       # -------------------------------------------------------------------------
       def draw_overall_total_charts(raw_df):
         st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
@@ -936,7 +943,7 @@ if menu == '트렌드 리포트':
 
         date_order_list = sub_df_default['Chart_Date'].tolist()
 
-        # --- Fig 1: 전체 자산 TREND (각 계좌별 평가 금액 세로 누적 막대 + 총 평가 금액 꺾은선) ---
+        # --- Fig 1: 전체 자산 TREND (계좌별 누적 막대 + 총평가금액) ---
         eval_col = '총평가금액_ex_fx' if ex_fx1 else '총평가금액'
 
         acc_eval_df = (
@@ -1017,7 +1024,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
-            barmode='stack',  # 세로 누적 막대
+            barmode='stack',
             hovermode='closest',
             height=550,
             margin=margin1,
@@ -2031,7 +2038,6 @@ if menu == '트렌드 리포트':
 
       def render_separate_charts(df, group_col, prefix):
         if group_col is None:
-          # 전체 합산 렌더링
           draw_overall_total_charts(df)
         else:
           draw_group_summary_charts(df, group_col, prefix)
@@ -2164,7 +2170,7 @@ elif menu == '계좌 별칭 관리':
         )
       conn.commit()
       conn.close()
-      create_local_backup()  # 자동 백업
+      create_local_backup()
       st.success('계좌 별칭이 성공적으로 저장되었습니다!')
       st.rerun()
 
@@ -2201,12 +2207,18 @@ elif menu == '포트폴리오 업로드':
         if 'whose' not in df_upload.columns:
           df_upload['whose'] = '미지정'
 
-        for opt_col in ['ticker', 'category1', 'category2', 'category3', 'category4', 'currency']:
+        for opt_col in [
+            'ticker',
+            'category1',
+            'category2',
+            'category3',
+            'category4',
+            'currency',
+        ]:
           if opt_col not in df_upload.columns:
             df_upload[opt_col] = None
 
         if st.button('💾 DB에 저장하기'):
-          # 업로드 전 자동 백업 생성
           create_local_backup()
 
           conn = get_connection()
@@ -2399,137 +2411,52 @@ elif menu == '등록 데이터 조회 및 관리':
       )
 
     with c2:
-      st.markdown('#### 📸 수동 로컬 백업 스냅샷 생성')
-      if st.button('💾 현재 상태 로컬 백업 생성', use_container_width=True):
-        b_path = create_local_backup()
-        if b_path:
-          st.success(f'백업이 성공적으로 생성되었습니다: {os.path.basename(b_path)}')
-        else:
-          st.error('백업 파일 생성에 실패했습니다.')
+      st.markdown('#### 📂 DB 복원')
+      uploaded_db = st.file_uploader(
+          'SQLite DB 파일 (.db) 업로드', type=['db']
+      )
+      if uploaded_db is not None:
+        if st.button('🔄 복원 실행'):
+          create_local_backup()
+          with open(DB_FILE, 'wb') as f:
+            f.write(uploaded_db.getvalue())
+          st.success('DB 파일이 성공적으로 복원되었습니다!')
+          st.rerun()
 
   conn.close()
 
 # -----------------------------------------------------------------------------
-# 메뉴 6: 데이터 백업 및 복원 (요청 1 반영)
+# 메뉴 6: 데이터 백업 및 복원
 # -----------------------------------------------------------------------------
 elif menu == '데이터 백업 및 복원':
-  st.header('💾 데이터 백업 및 복원 센터 (Backup & Restore)')
-  st.info('데이터 손실을 방지하기 위해 정기적으로 백업을 생성하고 복원할 수 있습니다.')
-
-  col_b1, col_b2 = st.columns(2)
-
-  with col_b1:
-    st.subheader('📥 데이터 백업 받기')
-
-    # 1. DB 파일 직접 다운로드
-    if os.path.exists(DB_FILE):
-      with open(DB_FILE, 'rb') as f:
-        db_data = f.read()
-      today_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-      st.download_button(
-          label='📥 SQLite DB 백업 다운로드 (.db)',
-          data=db_data,
-          file_name=f'asset_tracker_{today_str}.db',
-          mime='application/x-sqlite3',
-          use_container_width=True,
-      )
-
-    # 2. 엑셀 백업 다운로드
-    xlsx_data = export_all_to_excel_bytes()
-    st.download_button(
-        label='📊 Excel 전체 백업 다운로드 (.xlsx)',
-        data=xlsx_data,
-        file_name=f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
-        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        use_container_width=True,
-    )
-
-    st.write('---')
-    if st.button('📸 로컬 스냅샷 백업 즉시 생성', use_container_width=True):
-      bk_file = create_local_backup()
-      if bk_file:
-        st.success(f'로컬 백업 파일 생성 완료: {os.path.basename(bk_file)}')
-      else:
-        st.error('백업 파일 생성 실패.')
-
-  with col_b2:
-    st.subheader('📤 데이터 복원하기 (Restore)')
-
-    # 파일 업로드를 통한 복원
-    uploaded_restore = st.file_uploader(
-        '백업 파일 업로드 (.db 또는 .xlsx)', type=['db', 'xlsx']
-    )
-
-    if uploaded_restore is not None:
-      file_ext = uploaded_restore.name.split('.')[-1].lower()
-
-      if st.button('⚠️ 업로드 파일로 DB 전체 복원 실행'):
-        try:
-          # 현재 DB 사전 백업
-          create_local_backup()
-
-          if file_ext == 'db':
-            with open(DB_FILE, 'wb') as f:
-              f.write(uploaded_restore.getvalue())
-            st.success('SQLite DB 파일이 성공적으로 복원되었습니다!')
-            st.rerun()
-
-          elif file_ext == 'xlsx':
-            xls = pd.ExcelFile(uploaded_restore)
-            conn = get_connection()
-
-            for table_name in [
-                'portfolio',
-                'initial_principal',
-                'cash_flow',
-                'account_alias',
-            ]:
-              if table_name in xls.sheet_names:
-                df_rest = pd.read_excel(xls, sheet_name=table_name)
-                df_rest.to_sql(
-                    table_name, conn, if_exists='replace', index=False
-                )
-
-            conn.commit()
-            conn.close()
-            st.success('Excel 백업 데이터로 모든 테이블이 성공적으로 복원되었습니다!')
-            st.rerun()
-        except Exception as e:
-          st.error(f'복원 중 오류가 발생했습니다: {e}')
-
-  st.write('---')
-  st.subheader('📋 보관된 로컬 백업 스냅샷 목록')
+  st.header('💾 백업 파일 히스토리 관리')
   backup_files = get_backup_files()
 
   if not backup_files:
-    st.info('생성된 로컬 백업 파일이 없습니다.')
+    st.info('생성된 자동 로컬 백업 파일이 없습니다.')
   else:
-    bk_list = []
+    st.write('로컬 자동 백업 파일 목록입니다.')
+    b_data = []
     for bf in backup_files:
-      mod_time = datetime.fromtimestamp(os.path.getmtime(bf)).strftime(
+      fn = os.path.basename(bf)
+      mtime = datetime.fromtimestamp(os.path.getmtime(bf)).strftime(
           '%Y-%m-%d %H:%M:%S'
       )
-      size_kb = round(os.path.getsize(bf) / 1024, 2)
-      bk_list.append({
-          '파일명': os.path.basename(bf),
-          '생성시간': mod_time,
-          '용량(KB)': size_kb,
-          '전체경로': bf,
-      })
+      fsize = f'{os.path.getsize(bf) / 1024:.1f} KB'
+      b_data.append(
+          {'파일명': fn, '수정일시': mtime, '크기': fsize, '경로': bf}
+      )
 
-    bk_df = pd.DataFrame(bk_list)
+    b_df = pd.DataFrame(b_data)
     st.dataframe(
-        bk_df[['파일명', '생성시간', '용량(KB)']], use_container_width=True
+        b_df[['파일명', '수정일시', '크기']], use_container_width=True
     )
 
-    sel_restore_file = st.selectbox(
-        '복원할 스냅샷 파일 선택', options=[b['파일명'] for b in bk_list]
+    selected_file = st.selectbox(
+        '복원할 백업 파일 선택', options=b_df['파일명'].tolist()
     )
-
-    if st.button('🔄 선택한 스냅샷으로 복원하기'):
-      target_path = os.path.join(BACKUP_DIR, sel_restore_file)
-      if os.path.exists(target_path):
-        create_local_backup()  # 복원 전 현재 상태 백업
-        shutil.copy2(target_path, DB_FILE)
-        st.success(f'[{sel_restore_file}] 파일로 성공적으로 복원되었습니다!')
-        st.rerun()
+    if st.button('🔄 선택한 백업본으로 복원'):
+      target_path = b_df[b_df['파일명'] == selected_file]['경로'].iloc[0]
+      shutil.copy2(target_path, DB_FILE)
+      st.success(f"'{selected_file}' 버전으로 성공적으로 복원되었습니다!")
+      st.rerun()
