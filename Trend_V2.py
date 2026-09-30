@@ -875,13 +875,16 @@ if menu == '트렌드 리포트':
               .reset_index()
           )
 
-          # 매도하여 보유하지 않는 항목에 대해 직전 보유일의 누적 손익 및 평가금액 등을 유지(ffill) 처리
+          # 매도하여 보유하지 않는 항목에 대해 사후 기간 가상 평가액 유지 방지 (보유 기간 내에만 ffill 적용 및 외에는 0 처리)
           all_target_dates = sorted(raw_df['Date'].unique().tolist())
           filled_groups = []
           for grp in grp_agg[group_col].unique():
             g_df = grp_agg[grp_agg[group_col] == grp].copy()
             g_df['dt'] = pd.to_datetime(g_df['Date'])
             g_df = g_df.sort_values('dt')
+
+            grp_min_date = g_df['dt'].min()
+            grp_max_date = g_df['dt'].max()
 
             date_template = pd.DataFrame({'Date': all_target_dates})
             date_template['dt'] = pd.to_datetime(date_template['Date'])
@@ -894,9 +897,18 @@ if menu == '트렌드 리포트':
                 suffixes=('', '_dup'),
             )
             m[group_col] = grp
-            # 선택구간 누적손익 등은 마지막 보유일 이후 ffill 유지
-            m['원금'] = m['원금'].ffill().fillna(0)
-            m['총평가금액'] = m['총평가금액'].ffill().fillna(0)
+            
+            # 실제 보유 기간(grp_min_date ~ grp_max_date) 내에서만 ffill 적용, 외에는 0 처리
+            active_mask = (m['dt'] >= grp_min_date) & (m['dt'] <= grp_max_date)
+            m['원금'] = np.where(active_mask, m['원금'], 0)
+            m['총평가금액'] = np.where(active_mask, m['총평가금액'], 0)
+            m['평가손익'] = np.where(active_mask, m['평가손익'], 0)
+
+            m['원금'] = pd.Series(m['원금']).ffill().fillna(0)
+            m['총평가금액'] = pd.Series(m['총평가금액']).ffill().fillna(0)
+            m['평가손익'] = pd.Series(m['평가손익']).ffill().fillna(0)
+
+            m.loc[~active_mask, ['원금', '총평가금액', '평가손익']] = 0
             filled_groups.append(m)
 
           grp_agg = pd.concat(filled_groups, ignore_index=True)
@@ -970,7 +982,7 @@ if menu == '트렌드 리포트':
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표
+        # 각 항목별 최종 핵심지표 요약 표 (latest_date 기준 원본 보유 여부 체크 추가)
         # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle(
@@ -985,11 +997,17 @@ if menu == '트렌드 리포트':
         total_principal_sum = 0
 
         for grp in groups:
+          # latest_date 시점의 원본 데이터 보유 여부(총평가금액 > 0) 체크
+          raw_latest = raw_df[
+              (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
+          ]
+          if raw_latest.empty or raw_latest['총평가금액'].sum() <= 0:
+            continue
+
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
           if not sub.empty:
             final_eval = sub['총평가금액'].iloc[-1]
 
-            # 최종 기말 시점(latest_date)의 평가금액이 0원이거나 데이터가 없으면 요약 표에서 제외
             if final_eval <= 0 or pd.isna(final_eval):
               continue
 
@@ -997,18 +1015,12 @@ if menu == '트렌드 리포트':
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
 
             if ex_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[
-                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
-              ]
               final_principal = (
-                  sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+                  raw_latest['원금_ex_fx'].sum() if not raw_latest.empty else 0
               )
             else:
-              sub_raw = raw_df[
-                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
-              ]
               final_principal = (
-                  sub_raw['원금'].sum() if not sub_raw.empty else 0
+                  raw_latest['원금'].sum() if not raw_latest.empty else 0
               )
 
             total_eval_sum += final_eval
@@ -1589,17 +1601,17 @@ if menu == '트렌드 리포트':
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
 
+            sub_raw = raw_df[
+                (raw_df['whose'] == w) & (raw_df['Date'] == latest_date)
+            ]
+            if sub_raw.empty or sub_raw['총평가금액'].sum() <= 0:
+              continue
+
             if ex_whose_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[
-                  (raw_df['whose'] == w) & (raw_df['Date'] == latest_date)
-              ]
               final_principal = (
                   sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
               )
             else:
-              sub_raw = raw_df[
-                  (raw_df['whose'] == w) & (raw_df['Date'] == latest_date)
-              ]
               final_principal = (
                   sub_raw['원금'].sum() if not sub_raw.empty else 0
               )
@@ -1660,7 +1672,7 @@ if menu == '트렌드 리포트':
         )
         st.write('---')
 
-        st.markdown('##### ⚙️️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+        st.markdown('##### ⚙ [전체 합산] 차트별 범주 및 환율 옵션 설정')
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -2382,7 +2394,7 @@ elif menu == '데이터 백업 및 복구':
 
     if uploaded_backup is not None:
       st.warning(
-          '⚠️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
+          '⚠️️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
           ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
       )
       if st.button('🔄 데이터 복구 실행'):
