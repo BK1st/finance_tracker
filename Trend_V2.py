@@ -830,6 +830,9 @@ if menu == '트렌드 리포트':
         elif axis_name == 'yaxis2':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
+      # -------------------------------------------------------------------------
+      # 그룹 요약 차트 (계좌별, 증권사별, 계좌유형별, Category 4별, 보유항목별)
+      # -------------------------------------------------------------------------
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
 
@@ -898,7 +901,7 @@ if menu == '트렌드 리포트':
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
+        # 각 항목별 최종 핵심지표 요약 표
         # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
@@ -1291,6 +1294,76 @@ if menu == '트렌드 리포트':
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
+        # -------------------------------------------------------------------------
+        # 하단 추가 기능: [계좌별] 및 [계좌유형별] 관점 필터링 누적 세로 막대 차트
+        # -------------------------------------------------------------------------
+        if group_col in ['account_num', 'account_type']:
+          st.write('---')
+          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트')
+          
+          c_sub1, c_sub2 = st.columns([2, 2])
+          with c_sub1:
+            all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
+            selected_filter_items = st.multiselect(
+                f'특정 {prefix} 선택 (중복 가능)',
+                options=all_filter_items,
+                default=all_filter_items,
+                key=f'sub_filter_{prefix}'
+            )
+          with c_sub2:
+            target_group_opt = st.radio(
+                '분류 기준 선택',
+                options=['category4별', '보유 항목별'],
+                horizontal=True,
+                key=f'sub_group_opt_{prefix}'
+            )
+
+          target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
+
+          if selected_filter_items:
+            sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
+            sub_agg = sub_raw.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
+            
+            sub_agg['dt_temp'] = pd.to_datetime(sub_agg['Date'])
+            sub_agg = sub_agg.sort_values('dt_temp').reset_index(drop=True)
+            sub_agg['Chart_Date'] = sub_agg['dt_temp'].dt.strftime('%Y-%m-%d')
+            date_order = sorted(sub_agg['Chart_Date'].unique().tolist())
+
+            fig_sub_stack = go.Figure()
+            cat_list = sub_agg[target_col].unique().tolist()
+            for cat in cat_list:
+              c_df = sub_agg[sub_agg[target_col] == cat]
+              fig_sub_stack.add_trace(
+                  go.Bar(
+                      x=c_df['Chart_Date'],
+                      y=c_df['총평가금액'],
+                      name=str(cat),
+                      hovertemplate='%{y:,.0f} 원'
+                  )
+              )
+
+            fig_sub_stack.update_layout(
+                title=dict(
+                    text=f'🔹 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
+                    y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
+                ),
+                barmode='stack',
+                hovermode='closest',
+                height=500,
+                margin=dict(t=120, b=100, l=10, r=20),
+                legend=dict(orientation='h', y=-0.2, x=0)
+            )
+            fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
+            apply_y_axis_config(fig_sub_stack, is_money=True)
+            fig_sub_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+
+            render_resizable_plotly_chart(fig_sub_stack, key=f'fig_sub_stack_{prefix}')
+          else:
+            st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
+
+      # -------------------------------------------------------------------------
+      # 전체 합산 차트
+      # -------------------------------------------------------------------------
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
 
@@ -1348,7 +1421,7 @@ if menu == '트렌드 리포트':
         whose_list = sorted(agg1_def['whose'].unique())
 
         # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
+        # [전체 합산] WHOSE별 최종 핵심지표 요약 표
         # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
@@ -1732,6 +1805,65 @@ if menu == '트렌드 리포트':
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
+        # -------------------------------------------------------------------------
+        # 하단 추가 기능: [전체 합산] 관점 일자별 총 평가 금액 누적 세로 막대 차트
+        # -------------------------------------------------------------------------
+        st.write('---')
+        st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)')
+        
+        group_opt_map = {
+            '계좌별': 'account_num',
+            '증권사별': 'broker',
+            '계좌유형별': 'account_type',
+            'category4별': 'category4',
+            '보유 항목별': 'item_name'
+        }
+        
+        selected_total_group = st.radio(
+            '분류 항목 선택',
+            options=list(group_opt_map.keys()),
+            horizontal=True,
+            key='total_stack_group_opt'
+        )
+        
+        target_col = group_opt_map[selected_total_group]
+        
+        total_agg = raw_df.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
+        total_agg['dt_temp'] = pd.to_datetime(total_agg['Date'])
+        total_agg = total_agg.sort_values('dt_temp').reset_index(drop=True)
+        total_agg['Chart_Date'] = total_agg['dt_temp'].dt.strftime('%Y-%m-%d')
+        date_order = sorted(total_agg['Chart_Date'].unique().tolist())
+
+        fig_total_stack = go.Figure()
+        cat_list = total_agg[target_col].unique().tolist()
+        for cat in cat_list:
+          c_df = total_agg[total_agg[target_col] == cat]
+          fig_total_stack.add_trace(
+              go.Bar(
+                  x=c_df['Chart_Date'],
+                  y=c_df['총평가금액'],
+                  name=str(cat),
+                  hovertemplate='%{y:,.0f} 원'
+              )
+          )
+
+        fig_total_stack.update_layout(
+            title=dict(
+                text=f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group} 기준 누적)',
+                y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
+            ),
+            barmode='stack',
+            hovermode='closest',
+            height=500,
+            margin=dict(t=120, b=100, l=10, r=20),
+            legend=dict(orientation='h', y=-0.2, x=0)
+        )
+        fig_total_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
+        apply_y_axis_config(fig_total_stack, is_money=True)
+        fig_total_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+
+        render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
+
       if active_views:
         tabs = st.tabs(active_views)
         for tab, v_type in zip(tabs, active_views):
@@ -1909,7 +2041,7 @@ elif menu == '원금 및 입출금 관리':
         st.info('등록된 입출금 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 웹 수정 (선택 삭제 기능 추가)
+# 메뉴 5: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 웹 수정')
@@ -1932,17 +2064,9 @@ elif menu == '등록 데이터 조회 및 웹 수정':
 
     if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
       try:
-        # data_editor 변경 정보 가져오기
-        editor_state = st.session_state.get('portfolio_data_editor', {})
-        deleted_indices = editor_state.get('deleted_rows', [])
-
-        # 삭제할 행이 있다면 제거 반영
-        final_df = edited_df.copy()
-        if deleted_indices:
-          final_df = final_df.drop(index=deleted_indices).reset_index(drop=True)
-
         conn = get_connection()
-        final_df.to_sql('portfolio', conn, if_exists='replace', index=False)
+        # edited_df에는 웹 화면에서의 삭제/수정 사항이 이미 반영되어 있습니다.
+        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
 
         st.success('포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!')
