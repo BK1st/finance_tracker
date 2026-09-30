@@ -2015,6 +2015,12 @@ elif menu == '포트폴리오 업로드':
         # 맵핑 변환 적용 (한글 컬럼명이 있을 경우 영문 DB 컬럼명으로 변경)
         renamed_df = df_upload.rename(columns=col_map)
 
+        # RECORD DATE (record_date) 날짜를 일('YYYY-MM-DD')까지만 보이도록 형식 수정
+        if 'record_date' in renamed_df.columns:
+          renamed_df['record_date'] = pd.to_datetime(
+              renamed_df['record_date']
+          ).dt.strftime('%Y-%m-%d')
+
         # DB에 존재하는 컬럼만 선별하여 적재
         conn = get_connection()
         c = conn.cursor()
@@ -2142,7 +2148,6 @@ elif menu == '등록 데이터 조회 및 웹 수정':
     if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
       try:
         conn = get_connection()
-        # edited_df에는 웹 화면에서의 삭제/수정 사항이 이미 반영되어 있습니다.
         edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
 
