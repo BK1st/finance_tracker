@@ -91,7 +91,7 @@ def init_db():
         )
     ''')
 
-  # 5) 거래 내역 (history_0930_2.xlsx 매수/매도/배당/입출금 통합 관리용) 스키마
+  # 5) 거래 내역 통합 관리용 스키마
   c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -334,9 +334,15 @@ if menu == '트렌드 리포트':
 
   conn = get_connection()
   pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  tx_df = pd.read_sql('SELECT * FROM transactions', conn)
   init_p_df = pd.read_sql('SELECT * FROM initial_principal', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
   conn.close()
+
+  if not tx_df.empty and 'trans_date' in tx_df.columns:
+    tx_df['trans_date'] = pd.to_datetime(
+        tx_df['trans_date'], errors='coerce'
+    ).dt.strftime('%Y-%m-%d')
 
   if pf_df.empty:
     st.warning(
@@ -530,7 +536,13 @@ if menu == '트렌드 리포트':
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
-      unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
+
+      tx_tickers = (
+          tx_df['ticker'].dropna().unique().tolist() if not tx_df.empty else []
+      )
+      unique_tickers = list(
+          set(filtered_pf_df['ticker'].dropna().unique().tolist() + tx_tickers)
+      )
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
@@ -635,8 +647,25 @@ if menu == '트렌드 리포트':
             out_flow = acc_cf[acc_cf['flow_type'] == '출금']['amount'].sum()
           else:
             in_flow, out_flow = 0, 0
+
+          # transactions 테이블 입출금 합산 반영
+          if not tx_df.empty:
+            acc_tx_cf = tx_df[
+                (tx_df['account_num'].astype(str) == acc)
+                & (tx_df['trans_date'] <= t_str)
+            ]
+            tx_in = acc_tx_cf[acc_tx_cf['trans_type'].isin(['입금'])][
+                'net_amount'
+            ].sum()
+            tx_out = acc_tx_cf[acc_tx_cf['trans_type'].isin(['출금'])][
+                'net_amount'
+            ].sum()
+            in_flow += tx_in
+            out_flow += tx_out
+
           principal = init_val + in_flow - out_flow
 
+          # 스냅샷 기초 데이터 추출
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
@@ -650,114 +679,181 @@ if menu == '트렌드 리포트':
                 & (filtered_pf_df['record_date'] == min_date)
             ]
 
-          if not acc_pf.empty:
-            latest_date = acc_pf['record_date'].max()
-            current_pf = acc_pf[acc_pf['record_date'] == latest_date]
-            total_acc_eval = 0
-            total_acc_eval_ex_fx = 0
-            item_eval_list = []
+          base_date = acc_pf['record_date'].max() if not acc_pf.empty else t_str
+          current_pf = (
+              acc_pf[acc_pf['record_date'] == base_date]
+              if not acc_pf.empty
+              else pd.DataFrame()
+          )
 
+          # 보유 항목 딕셔너리 구성
+          holdings = {}
+          if not current_pf.empty:
             for _, row in current_pf.iterrows():
-              fmt_tk = format_ticker(row.get('ticker'))
-              qty = (
-                  row['quantity']
-                  if ('quantity' in row and pd.notna(row['quantity']))
-                  else 0
-              )
-              curr = row.get('currency', 'KRW')
-              base_price = (
-                  row['current_price']
-                  if ('current_price' in row and pd.notna(row['current_price']))
-                  else 0
-              )
-
               item_name = (
-                  row['item_name']
-                  if (
-                      'item_name' in row
-                      and pd.notna(row['item_name'])
-                      and str(row['item_name']).strip() != ''
-                  )
+                  str(row['item_name']).strip()
+                  if pd.notna(row.get('item_name'))
                   else '미지정종목'
               )
-              cat4 = (
-                  row['category4']
-                  if (
-                      'category4' in row
-                      and pd.notna(row['category4'])
-                      and str(row['category4']).strip() != ''
-                  )
-                  else '미지정'
+              qty = (
+                  float(row['quantity'])
+                  if pd.notna(row.get('quantity'))
+                  else 0.0
               )
-
-              price = 0
-              if fmt_tk is None:
-                price = base_price if base_price > 0 else 0
-              else:
-                if fmt_tk in market_data.columns and not market_data.empty:
-                  if pd.to_datetime(t_str) in market_data.index:
-                    price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
-                  else:
-                    price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
-
-                  if (
-                      (pd.isna(price) or price == 0)
-                      and fmt_tk in market_data.columns
-                      and not market_data[fmt_tk].dropna().empty
-                  ):
-                    price = float(market_data[fmt_tk].dropna().iloc[0])
-
-                if pd.isna(price) or price == 0:
-                  price = base_price
-
-              item_eval = (
-                  (qty * price * usd_krw) if curr == 'USD' else (qty * price)
-              )
-              item_eval_ex_fx = (
-                  (qty * price * usd_krw_first)
-                  if curr == 'USD'
-                  else (qty * price)
-              )
-
-              total_acc_eval += item_eval
-              total_acc_eval_ex_fx += item_eval_ex_fx
-              item_eval_list.append(
-                  (item_name, cat4, item_eval, item_eval_ex_fx)
-              )
-
-            item_count = len(item_eval_list)
-            for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
-              if total_acc_eval > 0:
-                ratio = item_eval / total_acc_eval
-              else:
-                ratio = 1.0 / item_count if item_count > 0 else 0
-
-              if total_acc_eval_ex_fx > 0:
-                ratio_ex = item_eval_ex / total_acc_eval_ex_fx
-              else:
-                ratio_ex = 1.0 / item_count if item_count > 0 else 0
-
-              item_principal = principal * ratio
-              item_p_loss = item_eval - item_principal
-
-              item_principal_ex = principal * ratio_ex
-              item_p_loss_ex = item_eval_ex - item_principal_ex
-
-              base_records.append({
-                  'Date': t_str,
-                  'account_num': acc_label,
-                  'broker': broker_name,
-                  'account_type': acc_type,
-                  'category4': cat4,
+              holdings[item_name] = {
                   'item_name': item_name,
-                  'whose': whose_val,
-                  '원금': item_principal,
-                  '평가손익': item_p_loss,
-                  '총평가금액': item_eval,
-                  '원금_ex_fx': item_principal_ex,
-                  '평가손익_ex_fx': item_p_loss_ex,
-                  '총평가금액_ex_fx': item_eval_ex,
-              })
+                  'ticker': format_ticker(row.get('ticker')),
+                  'category4': (
+                      row['category4']
+                      if pd.notna(row.get('category4'))
+                      else '미지정'
+                  ),
+                  'currency': row.get('currency', 'KRW'),
+                  'current_price': (
+                      float(row['current_price'])
+                      if pd.notna(row.get('current_price'))
+                      else 0.0
+                  ),
+                  'quantity': qty,
+              }
+
+          # 거래 내역(transactions)을 동적으로 반영
+          if not tx_df.empty:
+            acc_tx = tx_df[
+                (tx_df['account_num'].astype(str) == acc)
+                & (tx_df['trans_date'] > base_date)
+                & (tx_df['trans_date'] <= t_str)
+            ]
+            if base_date == t_str:
+              acc_tx = tx_df[
+                  (tx_df['account_num'].astype(str) == acc)
+                  & (tx_df['trans_date'] == t_str)
+              ]
+
+            for _, tx_row in acc_tx.iterrows():
+              t_type = (
+                  str(tx_row.get('trans_type')).strip()
+                  if pd.notna(tx_row.get('trans_type'))
+                  else ''
+              )
+              t_item = (
+                  str(tx_row.get('item_name')).strip()
+                  if pd.notna(tx_row.get('item_name'))
+                  else ''
+              )
+              t_qty = (
+                  float(tx_row.get('quantity'))
+                  if pd.notna(tx_row.get('quantity'))
+                  else 0.0
+              )
+
+              if not t_item:
+                continue
+
+              if t_type in ['매수', '수량증가']:
+                if t_item in holdings:
+                  holdings[t_item]['quantity'] += t_qty
+                else:
+                  holdings[t_item] = {
+                      'item_name': t_item,
+                      'ticker': format_ticker(tx_row.get('ticker')),
+                      'category4': '미지정',
+                      'currency': tx_row.get('currency', 'KRW'),
+                      'current_price': (
+                          float(tx_row.get('unit_price'))
+                          if pd.notna(tx_row.get('unit_price'))
+                          else 0.0
+                      ),
+                      'quantity': t_qty,
+                  }
+              elif t_type in ['매도', '수량감소']:
+                if t_item in holdings:
+                  holdings[t_item]['quantity'] -= t_qty
+                  if holdings[t_item]['quantity'] < 0:
+                    holdings[t_item]['quantity'] = 0.0
+
+          # 잔고 수량이 0 초과인 종목만 평가 계산에 포함
+          total_acc_eval = 0.0
+          total_acc_eval_ex_fx = 0.0
+          active_items = []
+
+          for item_key, h_data in holdings.items():
+            qty = h_data['quantity']
+            if qty <= 0:
+              continue
+
+            fmt_tk = h_data['ticker']
+            base_price = h_data['current_price']
+            curr = h_data['currency']
+            price = 0.0
+
+            if fmt_tk and fmt_tk in market_data.columns and not market_data.empty:
+              if pd.to_datetime(t_str) in market_data.index:
+                price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
+              else:
+                price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+
+              if (
+                  (pd.isna(price) or price == 0)
+                  and not market_data[fmt_tk].dropna().empty
+              ):
+                price = float(market_data[fmt_tk].dropna().iloc[-1])
+
+            if pd.isna(price) or price == 0:
+              price = base_price
+
+            item_eval = (
+                (qty * price * usd_krw) if curr == 'USD' else (qty * price)
+            )
+            item_eval_ex = (
+                (qty * price * usd_krw_first)
+                if curr == 'USD'
+                else (qty * price)
+            )
+
+            total_acc_eval += item_eval
+            total_acc_eval_ex_fx += item_eval_ex
+            active_items.append({
+                'item_name': h_data['item_name'],
+                'category4': h_data['category4'],
+                'item_eval': item_eval,
+                'item_eval_ex': item_eval_ex,
+            })
+
+          item_count = len(active_items)
+          for it in active_items:
+            ratio = (
+                (it['item_eval'] / total_acc_eval)
+                if total_acc_eval > 0
+                else (1.0 / item_count if item_count > 0 else 0)
+            )
+            ratio_ex = (
+                (it['item_eval_ex'] / total_acc_eval_ex_fx)
+                if total_acc_eval_ex_fx > 0
+                else (1.0 / item_count if item_count > 0 else 0)
+            )
+
+            item_principal = principal * ratio
+            item_p_loss = it['item_eval'] - item_principal
+
+            item_principal_ex = principal * ratio_ex
+            item_p_loss_ex = it['item_eval_ex'] - item_principal_ex
+
+            base_records.append({
+                'Date': t_str,
+                'account_num': acc_label,
+                'broker': broker_name,
+                'account_type': acc_type,
+                'category4': it['category4'],
+                'item_name': it['item_name'],
+                'whose': whose_val,
+                '원금': item_principal,
+                '평가손익': item_p_loss,
+                '총평가금액': it['item_eval'],
+                '원금_ex_fx': item_principal_ex,
+                '평가손익_ex_fx': item_p_loss_ex,
+                '총평가금액_ex_fx': it['item_eval_ex'],
+            })
 
       bm_calc_dict = {}
       for bm_label in selected_bm:
@@ -881,7 +977,7 @@ if menu == '트렌드 리포트':
           fig.update_yaxes(secondary_y=True, **kwargs)
 
       # -------------------------------------------------------------------------
-      # 그룹 요약 차트 (계좌별, 증권사별, 계좌유형별, Category 4별, 보유항목별)
+      # 그룹 요약 차트
       # -------------------------------------------------------------------------
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
@@ -976,39 +1072,44 @@ if menu == '트렌드 리포트':
         total_principal_sum = 0
 
         for grp in groups:
-          sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
-          if not sub.empty:
-            final_p_loss = sub['선택구간 누적손익'].iloc[-1]
-            final_eval = sub['총평가금액'].iloc[-1]
-            final_ret = sub['선택기간 누적 수익률'].iloc[-1]
+          sub_latest = raw_df[
+              (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
+          ]
+          if not sub_latest.empty:
+            final_eval = sub_latest['총평가금액'].sum()
+            final_principal = sub_latest[
+                '원금_ex_fx' if ex_summary else '원금'
+            ].sum()
+            final_p_loss = sub_latest[
+                '평가손익_ex_fx' if ex_summary else '평가손익'
+            ].sum()
+            final_ret = (
+                (final_p_loss / final_principal * 100)
+                if final_principal > 0
+                else 0.0
+            )
+          else:
+            final_eval = 0.0
+            final_principal = 0.0
+            final_p_loss = 0.0
+            final_ret = 0.0
 
-            if ex_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[
-                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
-              ]
-              final_principal = (
-                  sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
-              )
-            else:
-              sub_raw = raw_df[
-                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
-              ]
-              final_principal = (
-                  sub_raw['원금'].sum() if not sub_raw.empty else 0
-              )
+          # 기말 시점에 보유 수량이 0인 종목은 보유항목별 요약 표에서 제외
+          if group_col == 'item_name' and final_eval == 0:
+            continue
 
-            total_eval_sum += final_eval
-            total_pl_sum += final_p_loss
-            total_principal_sum += final_principal
+          total_eval_sum += final_eval
+          total_pl_sum += final_p_loss
+          total_principal_sum += final_principal
 
-            summary_table_data.append({
-                prefix: grp,
-                '선택구간 누적 평가 손익 (원)': final_p_loss,
-                '최종 기말 평가 금액 (원)': final_eval,
-                '선택구간 누적 수익률 (%)': final_ret,
-                '_eval': final_eval,
-                '_principal': final_principal,
-            })
+          summary_table_data.append({
+              prefix: grp,
+              '선택구간 누적 평가 손익 (원)': final_p_loss,
+              '최종 기말 평가 금액 (원)': final_eval,
+              '선택구간 누적 수익률 (%)': final_ret,
+              '_eval': final_eval,
+              '_principal': final_principal,
+          })
 
         for row in summary_table_data:
           row['점유율 (%)'] = (
@@ -1094,15 +1195,16 @@ if menu == '트렌드 리포트':
         fig_sel_p = go.Figure()
         for grp in groups:
           sub = grp_agg_g1[grp_agg_g1[group_col] == grp]
-          fig_sel_p.add_trace(
-              go.Scatter(
-                  x=sub['Chart_Date'],
-                  y=sub['선택구간 누적손익'],
-                  name=f'{grp}',
-                  mode='lines+markers',
-                  hovertemplate='%{y:,.0f} 원',
-              )
-          )
+          if not sub.empty:
+            fig_sel_p.add_trace(
+                go.Scatter(
+                    x=sub['Chart_Date'],
+                    y=sub['선택구간 누적손익'],
+                    name=f'{grp}',
+                    mode='lines+markers',
+                    hovertemplate='%{y:,.0f} 원',
+                )
+            )
 
         leg_cfg_g1, show_g1, margin_g1 = build_legend_config(pos_g1)
         suf_g1 = ' (환차손제외)' if ex_g1 else ''
@@ -1137,11 +1239,12 @@ if menu == '트렌드 리포트':
           sub = grp_agg_g2[grp_agg_g2[group_col] == grp].dropna(
               subset=['주기별 평가손익']
           )
-          fig_period_p.add_trace(
-              go.Bar(
-                  x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
-              )
-          )
+          if not sub.empty:
+            fig_period_p.add_trace(
+                go.Bar(
+                    x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
+                )
+            )
 
         leg_cfg_g2, show_g2, margin_g2 = build_legend_config(pos_g2)
         suf_g2 = ' (환차손제외)' if ex_g2 else ''
@@ -1178,15 +1281,16 @@ if menu == '트렌드 리포트':
           sub = grp_agg_g3[grp_agg_g3[group_col] == grp].dropna(
               subset=['주기별 수익률']
           )
-          fig_period_ret.add_trace(
-              go.Scatter(
-                  x=sub['Chart_Date'],
-                  y=sub['주기별 수익률'],
-                  name=str(grp),
-                  mode='lines+markers',
-                  hovertemplate='%{y:.2f}%',
-              )
-          )
+          if not sub.empty:
+            fig_period_ret.add_trace(
+                go.Scatter(
+                    x=sub['Chart_Date'],
+                    y=sub['주기별 수익률'],
+                    name=str(grp),
+                    mode='lines+markers',
+                    hovertemplate='%{y:.2f}%',
+                )
+            )
 
         for bm_name, bm_df in bm_calc_dict.items():
           bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
@@ -1243,29 +1347,31 @@ if menu == '트렌드 리포트':
         fig_cum_ret = make_subplots(specs=[[{'secondary_y': True}]])
         for grp in groups:
           sub = grp_agg_g4[grp_agg_g4[group_col] == grp]
-          fig_cum_ret.add_trace(
-              go.Bar(
-                  x=sub['Chart_Date'],
-                  y=sub['선택구간 누적손익'],
-                  name=f'[손익] {grp}',
-                  opacity=0.7,
-                  hovertemplate='%{y:,.0f} 원',
-              ),
-              secondary_y=True,
-          )
+          if not sub.empty:
+            fig_cum_ret.add_trace(
+                go.Bar(
+                    x=sub['Chart_Date'],
+                    y=sub['선택구간 누적손익'],
+                    name=f'[손익] {grp}',
+                    opacity=0.7,
+                    hovertemplate='%{y:,.0f} 원',
+                ),
+                secondary_y=True,
+            )
 
         for grp in groups:
           sub = grp_agg_g4[grp_agg_g4[group_col] == grp]
-          fig_cum_ret.add_trace(
-              go.Scatter(
-                  x=sub['Chart_Date'],
-                  y=sub['선택기간 누적 수익률'],
-                  name=f'[수익률] {grp}',
-                  mode='lines+markers',
-                  hovertemplate='%{y:.2f}%',
-              ),
-              secondary_y=False,
-          )
+          if not sub.empty:
+            fig_cum_ret.add_trace(
+                go.Scatter(
+                    x=sub['Chart_Date'],
+                    y=sub['선택기간 누적 수익률'],
+                    name=f'[수익률] {grp}',
+                    mode='lines+markers',
+                    hovertemplate='%{y:.2f}%',
+                ),
+                secondary_y=False,
+            )
 
         for bm_name, bm_df in bm_calc_dict.items():
           bm_df['dt_temp'] = pd.to_datetime(bm_df['Date_str'])
@@ -2163,7 +2269,7 @@ elif menu == '포트폴리오 업로드':
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 거래 내역 업로드 (새로 추가됨)
+# 메뉴 4: 거래 내역 업로드
 # -----------------------------------------------------------------------------
 elif menu == '거래 내역 업로드':
   st.header('📑 거래 내역 엑셀 업로드 (매수/매도/배당/입출금)')
@@ -2215,7 +2321,6 @@ elif menu == '거래 내역 업로드':
             [col for col in tx_db_cols if col in renamed_tx_df.columns]
         ].copy()
 
-        # 거래일자 포맷 표준화 (YYYY-MM-DD)
         if 'trans_date' in valid_tx_df.columns:
           valid_tx_df['trans_date'] = pd.to_datetime(
               valid_tx_df['trans_date']
@@ -2233,7 +2338,7 @@ elif menu == '거래 내역 업로드':
       st.error(f'거래 내역 파일 업로드 중 오류 발생: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 거래 내역 조회 및 웹 수정 (새로 추가됨)
+# 메뉴 5: 거래 내역 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '거래 내역 조회 및 웹 수정':
   st.header('🔍 거래 내역 데이터 조회 및 웹 수정')
@@ -2325,148 +2430,72 @@ elif menu == '원금 및 입출금 관리':
           st.rerun()
 
     with tab2:
-      st.subheader('➕ 추가 입출금 내역 등록 및 조회')
-      with st.form('cash_flow_form'):
-        cf_date = st.date_input('거래일자', value=date.today())
-        acc_list = acc_df['account_num'].astype(str).tolist()
-        cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
-        cf_type = st.selectbox('구분', options=['입금', '출금'])
-        cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0)
-        cf_note = st.text_input('적요 / 메모')
-
-        if st.form_submit_button('➕ 입출금 내역 추가'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute(
-              'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
-              ' amount, note) VALUES (?, ?, ?, ?, ?)',
-              (
-                  cf_date.strftime('%Y-%m-%d'),
-                  cf_acc,
-                  cf_type,
-                  cf_amount,
-                  cf_note,
-              ),
-          )
-          conn.commit()
-          conn.close()
-          st.success('입출금 내역이 추가되었습니다!')
-          st.rerun()
-
-      st.markdown('##### 📋 등록된 입출금 내역 목록')
-      if not cf_df.empty:
-        st.dataframe(cf_df, use_container_width=True)
-        del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
-        if st.button('🗑️ 선택 내역 삭제'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
-          conn.commit()
-          conn.close()
-          st.success(f'ID {del_id} 내역이 삭제되었습니다.')
-          st.rerun()
-      else:
-        st.info('등록된 입출금 내역이 없습니다.')
+      st.subheader('📌 추가 입출금 내역')
+      edited_cf = st.data_editor(
+          cf_df,
+          num_rows='dynamic',
+          use_container_width=True,
+          key='cash_flow_editor',
+      )
+      if st.button('💾 입출금 내역 저장'):
+        conn = get_connection()
+        edited_cf.to_sql('cash_flow', conn, if_exists='replace', index=False)
+        conn.close()
+        st.success('입출금 내역이 저장되었습니다!')
+        st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 7: 포트폴리오 등록 데이터 조회 및 웹 수정
+# 메뉴 7: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
-  st.header('🔍 등록 포트폴리오 데이터 조회 및 웹 수정')
+  st.header('🔍 등록 데이터 조회 및 웹 수정')
   conn = get_connection()
-  pf_full_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  pf_full = pd.read_sql(
+      'SELECT * FROM portfolio ORDER BY record_date DESC', conn
+  )
   conn.close()
 
-  if pf_full_df.empty:
-    st.warning('등록된 포트폴리오 데이터가 없습니다.')
+  if pf_full.empty:
+    st.warning('등록된 데이터가 없습니다.')
   else:
-    st.markdown(
-        '##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수'
-        ' 있습니다.'
-    )
-    st.caption(
-        '💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접'
-        ' 수정할 수 있습니다.'
-    )
-
-    edited_df = st.data_editor(
-        pf_full_df,
+    edited_pf = st.data_editor(
+        pf_full,
         num_rows='dynamic',
         use_container_width=True,
-        key='portfolio_data_editor',
+        key='pf_data_editor',
     )
 
-    if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
-      try:
-        conn = get_connection()
-        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
-        conn.close()
-
-        st.success(
-            '포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!'
-        )
-        st.rerun()
-      except Exception as e:
-        st.error(f'데이터 갱신 중 오류 발생: {e}')
+    if st.button('💾 포트폴리오 데이터 수정사항 저장'):
+      conn = get_connection()
+      edited_pf.to_sql('portfolio', conn, if_exists='replace', index=False)
+      conn.close()
+      st.success('포트폴리오 데이터가 수정되었습니다!')
+      st.rerun()
 
 # -----------------------------------------------------------------------------
 # 메뉴 8: 데이터 백업 및 복구
 # -----------------------------------------------------------------------------
 elif menu == '데이터 백업 및 복구':
-  st.header('💾 데이터 백업 및 복구 관리')
-  st.markdown(
-      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 거래 내역, 초기 원금,'
-      ' 입출금 내역, 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게 백업하거나,'
-      ' 추후 초기화 시 일괄 복구할 수 있습니다.'
+  st.header('💾 데이터 백업 및 복구')
+  st.caption(
+      '데이터베이스 DB 파일을 다운로드하거나 복원할 수 있습니다.'
   )
 
-  col_bk, col_rc = st.columns(2)
-
-  with col_bk:
-    st.subheader('📥 데이터 백업 (다운로드)')
-    st.markdown(
-        '현재 저장된 전체 데이터베이스 파일을 내 컴퓨터에 다운로드합니다.'
-    )
-    if os.path.exists(DB_FILE):
-      with open(DB_FILE, 'rb') as f:
-        db_bytes = f.read()
-
-      backup_filename = (
-          f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db'
-      )
+  if os.path.exists(DB_FILE):
+    with open(DB_FILE, 'rb') as f:
       st.download_button(
-          label='📦 백업 파일 다운로드 (.db)',
-          data=db_bytes,
-          file_name=backup_filename,
+          label='📥 데이터베이스 백업 파일 다운로드 (.db)',
+          data=f.read(),
+          file_name='asset_tracker_backup.db',
           mime='application/octet-stream',
-          help='클릭하여 모든 등록 데이터가 포함된 백업 파일을 다운로드하세요.',
       )
-    else:
-      st.warning('백업할 데이터베이스 파일이 존재하지 않습니다.')
 
-  with col_rc:
-    st.subheader('📤 데이터 복구 (업로드)')
-    st.markdown(
-        '이전에 백업해둔 데이터베이스 파일(`.db`)을 업로드하여 데이터를 일괄'
-        ' 복구합니다.'
-    )
-    uploaded_backup = st.file_uploader(
-        '백업 파일(`.db`) 선택', type=['db'], key='restore_backup_uploader'
-    )
-
-    if uploaded_backup is not None:
-      st.warning(
-          '⚠️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
-          ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
-      )
-      if st.button('🔄 데이터 복구 실행'):
-        try:
-          with open(DB_FILE, 'wb') as f:
-            f.write(uploaded_backup.getbuffer())
-          st.success(
-              '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
-              ' 새로고침됩니다.'
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f'데이터 복구 중 오류 발생: {e}')
+  uploaded_db = st.file_uploader(
+      '복원할 데이터베이스 파일(.db) 업로드', type=['db']
+  )
+  if uploaded_db is not None:
+    if st.button('⚠️ DB 파일 복원하기'):
+      with open(DB_FILE, 'wb') as f:
+        f.write(uploaded_db.getbuffer())
+      st.success('DB 파일이 성공적으로 복원되었습니다!')
+      st.rerun()
