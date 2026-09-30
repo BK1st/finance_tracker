@@ -35,17 +35,20 @@ def init_db():
             category3 TEXT,
             category4 TEXT,
             quantity REAL,
+            avg_price REAL,
             current_price REAL,
             currency TEXT,
             whose TEXT
         )
     ''')
 
-  # 기존 DB 테이블에 whose 컬럼이 없는 경우 마이그레이션
+  # 기존 DB 테이블 마이그레이션 (whose, avg_price 컬럼 존재 여부 체크)
   c.execute("PRAGMA table_info(portfolio)")
   columns = [column[1] for column in c.fetchall()]
   if 'whose' not in columns:
     c.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT")
+  if 'avg_price' not in columns:
+    c.execute("ALTER TABLE portfolio ADD COLUMN avg_price REAL")
 
   c.execute('''
         CREATE TABLE IF NOT EXISTS initial_principal (
@@ -356,11 +359,9 @@ if menu == '트렌드 리포트':
 
     st.subheader('⚙️ 분석 조건 설정')
 
-    # [수정 2 해결] session_state에 trend_sel_whose 초기화 보장
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
     else:
-      # 기존 상태 값 중 올바른 선택지 표현 보장
       valid_whose = [w for w in st.session_state['trend_sel_whose'] if w in all_whose_options]
       st.session_state['trend_sel_whose'] = valid_whose if valid_whose else all_whose_options
 
@@ -456,7 +457,6 @@ if menu == '트렌드 리포트':
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
-      # [수정 2 해결] key='trend_sel_whose'에 의해 세션 상태가 이미 바인딩되어 있으므로 중복 입력 제거
       st.session_state['trend_sel_accs'] = selected_acc_labels
       st.session_state['trend_view_types'] = view_types
       st.session_state['trend_sel_bm'] = selected_bm
@@ -637,6 +637,11 @@ if menu == '트렌드 리포트':
                   if ('current_price' in row and pd.notna(row['current_price']))
                   else 0
               )
+              avg_p = (
+                  row['avg_price']
+                  if ('avg_price' in row and pd.notna(row['avg_price']))
+                  else None
+              )
 
               item_name = (
                   row['item_name']
@@ -689,26 +694,35 @@ if menu == '트렌드 리포트':
               total_acc_eval += item_eval
               total_acc_eval_ex_fx += item_eval_ex_fx
               item_eval_list.append(
-                  (item_name, cat4, item_eval, item_eval_ex_fx)
+                  (item_name, cat4, item_eval, item_eval_ex_fx, qty, avg_p, curr)
               )
 
             item_count = len(item_eval_list)
-            for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
-              if total_acc_eval > 0:
-                ratio = item_eval / total_acc_eval
+            for item_name, cat4, item_eval, item_eval_ex, qty, avg_p, curr in item_eval_list:
+              # [보강 핵심] 매수가(avg_price) 정보가 있는 경우 독립 손익 계산 적용
+              if avg_p is not None and pd.notna(avg_p) and avg_p > 0:
+                item_principal = (qty * avg_p * usd_krw) if curr == 'USD' else (qty * avg_p)
+                item_p_loss = item_eval - item_principal
+
+                item_principal_ex = (qty * avg_p * usd_krw_first) if curr == 'USD' else (qty * avg_p)
+                item_p_loss_ex = item_eval_ex - item_principal_ex
               else:
-                ratio = 1.0 / item_count if item_count > 0 else 0
+                # 매수가 정보가 부족할 경우 기존 Ratio 재분배 방식 Fallback
+                if total_acc_eval > 0:
+                  ratio = item_eval / total_acc_eval
+                else:
+                  ratio = 1.0 / item_count if item_count > 0 else 0
 
-              if total_acc_eval_ex_fx > 0:
-                ratio_ex = item_eval_ex / total_acc_eval_ex_fx
-              else:
-                ratio_ex = 1.0 / item_count if item_count > 0 else 0
+                if total_acc_eval_ex_fx > 0:
+                  ratio_ex = item_eval_ex / total_acc_eval_ex_fx
+                else:
+                  ratio_ex = 1.0 / item_count if item_count > 0 else 0
 
-              item_principal = principal * ratio
-              item_p_loss = item_eval - item_principal
+                item_principal = principal * ratio
+                item_p_loss = item_eval - item_principal
 
-              item_principal_ex = principal * ratio_ex
-              item_p_loss_ex = item_eval_ex - item_principal_ex
+                item_principal_ex = principal * ratio_ex
+                item_p_loss_ex = item_eval_ex - item_principal_ex
 
               base_records.append({
                   'Date': t_str,
@@ -1810,7 +1824,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 3: 포트폴리오 업로드 (ID 컬럼 자동 채움 및 안전 적재)
+# 메뉴 3: 포트폴리오 업로드
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📤 포트폴리오 엑셀 업로드')
@@ -1822,11 +1836,20 @@ elif menu == '포트폴리오 업로드':
     try:
       df_upload = pd.read_excel(uploaded_file)
 
-      # [수정 1 해결] 업로드 파일에 id 컬럼이 존재하더라도 DB AUTOINCREMENT 작동을 위해 제외 처리
+      # 매수가 컬럼명 자동 매핑 지원
+      rename_map = {
+          '매수가': 'avg_price',
+          '평균단가': 'avg_price',
+          '매수단가': 'avg_price',
+          '평균매수가': 'avg_price',
+          'buy_price': 'avg_price',
+          'purchase_price': 'avg_price',
+      }
+      df_upload = df_upload.rename(columns=rename_map)
+
       if 'id' in df_upload.columns:
         df_upload = df_upload.drop(columns=['id'])
 
-      # 엑셀 날짜 컬럼 표준화
       if 'record_date' in df_upload.columns:
         df_upload['record_date'] = pd.to_datetime(df_upload['record_date']).dt.strftime('%Y-%m-%d')
 
@@ -1852,18 +1875,16 @@ elif menu == '포트폴리오 업로드':
         conn = get_connection()
         c = conn.cursor()
 
-        # 업로드한 데이터의 기준일자(record_date) 기존 데이터 교체 처리
         if 'record_date' in df_upload.columns:
           upload_dates = df_upload['record_date'].unique().tolist()
           for d_str in upload_dates:
             c.execute("DELETE FROM portfolio WHERE record_date = ?", (d_str,))
           conn.commit()
 
-        # DB 필수 컬럼 정렬 및 적재
         db_cols = [
             'record_date', 'broker', 'account_num', 'account_type',
             'item_name', 'ticker', 'category1', 'category2',
-            'category3', 'category4', 'quantity', 'current_price',
+            'category3', 'category4', 'quantity', 'avg_price', 'current_price',
             'currency', 'whose'
         ]
         
@@ -1970,7 +1991,7 @@ elif menu == '원금 및 입출금 관리':
         st.info('등록된 입출금 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 웹 수정 (테이블 구조 파괴 방지 처리)
+# 메뉴 5: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 웹 수정')
@@ -1992,7 +2013,6 @@ elif menu == '등록 데이터 조회 및 웹 수정':
         c.execute('DELETE FROM portfolio')
         conn.commit()
         
-        # [수정 1 해결] id 컬럼 재할당 및 안전한 테이블 구조 보장
         if 'id' in edited_df.columns:
           edited_df = edited_df.drop(columns=['id'])
           
