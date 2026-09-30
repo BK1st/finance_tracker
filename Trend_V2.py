@@ -1,3 +1,4 @@
+# name=Trend_V2_11.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -2162,7 +2163,7 @@ elif menu == '원금 및 입출금 관리':
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 관리')
   conn = get_connection()
-  pf_df = pd.read_sql('SELECT rowid as id, * FROM portfolio', conn)
+  pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
   conn.close()
 
   if pf_df.empty:
