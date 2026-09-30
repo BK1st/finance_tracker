@@ -699,7 +699,6 @@ if menu == '트렌드 리포트':
 
             item_count = len(item_eval_list)
             for item_name, cat4, item_eval, item_eval_ex, qty, avg_p, curr in item_eval_list:
-              # [보강 핵심] 매수가(avg_price) 정보가 있는 경우 독립 손익 계산 적용
               if avg_p is not None and pd.notna(avg_p) and avg_p > 0:
                 item_principal = (qty * avg_p * usd_krw) if curr == 'USD' else (qty * avg_p)
                 item_p_loss = item_eval - item_principal
@@ -707,7 +706,6 @@ if menu == '트렌드 리포트':
                 item_principal_ex = (qty * avg_p * usd_krw_first) if curr == 'USD' else (qty * avg_p)
                 item_p_loss_ex = item_eval_ex - item_principal_ex
               else:
-                # 매수가 정보가 부족할 경우 기존 Ratio 재분배 방식 Fallback
                 if total_acc_eval > 0:
                   ratio = item_eval / total_acc_eval
                 else:
@@ -1440,7 +1438,7 @@ if menu == '트렌드 리포트':
         )
         st.write('---')
 
-        st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+        st.markdown('##### ⚙️️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -2004,6 +2002,26 @@ elif menu == '등록 데이터 조회 및 웹 수정':
   else:
     st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/저장할 수 있습니다.')
 
+    # 선택한 열(컬럼) 삭제 기능 확장 UI
+    with st.expander('🗑️ 열(컬럼) 삭제 관리', expanded=True):
+      available_cols = pf_full_df.columns.tolist()
+      selected_cols_to_drop = st.multiselect(
+          '삭제할 열(컬럼) 선택',
+          options=available_cols,
+          key='sel_drop_cols',
+          help='삭제를 원하는 열을 다중 선택한 뒤 아래 버튼을 누르면 표에서 제외됩니다.'
+      )
+
+      if st.button('🗑️ 선택한 열 삭제'):
+        if selected_cols_to_drop:
+          pf_full_df = pf_full_df.drop(columns=selected_cols_to_drop)
+          st.success(
+              f"선택한 열 [{', '.join(selected_cols_to_drop)}] 삭제가 반영되었습니다."
+              " 아래 표에서 수정 후 '수정 사항 데이터베이스에 반영' 버튼을 클릭하면 DB에 최종 저정됩니다."
+          )
+        else:
+          st.warning('삭제할 열을 선택해 주세요.')
+
     edited_df = st.data_editor(pf_full_df, num_rows='dynamic', use_container_width=True, key='portfolio_data_editor')
 
     if st.button('💾 수정 사항 데이터베이스에 반영'):
@@ -2012,10 +2030,10 @@ elif menu == '등록 데이터 조회 및 웹 수정':
         c = conn.cursor()
         c.execute('DELETE FROM portfolio')
         conn.commit()
-        
+
         if 'id' in edited_df.columns:
           edited_df = edited_df.drop(columns=['id'])
-          
+
         edited_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
         st.cache_data.clear()
