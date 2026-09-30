@@ -1438,7 +1438,7 @@ if menu == '트렌드 리포트':
         )
         st.write('---')
 
-        st.markdown('##### ⚙️️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+        st.markdown('##### ⚙ [전체 합산] 차트별 범주 및 환율 옵션 설정')
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -2002,27 +2002,50 @@ elif menu == '등록 데이터 조회 및 웹 수정':
   else:
     st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/저장할 수 있습니다.')
 
-    # 선택한 열(컬럼) 삭제 기능 확장 UI
-    with st.expander('🗑️ 열(컬럼) 삭제 관리', expanded=True):
-      available_cols = pf_full_df.columns.tolist()
-      selected_cols_to_drop = st.multiselect(
-          '삭제할 열(컬럼) 선택',
-          options=available_cols,
-          key='sel_drop_cols',
-          help='삭제를 원하는 열을 다중 선택한 뒤 아래 버튼을 누르면 표에서 제외됩니다.'
+    # 선택한 줄(행) 전체 삭제 기능 UI
+    with st.expander('🗑️ 선택한 줄(행) 삭제 관리', expanded=True):
+      pf_full_df['row_label'] = pf_full_df.apply(
+          lambda r: f"ID: {r['id']} | {r.get('record_date', '')} | {r.get('broker', '')} | {r.get('account_num', '')} | {r.get('item_name', '')}",
+          axis=1,
+      )
+      selected_rows_to_drop = st.multiselect(
+          '삭제할 줄(행) 선택',
+          options=pf_full_df['row_label'].tolist(),
+          key='sel_drop_rows',
+          help='삭제를 원하는 줄(행)을 다중 선택한 뒤 아래 버튼을 누르면 DB에서 즉시 삭제됩니다.',
       )
 
-      if st.button('🗑️ 선택한 열 삭제'):
-        if selected_cols_to_drop:
-          pf_full_df = pf_full_df.drop(columns=selected_cols_to_drop)
-          st.success(
-              f"선택한 열 [{', '.join(selected_cols_to_drop)}] 삭제가 반영되었습니다."
-              " 아래 표에서 수정 후 '수정 사항 데이터베이스에 반영' 버튼을 클릭하면 DB에 최종 저정됩니다."
+      if st.button('🗑️ 선택한 줄 삭제'):
+        if selected_rows_to_drop:
+          ids_to_delete = [
+              int(label.split('ID: ')[1].split(' |')[0])
+              for label in selected_rows_to_drop
+          ]
+          conn = get_connection()
+          c = conn.cursor()
+          c.executemany(
+              'DELETE FROM portfolio WHERE id = ?',
+              [(i,) for i in ids_to_delete],
           )
+          conn.commit()
+          conn.close()
+          st.cache_data.clear()
+          st.success(
+              f'선택한 {len(ids_to_delete)}개의 줄(행)이 성공적으로'
+              ' 삭제되었습니다.'
+          )
+          st.rerun()
         else:
-          st.warning('삭제할 열을 선택해 주세요.')
+          st.warning('삭제할 줄(행)을 선택해 주세요.')
 
-    edited_df = st.data_editor(pf_full_df, num_rows='dynamic', use_container_width=True, key='portfolio_data_editor')
+      pf_full_df = pf_full_df.drop(columns=['row_label'])
+
+    edited_df = st.data_editor(
+        pf_full_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='portfolio_data_editor',
+    )
 
     if st.button('💾 수정 사항 데이터베이스에 반영'):
       try:
