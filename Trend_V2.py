@@ -47,7 +47,7 @@ def init_db():
         )
     ''')
 
-  # 스키마 자동 마이그레이션 (기존 DB 컬럼 추가)
+  # 스키마 자동 마이그레이션
   c.execute('PRAGMA table_info(portfolio)')
   existing_cols = [col[1] for col in c.fetchall()]
   new_cols = {
@@ -91,7 +91,7 @@ def init_db():
         )
     ''')
 
-  # 5) 거래 내역 통합 관리용 스키마
+  # 5) 거래 내역 (history_0930_2.xlsx 매수/매도/배당/입출금 통합 관리용) 스키마
   c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -638,7 +638,7 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # 포트폴리오 스냅샷 불러오기
+          # --- 9월 30일 이전/당일 거래 내역 사전 집계 로직 ---
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
@@ -655,31 +655,69 @@ if menu == '트렌드 리포트':
           if not acc_pf.empty:
             latest_date = acc_pf['record_date'].max()
             current_pf = acc_pf[acc_pf['record_date'] == latest_date].copy()
-            
-            # --- [핵심 수정 1] 거래 내역(transactions)을 반영하여 잔고 수량(quantity) 최신화 ---
-            if not tx_df.empty:
-              acc_tx = tx_df[
-                  (tx_df['account_num'].astype(str) == acc) &
-                  (tx_df['trans_date'] > latest_date) &
-                  (tx_df['trans_date'] <= t_str)
-              ]
-              if not acc_tx.empty:
-                # 종목별 누적 거래 수량 계산 (매수 +, 매도 -)
-                tx_qty_map = {}
-                for _, tx_row in acc_tx.iterrows():
-                  item_k = tx_row.get('item_name')
-                  ttype = str(tx_row.get('trans_type', ''))
-                  q = float(tx_row.get('quantity', 0) or 0)
-                  if '매도' in ttype:
-                    tx_qty_map[item_k] = tx_qty_map.get(item_k, 0) - q
-                  elif '매수' in ttype:
-                    tx_qty_map[item_k] = tx_qty_map.get(item_k, 0) + q
 
-                for idx, row in current_pf.iterrows():
-                  item_k = row.get('item_name')
-                  if item_k in tx_qty_map:
-                    new_q = max(0, float(row.get('quantity', 0) or 0) + tx_qty_map[item_k])
-                    current_pf.at[idx, 'quantity'] = new_q
+            # 9월 30일 거래 내역 사전 반영
+            if t_str >= '2026-09-30' and not tx_df.empty:
+              acc_tx = tx_df[
+                  (tx_df['account_num'].astype(str) == acc)
+                  & (tx_df['trans_date'] == '2026-09-30')
+              ]
+
+              if not acc_tx.empty:
+                # 입출금 반영
+                in_tx = acc_tx[
+                    acc_tx['trans_type'].isin(['입금', '현금입금'])
+                ]['net_amount'].sum()
+                out_tx = acc_tx[
+                    acc_tx['trans_type'].isin(['출금', '현금출금'])
+                ]['net_amount'].sum()
+                principal += in_tx - out_tx
+
+                # 매수/매도 수량 및 보유 현황 업데이트
+                for _, tx_row in acc_tx.iterrows():
+                  ttype = str(tx_row.get('trans_type', '')).strip()
+                  tk_tx = format_ticker(tx_row.get('ticker'))
+                  qty_tx = (
+                      tx_row['quantity'] if pd.notna(tx_row['quantity']) else 0
+                  )
+
+                  if ttype in ['매수', '주식매수']:
+                    if (
+                        tk_tx
+                        and tk_tx
+                        in current_pf['ticker'].apply(format_ticker).values
+                    ):
+                      current_pf.loc[
+                          current_pf['ticker'].apply(format_ticker) == tk_tx,
+                          'quantity',
+                      ] += qty_tx
+                    else:
+                      new_row = {
+                          'record_date': t_str,
+                          'broker': broker_name,
+                          'account_num': acc,
+                          'account_type': acc_type,
+                          'item_name': tx_row.get('item_name', '신규종목'),
+                          'ticker': tx_row.get('ticker'),
+                          'category4': '기타',
+                          'quantity': qty_tx,
+                          'current_price': tx_row.get('unit_price', 0),
+                          'currency': tx_row.get('currency', 'KRW'),
+                      }
+                      current_pf = pd.concat(
+                          [current_pf, pd.DataFrame([new_row])],
+                          ignore_index=True,
+                      )
+                  elif ttype in ['매도', '주식매도']:
+                    if (
+                        tk_tx
+                        and tk_tx
+                        in current_pf['ticker'].apply(format_ticker).values
+                    ):
+                      current_pf.loc[
+                          current_pf['ticker'].apply(format_ticker) == tk_tx,
+                          'quantity',
+                      ] -= qty_tx
 
             total_acc_eval = 0
             total_acc_eval_ex_fx = 0
@@ -692,8 +730,6 @@ if menu == '트렌드 리포트':
                   if ('quantity' in row and pd.notna(row['quantity']))
                   else 0
               )
-              
-              # --- [핵심 수정 2] 수량이 0인 종목(전량 매도 종목)은 완전히 제외 ---
               if qty <= 0:
                 continue
 
@@ -2182,14 +2218,337 @@ elif menu == '포트폴리오 업로드':
         c.execute('PRAGMA table_info(portfolio)')
         db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
 
-        # 존재하지 않는 컬럼은 기본값 채우기
-        for col in db_cols:
-          if col not in renamed_df.columns:
-            renamed_df[col] = None
+        valid_df = renamed_df[
+            [col for col in db_cols if col in renamed_df.columns]
+        ].copy()
 
-        renamed_df = renamed_df[db_cols]
-        renamed_df.to_sql('portfolio', conn, if_exists='append', index=False)
+        valid_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-        st.success('포트폴리오 데이터가 성공적으로 적재되었습니다!')
+        st.success(
+            '포트폴리오의 모든 엑셀 열 정보가 데이터베이스에 성공적으로'
+            ' 적재되었습니다!'
+        )
     except Exception as e:
-      st.error(f'엑셀 처리 중 오류 발생: {e}')
+      st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 4: 거래 내역 업로드
+# -----------------------------------------------------------------------------
+elif menu == '거래 내역 업로드':
+  st.header('📑 거래 내역 엑셀 업로드 (매수/매도/배당/입출금)')
+  st.markdown(
+      '##### 매수, 매도, 배당금 입금, 현금 입출금 등 상세 거래 정보가 포함된 엑셀'
+      ' 파일(`history_0930_2.xlsx` 양식)을 적재합니다.'
+  )
+
+  uploaded_tx_file = st.file_uploader(
+      '거래 내역 엑셀 파일(.xlsx)을 업로드하세요',
+      type=['xlsx'],
+      key='tx_uploader',
+  )
+
+  if uploaded_tx_file is not None:
+    try:
+      df_tx_upload = pd.read_excel(uploaded_tx_file)
+      st.write('미리보기 (상위 5행):', df_tx_upload.head())
+
+      if st.button('📥 거래 내역 데이터베이스에 적재하기'):
+        tx_col_map = {
+            '거래일자': 'trans_date',
+            '증권사': 'broker',
+            '계좌번호': 'account_num',
+            '계좌명': 'account_name',
+            '계좌유형': 'account_type',
+            '거래종류': 'trans_type',
+            '종목명': 'item_name',
+            '티커': 'ticker',
+            '거래수량': 'quantity',
+            '거래단가': 'unit_price',
+            '거래금액': 'amount',
+            '수수료': 'fee',
+            '제세금': 'tax',
+            '정산금액': 'net_amount',
+            '통화': 'currency',
+            '메모/적요': 'note',
+            '적요': 'note',
+        }
+
+        renamed_tx_df = df_tx_upload.rename(columns=tx_col_map)
+
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute('PRAGMA table_info(transactions)')
+        tx_db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
+
+        valid_tx_df = renamed_tx_df[
+            [col for col in tx_db_cols if col in renamed_tx_df.columns]
+        ].copy()
+
+        # 거래일자 포맷 표준화 (YYYY-MM-DD)
+        if 'trans_date' in valid_tx_df.columns:
+          valid_tx_df['trans_date'] = pd.to_datetime(
+              valid_tx_df['trans_date']
+          ).dt.strftime('%Y-%m-%d')
+
+        valid_tx_df.to_sql(
+            'transactions', conn, if_exists='append', index=False
+        )
+        conn.close()
+        st.success(
+            '거래 내역 데이터가 데이터베이스(transactions 테이블)에 성공적으로'
+            ' 적재되었습니다!'
+        )
+    except Exception as e:
+      st.error(f'거래 내역 파일 업로드 중 오류 발생: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 5: 거래 내역 조회 및 웹 수정
+# -----------------------------------------------------------------------------
+elif menu == '거래 내역 조회 및 웹 수정':
+  st.header('🔍 거래 내역 데이터 조회 및 웹 수정')
+  conn = get_connection()
+  tx_full_df = pd.read_sql(
+      'SELECT * FROM transactions ORDER BY trans_date DESC', conn
+  )
+  conn.close()
+
+  if tx_full_df.empty:
+    st.warning('등록된 거래 내역 데이터가 없습니다.')
+  else:
+    st.markdown(
+        '##### DB에 저장된 거래 내역(매수/매도/배당/입출금 등)을 조회하고 직접'
+        ' 수정/삭제/저장할 수 있습니다.'
+    )
+    st.caption(
+        '💡 셀을 더블클릭하여 값을 수정하거나 행을 추가/삭제한 후 아래 [데이터베이스 반영]'
+        ' 버튼을 눌러주세요.'
+    )
+
+    edited_tx_df = st.data_editor(
+        tx_full_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='transactions_data_editor',
+    )
+
+    if st.button('💾 거래 내역 수정/삭제 사항 데이터베이스에 반영'):
+      try:
+        conn = get_connection()
+        edited_tx_df.to_sql(
+            'transactions', conn, if_exists='replace', index=False
+        )
+        conn.close()
+
+        st.success('거래 내역 데이터가 성공적으로 갱신되었습니다!')
+        st.rerun()
+      except Exception as e:
+        st.error(f'거래 내역 갱신 중 오류 발생: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 6: 원금 및 입출금 관리
+# -----------------------------------------------------------------------------
+elif menu == '원금 및 입출금 관리':
+  st.header('💰 초기 원금 및 추가 입출금 관리')
+  conn = get_connection()
+  acc_df = pd.read_sql(
+      'SELECT DISTINCT broker, account_num FROM portfolio', conn
+  )
+  init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
+  cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
+  conn.close()
+
+  if acc_df.empty:
+    st.warning('등록된 계좌 정보가 없습니다.')
+  else:
+    tab1, tab2 = st.tabs(['초기 원금 설정', '추가 입출금 내역 관리'])
+
+    with tab1:
+      st.subheader('📌 계좌별 초기 원금 설정')
+      init_dict = dict(zip(init_df['account_num'], init_df['initial_amount']))
+      with st.form('init_principal_form'):
+        new_init_data = []
+        for _, row in acc_df.iterrows():
+          b = row['broker']
+          acc = str(row['account_num'])
+          cur_val = init_dict.get(acc, 0.0)
+          val = st.number_input(
+              f'[{b}] {acc}',
+              value=float(cur_val),
+              step=100000.0,
+              key=f'init_{acc}',
+          )
+          new_init_data.append((acc, b, val))
+
+        if st.form_submit_button('💾 초기 원금 저장'):
+          conn = get_connection()
+          c = conn.cursor()
+          for acc, b, val in new_init_data:
+            c.execute(
+                'INSERT OR REPLACE INTO initial_principal (account_num, broker,'
+                ' initial_amount) VALUES (?, ?, ?)',
+                (acc, b, val),
+            )
+          conn.commit()
+          conn.close()
+          st.success('초기 원금이 저장되었습니다!')
+          st.rerun()
+
+    with tab2:
+      st.subheader('➕ 추가 입출금 내역 등록 및 조회')
+      with st.form('cash_flow_form'):
+        cf_date = st.date_input('거래일자', value=date.today())
+        acc_list = acc_df['account_num'].astype(str).tolist()
+        cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
+        cf_type = st.selectbox('구분', options=['입금', '출금'])
+        cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0)
+        cf_note = st.text_input('적요 / 메모')
+
+        if st.form_submit_button('➕ 입출금 내역 추가'):
+          conn = get_connection()
+          c = conn.cursor()
+          c.execute(
+              'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
+              ' amount, note) VALUES (?, ?, ?, ?, ?)',
+              (
+                  cf_date.strftime('%Y-%m-%d'),
+                  cf_acc,
+                  cf_type,
+                  cf_amount,
+                  cf_note,
+              ),
+          )
+          conn.commit()
+          conn.close()
+          st.success('입출금 내역이 추가되었습니다!')
+          st.rerun()
+
+      st.markdown('##### 📋 등록된 입출금 내역 목록')
+      if not cf_df.empty:
+        st.dataframe(cf_df, use_container_width=True)
+        del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
+        if st.button('🗑️ 선택 내역 삭제'):
+          conn = get_connection()
+          c = conn.cursor()
+          c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
+          conn.commit()
+          conn.close()
+          st.success(f'ID {del_id} 내역이 삭제되었습니다.')
+          st.rerun()
+      else:
+        st.info('등록된 입출금 내역이 없습니다.')
+
+# -----------------------------------------------------------------------------
+# 메뉴 7: 포트폴리오 등록 데이터 조회 및 웹 수정
+# -----------------------------------------------------------------------------
+elif menu == '등록 데이터 조회 및 웹 수정':
+  st.header('🔍 등록 포트폴리오 데이터 조회 및 웹 수정')
+  conn = get_connection()
+  pf_full_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  conn.close()
+
+  if pf_full_df.empty:
+    st.warning('등록된 포트폴리오 데이터가 없습니다.')
+  else:
+    st.markdown(
+        '##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수'
+        ' 있습니다.'
+    )
+    st.caption(
+        '💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접'
+        ' 수정할 수 있습니다.'
+    )
+
+    edited_df = st.data_editor(
+        pf_full_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='portfolio_data_editor',
+    )
+
+    if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
+      try:
+        conn = get_connection()
+        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
+        conn.close()
+
+        st.success(
+            '포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!'
+        )
+        st.rerun()
+      except Exception as e:
+        st.error(f'데이터 갱신 중 오류 발생: {e}')
+
+# -----------------------------------------------------------------------------
+# 메뉴 8: 데이터 백업 및 복구
+# -----------------------------------------------------------------------------
+elif menu == '데이터 백업 및 복구':
+  st.header('💾 데이터 백업 및 복구 관리')
+  st.markdown(
+      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 거래 내역, 초기 원금,'
+      ' 입출금 내역, 계좌 별칭)를 백업하거나 복구합니다.'
+  )
+
+  col_b1, col_b2 = st.columns(2)
+
+  with col_b1:
+    st.subheader('📤 데이터 백업 (내보내기)')
+    if st.button('📦 전체 DB 데이터를 엑셀로 백업하기'):
+      try:
+        conn = get_connection()
+        pf_b = pd.read_sql('SELECT * FROM portfolio', conn)
+        init_b = pd.read_sql('SELECT * FROM initial_principal', conn)
+        cf_b = pd.read_sql('SELECT * FROM cash_flow', conn)
+        alias_b = pd.read_sql('SELECT * FROM account_alias', conn)
+        tx_b = pd.read_sql('SELECT * FROM transactions', conn)
+        conn.close()
+
+        output_path = os.path.join(DATA_DIR, 'backup_asset_tracker.xlsx')
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+          pf_b.to_excel(writer, sheet_name='portfolio', index=False)
+          init_b.to_excel(writer, sheet_name='initial_principal', index=False)
+          cf_b.to_excel(writer, sheet_name='cash_flow', index=False)
+          alias_b.to_excel(writer, sheet_name='account_alias', index=False)
+          tx_b.to_excel(writer, sheet_name='transactions', index=False)
+
+        with open(output_path, 'rb') as f:
+          st.download_button(
+              label='💾 백업 파일 다운로드 (.xlsx)',
+              data=f,
+              file_name=f"asset_tracker_backup_{datetime.now().strftime('%Y%m%d')}.xlsx",
+              mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          )
+        st.success('백업 파일 생성이 완료되었습니다.')
+      except Exception as e:
+        st.error(f'백업 진행 중 오류 발생: {e}')
+
+  with col_b2:
+    st.subheader('📥 데이터 복구 (복원하기)')
+    restore_file = st.file_uploader(
+        '백업된 엑셀 파일(.xlsx)을 업로드하세요',
+        type=['xlsx'],
+        key='restore_uploader',
+    )
+    if restore_file is not None:
+      if st.button('⚠️ 기존 DB를 덮어쓰고 복구 진행'):
+        try:
+          xls = pd.ExcelFile(restore_file)
+          conn = get_connection()
+
+          sheet_table_map = {
+              'portfolio': 'portfolio',
+              'initial_principal': 'initial_principal',
+              'cash_flow': 'cash_flow',
+              'account_alias': 'account_alias',
+              'transactions': 'transactions',
+          }
+
+          for sheet, table in sheet_table_map.items():
+            if sheet in xls.sheet_names:
+              df_res = pd.read_excel(xls, sheet_name=sheet)
+              df_res.to_sql(table, conn, if_exists='replace', index=False)
+
+          conn.close()
+          st.success('모든 데이터베이스가 성공적으로 복구되었습니다!')
+          st.rerun()
+        except Exception as e:
+          st.error(f'복구 진행 중 오류 발생: {e}')
