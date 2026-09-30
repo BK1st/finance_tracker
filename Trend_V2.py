@@ -21,12 +21,14 @@ def init_db():
   conn = sqlite3.connect(DB_FILE)
   c = conn.cursor()
 
+  # 첨부된 portfolio_0929_3.xlsx의 모든 열을 수용할 수 있도록 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_date TEXT,
             broker TEXT,
             account_num TEXT,
+            account_name TEXT,
             account_type TEXT,
             item_name TEXT,
             ticker TEXT,
@@ -35,10 +37,32 @@ def init_db():
             category3 TEXT,
             category4 TEXT,
             quantity REAL,
+            purchase_price REAL,
             current_price REAL,
+            eval_price REAL,
+            eval_profit_loss REAL,
+            return_rate REAL,
+            portfolio_weight REAL,
             currency TEXT
         )
     ''')
+
+  # 스키마 자동 마이그레이션 (기존 DB가 존재할 경우 컬럼 추가)
+  c.execute('PRAGMA table_info(portfolio)')
+  existing_cols = [col[1] for col in c.fetchall()]
+
+  new_cols = {
+      'account_name': 'TEXT',
+      'purchase_price': 'REAL',
+      'eval_price': 'REAL',
+      'eval_profit_loss': 'REAL',
+      'return_rate': 'REAL',
+      'portfolio_weight': 'REAL',
+  }
+
+  for col, dtype in new_cols.items():
+    if col not in existing_cols:
+      c.execute(f'ALTER TABLE portfolio ADD COLUMN {col} {dtype}')
 
   c.execute('''
         CREATE TABLE IF NOT EXISTS initial_principal (
@@ -1965,10 +1989,43 @@ elif menu == '포트폴리오 업로드':
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
+        # 포트폴리오 엑셀 열 이름 표준화 유틸리티
+        col_map = {
+            '기준일자': 'record_date',
+            '증권사': 'broker',
+            '계좌번호': 'account_num',
+            '계좌명': 'account_name',
+            '계좌유형': 'account_type',
+            '종목명': 'item_name',
+            '티커': 'ticker',
+            'category1': 'category1',
+            'category2': 'category2',
+            'category3': 'category3',
+            'category4': 'category4',
+            '수량': 'quantity',
+            '매수단가': 'purchase_price',
+            '현재가': 'current_price',
+            '평가금액': 'eval_price',
+            '평가손익': 'eval_profit_loss',
+            '수익률': 'return_rate',
+            '포트폴리오비중': 'portfolio_weight',
+            '통화': 'currency'
+        }
+        
+        # 맵핑 변환 적용 (한글 컬럼명이 있을 경우 영문 DB 컬럼명으로 변경)
+        renamed_df = df_upload.rename(columns=col_map)
+
+        # DB에 존재하는 컬럼만 선별하여 적재
         conn = get_connection()
-        df_upload.to_sql('portfolio', conn, if_exists='append', index=False)
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(portfolio)")
+        db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
+        
+        valid_df = renamed_df[[col for col in db_cols if col in renamed_df.columns]].copy()
+        
+        valid_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-        st.success('포트폴리오 데이터가 성공적으로 적재되었습니다!')
+        st.success('포트폴리오의 모든 엑셀 열 정보가 데이터베이스에 성공적으로 적재되었습니다!')
     except Exception as e:
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
