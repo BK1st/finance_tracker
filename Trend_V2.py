@@ -36,9 +36,16 @@ def init_db():
             category4 TEXT,
             quantity REAL,
             current_price REAL,
-            currency TEXT
+            currency TEXT,
+            whose TEXT
         )
     ''')
+
+  # 기존 DB 테이블에 whose 컬럼이 없는 경우 마이그레이션
+  c.execute("PRAGMA table_info(portfolio)")
+  columns = [column[1] for column in c.fetchall()]
+  if 'whose' not in columns:
+    c.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT")
 
   c.execute('''
         CREATE TABLE IF NOT EXISTS initial_principal (
@@ -294,19 +301,31 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    acc_info_df = pf_df[
-        ['broker', 'account_num', 'account_type']
-    ].drop_duplicates()
+    cols_to_select = ['broker', 'account_num', 'account_type']
+    if 'whose' in pf_df.columns:
+      cols_to_select.append('whose')
+
+    acc_info_df = pf_df[cols_to_select].drop_duplicates()
     whose_mapping = {}
     for _, row in acc_info_df.iterrows():
       acc_num = str(row['account_num'])
       alias = alias_map.get(acc_num, '')
-      broker_str = row['broker']
-      combined_str = f'{acc_num} {alias} {broker_str}'
-      if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
-        whose_mapping[acc_num] = 'SH'
+      broker_str = str(row['broker'])
+      db_whose = (
+          str(row['whose']).strip()
+          if ('whose' in row and pd.notna(row['whose']) and str(row['whose']).strip() != '')
+          else None
+      )
+
+      if db_whose:
+        whose_mapping[acc_num] = db_whose
       else:
-        whose_mapping[acc_num] = 'BJ'
+        combined_str = f'{acc_num} {alias} {broker_str}'
+        if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
+          whose_mapping[acc_num] = 'SH'
+        else:
+          whose_mapping[acc_num] = 'BJ'
+
     acc_info_df['whose'] = acc_info_df['account_num'].map(whose_mapping)
     all_whose_options = sorted(acc_info_df['whose'].unique().tolist())
 
@@ -559,15 +578,7 @@ if menu == '트렌드 리포트':
               else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
           )
 
-          combined_str = f'{acc} {acc_alias_val} {broker_name}'
-          if (
-              '소희' in combined_str
-              or 'SH' in combined_str
-              or 'sh' in combined_str
-          ):
-            whose_val = 'SH'
-          else:
-            whose_val = 'BJ'
+          whose_val = whose_mapping.get(acc, 'BJ')
 
           init_val = (
               init_p_df[init_p_df['account_num'].astype(str) == acc][
@@ -757,7 +768,7 @@ if menu == '트렌드 리포트':
       active_views = st.session_state.get('trend_view_types', all_view_types)
 
       st.write('---')
-      st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
+      st.subheader('🖥️️ 화면 디스플레이 설정 (실시간 반영)')
 
       disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2.5, 2.5, 2, 3])
 
@@ -904,7 +915,6 @@ if menu == '트렌드 리포트':
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         
         grp_agg_summary = get_grp_agg(ex_summary)
-        latest_df_summary = grp_agg_summary[grp_agg_summary['Date'] == latest_date]
 
         summary_table_data = []
         total_eval_sum = 0
@@ -1462,7 +1472,6 @@ if menu == '트렌드 리포트':
         date_order_list = sorted(agg1['Chart_Date'].unique().tolist())
         colors = {'BJ': '#2b5c8f', 'SH': '#ff7f0e'}
 
-        # 첫화면 전체 자산 평가 금액 차트에 보조축(secondary_y) 설정 적용
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         for w in whose_list:
           sub = agg1[agg1['whose'] == w]
@@ -1801,7 +1810,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 3: 포트폴리오 업로드
+# 메뉴 3: 포트폴리오 업로드 (whose 컬럼 자동/수동 보완 로직 적용)
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📤 포트폴리오 엑셀 업로드')
@@ -1812,6 +1821,26 @@ elif menu == '포트폴리오 업로드':
   if uploaded_file is not None:
     try:
       df_upload = pd.read_excel(uploaded_file)
+
+      alias_map = get_account_aliases()
+
+      def resolve_whose(row):
+        val = row.get('whose')
+        if pd.notna(val) and str(val).strip() != '':
+          return str(val).strip()
+        acc_num = str(row.get('account_num', ''))
+        broker = str(row.get('broker', ''))
+        alias = alias_map.get(acc_num, '')
+        combined = f'{acc_num} {broker} {alias}'
+        if '소희' in combined or 'SH' in combined or 'sh' in combined:
+          return 'SH'
+        return 'BJ'
+
+      if 'whose' not in df_upload.columns:
+        st.info("💡 업로드한 엑셀 파일에 'whose' 컬럼이 없어 계좌 정보 및 별칭을 기준으로 'whose' 컬럼을 자동 생성하였습니다.")
+
+      df_upload['whose'] = df_upload.apply(resolve_whose, axis=1)
+
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
