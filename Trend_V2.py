@@ -904,7 +904,6 @@ if menu == '트렌드 리포트':
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         
         grp_agg_summary = get_grp_agg(ex_summary)
-        latest_df_summary = grp_agg_summary[grp_agg_summary['Date'] == latest_date]
 
         summary_table_data = []
         total_eval_sum = 0
@@ -1462,7 +1461,6 @@ if menu == '트렌드 리포트':
         date_order_list = sorted(agg1['Chart_Date'].unique().tolist())
         colors = {'BJ': '#2b5c8f', 'SH': '#ff7f0e'}
 
-        # 첫화면 전체 자산 평가 금액 차트에 보조축(secondary_y) 설정 적용
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         for w in whose_list:
           sub = agg1[agg1['whose'] == w]
@@ -1911,7 +1909,7 @@ elif menu == '원금 및 입출금 관리':
         st.info('등록된 입출금 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 웹 수정
+# 메뉴 5: 등록 데이터 조회 및 웹 수정 (선택 삭제 기능 추가)
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 웹 수정')
@@ -1922,16 +1920,32 @@ elif menu == '등록 데이터 조회 및 웹 수정':
   if pf_full_df.empty:
     st.warning('등록된 포트폴리오 데이터가 없습니다.')
   else:
-    st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/저장할 수 있습니다.')
-    
-    edited_df = st.data_editor(pf_full_df, num_rows='dynamic', use_container_width=True, key='portfolio_data_editor')
+    st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수 있습니다.')
+    st.caption('💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접 수정할 수 있습니다.')
 
-    if st.button('💾 수정 사항 데이터베이스에 반영'):
+    edited_df = st.data_editor(
+        pf_full_df,
+        num_rows='dynamic',
+        use_container_width=True,
+        key='portfolio_data_editor',
+    )
+
+    if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
       try:
+        # data_editor 변경 정보 가져오기
+        editor_state = st.session_state.get('portfolio_data_editor', {})
+        deleted_indices = editor_state.get('deleted_rows', [])
+
+        # 삭제할 행이 있다면 제거 반영
+        final_df = edited_df.copy()
+        if deleted_indices:
+          final_df = final_df.drop(index=deleted_indices).reset_index(drop=True)
+
         conn = get_connection()
-        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
+        final_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
-        st.success('포트폴리오 데이터가 성공적으로 갱신되었습니다!')
+
+        st.success('포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!')
         st.rerun()
       except Exception as e:
         st.error(f'데이터 갱신 중 오류 발생: {e}')
