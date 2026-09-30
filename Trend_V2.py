@@ -356,11 +356,17 @@ if menu == '트렌드 리포트':
 
     st.subheader('⚙️ 분석 조건 설정')
 
-    # [수정 1] WHOSE 선택 필드를 Form 외부로 이동하여 실시간 반응형 연동 구현
+    # [수정 2 해결] session_state에 trend_sel_whose 초기화 보장
+    if 'trend_sel_whose' not in st.session_state:
+      st.session_state['trend_sel_whose'] = all_whose_options
+    else:
+      # 기존 상태 값 중 올바른 선택지 표현 보장
+      valid_whose = [w for w in st.session_state['trend_sel_whose'] if w in all_whose_options]
+      st.session_state['trend_sel_whose'] = valid_whose if valid_whose else all_whose_options
+
     selected_whose = st.multiselect(
         '👤 WHOSE 선택 (우선순위)',
         options=all_whose_options,
-        default=st.session_state.get('trend_sel_whose', all_whose_options),
         key='trend_sel_whose',
         help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 즉시 연동되어 표시됩니다.',
     )
@@ -450,7 +456,7 @@ if menu == '트렌드 리포트':
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
-      st.session_state['trend_sel_whose'] = selected_whose
+      # [수정 2 해결] key='trend_sel_whose'에 의해 세션 상태가 이미 바인딩되어 있으므로 중복 입력 제거
       st.session_state['trend_sel_accs'] = selected_acc_labels
       st.session_state['trend_view_types'] = view_types
       st.session_state['trend_sel_bm'] = selected_bm
@@ -908,9 +914,6 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표
-        # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         
@@ -1807,7 +1810,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 3: 포트폴리오 업로드 (업데이트 불일치 및 whose 자동 판별 로직 완전 수정)
+# 메뉴 3: 포트폴리오 업로드 (ID 컬럼 자동 채움 및 안전 적재)
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📤 포트폴리오 엑셀 업로드')
@@ -1818,6 +1821,10 @@ elif menu == '포트폴리오 업로드':
   if uploaded_file is not None:
     try:
       df_upload = pd.read_excel(uploaded_file)
+
+      # [수정 1 해결] 업로드 파일에 id 컬럼이 존재하더라도 DB AUTOINCREMENT 작동을 위해 제외 처리
+      if 'id' in df_upload.columns:
+        df_upload = df_upload.drop(columns=['id'])
 
       # 엑셀 날짜 컬럼 표준화
       if 'record_date' in df_upload.columns:
@@ -1845,14 +1852,14 @@ elif menu == '포트폴리오 업로드':
         conn = get_connection()
         c = conn.cursor()
 
-        # [수정 2] 업로드한 데이터의 기준일자(record_date) 기존 데이터 교체 처리
+        # 업로드한 데이터의 기준일자(record_date) 기존 데이터 교체 처리
         if 'record_date' in df_upload.columns:
           upload_dates = df_upload['record_date'].unique().tolist()
           for d_str in upload_dates:
             c.execute("DELETE FROM portfolio WHERE record_date = ?", (d_str,))
           conn.commit()
 
-        # 컬럼 순서 정렬 및 적재
+        # DB 필수 컬럼 정렬 및 적재
         db_cols = [
             'record_date', 'broker', 'account_num', 'account_type',
             'item_name', 'ticker', 'category1', 'category2',
@@ -1963,7 +1970,7 @@ elif menu == '원금 및 입출금 관리':
         st.info('등록된 입출금 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 웹 수정
+# 메뉴 5: 등록 데이터 조회 및 웹 수정 (테이블 구조 파괴 방지 처리)
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 웹 수정')
@@ -1981,7 +1988,15 @@ elif menu == '등록 데이터 조회 및 웹 수정':
     if st.button('💾 수정 사항 데이터베이스에 반영'):
       try:
         conn = get_connection()
-        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
+        c = conn.cursor()
+        c.execute('DELETE FROM portfolio')
+        conn.commit()
+        
+        # [수정 1 해결] id 컬럼 재할당 및 안전한 테이블 구조 보장
+        if 'id' in edited_df.columns:
+          edited_df = edited_df.drop(columns=['id'])
+          
+        edited_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
         st.cache_data.clear()
         st.success('포트폴리오 데이터가 성공적으로 갱신되었습니다!')
