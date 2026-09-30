@@ -538,68 +538,76 @@ if menu == '트렌드 리포트':
           usd_krw_first = 1350.0
 
       base_records = []
-      for t_date in target_dates:
-        t_str = t_date.strftime('%Y-%m-%d')
+      for acc in selected_accounts:
+        acc_meta = filtered_pf_df[
+            filtered_pf_df['account_num'].astype(str) == acc
+        ]
+        broker_name = (
+            acc_meta['broker'].iloc[0]
+            if (not acc_meta.empty and 'broker' in acc_meta.columns)
+            else '미지정'
+        )
+        acc_type = (
+            acc_meta['account_type'].iloc[0]
+            if (
+                not acc_meta.empty
+                and 'account_type' in acc_meta.columns
+                and pd.notna(acc_meta['account_type'].iloc[0])
+            )
+            else '미지정'
+        )
 
-        usd_krw = None
-        if 'KRW=X' in market_data.columns and not market_data.empty:
-          if pd.to_datetime(t_str) in market_data.index:
-            usd_krw = market_data.loc[pd.to_datetime(t_str), 'KRW=X']
-          else:
-            usd_krw = market_data['KRW=X'].asof(pd.to_datetime(t_str))
+        acc_alias_val = alias_map.get(acc, '')
+        acc_label = (
+            acc_alias_val
+            if acc_alias_val
+            else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
+        )
 
-        if pd.isna(usd_krw) or usd_krw is None or usd_krw <= 0:
-          if (
-              'KRW=X' in market_data.columns
-              and not market_data['KRW=X'].dropna().empty
-          ):
-            usd_krw = float(market_data['KRW=X'].dropna().iloc[-1])
-          else:
-            usd_krw = 1350.0
+        combined_str = f'{acc} {acc_alias_val} {broker_name}'
+        if (
+            '소희' in combined_str
+            or 'SH' in combined_str
+            or 'sh' in combined_str
+        ):
+          whose_val = 'SH'
+        else:
+          whose_val = 'BJ'
 
-        for acc in selected_accounts:
-          acc_meta = filtered_pf_df[
-              filtered_pf_df['account_num'].astype(str) == acc
-          ]
-          broker_name = (
-              acc_meta['broker'].iloc[0]
-              if (not acc_meta.empty and 'broker' in acc_meta.columns)
-              else '미지정'
-          )
-          acc_type = (
-              acc_meta['account_type'].iloc[0]
-              if (
-                  not acc_meta.empty
-                  and 'account_type' in acc_meta.columns
-                  and pd.notna(acc_meta['account_type'].iloc[0])
-              )
-              else '미지정'
-          )
+        init_val = (
+            init_p_df[init_p_df['account_num'].astype(str) == acc][
+                'initial_amount'
+            ].sum()
+            if not init_p_df.empty
+            else 0
+        )
 
-          acc_alias_val = alias_map.get(acc, '')
-          acc_label = (
-              acc_alias_val
-              if acc_alias_val
-              else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
-          )
+        item_prev_prices = {}
+        item_cum_pl = {}
+        item_cum_pl_ex = {}
 
-          combined_str = f'{acc} {acc_alias_val} {broker_name}'
-          if (
-              '소희' in combined_str
-              or 'SH' in combined_str
-              or 'sh' in combined_str
-          ):
-            whose_val = 'SH'
-          else:
-            whose_val = 'BJ'
+        account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc]
+        all_account_items = account_pf_all[['item_name', 'ticker', 'category4', 'currency']].drop_duplicates().to_dict('records')
 
-          init_val = (
-              init_p_df[init_p_df['account_num'].astype(str) == acc][
-                  'initial_amount'
-              ].sum()
-              if not init_p_df.empty
-              else 0
-          )
+        for t_date in target_dates:
+          t_str = t_date.strftime('%Y-%m-%d')
+
+          usd_krw = None
+          if 'KRW=X' in market_data.columns and not market_data.empty:
+            if pd.to_datetime(t_str) in market_data.index:
+              usd_krw = market_data.loc[pd.to_datetime(t_str), 'KRW=X']
+            else:
+              usd_krw = market_data['KRW=X'].asof(pd.to_datetime(t_str))
+
+          if pd.isna(usd_krw) or usd_krw is None or usd_krw <= 0:
+            if (
+                'KRW=X' in market_data.columns
+                and not market_data['KRW=X'].dropna().empty
+            ):
+              usd_krw = float(market_data['KRW=X'].dropna().iloc[-1])
+            else:
+              usd_krw = 1350.0
+
           if not cf_df.empty:
             acc_cf = cf_df[
                 (cf_df['account_num'].astype(str) == acc)
@@ -611,127 +619,113 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          acc_pf = filtered_pf_df[
-              (filtered_pf_df['account_num'].astype(str) == acc)
-              & (filtered_pf_df['record_date'] <= t_str)
-          ]
+          acc_pf = account_pf_all[account_pf_all['record_date'] <= t_str]
           if acc_pf.empty:
-            min_date = filtered_pf_df[
-                filtered_pf_df['account_num'].astype(str) == acc
-            ]['record_date'].min()
-            acc_pf = filtered_pf_df[
-                (filtered_pf_df['account_num'].astype(str) == acc)
-                & (filtered_pf_df['record_date'] == min_date)
-            ]
+            min_date = account_pf_all['record_date'].min()
+            acc_pf = account_pf_all[account_pf_all['record_date'] == min_date]
 
+          current_pf = pd.DataFrame()
           if not acc_pf.empty:
             latest_date = acc_pf['record_date'].max()
             current_pf = acc_pf[acc_pf['record_date'] == latest_date]
-            total_acc_eval = 0
-            total_acc_eval_ex_fx = 0
-            item_eval_list = []
 
-            for _, row in current_pf.iterrows():
-              fmt_tk = format_ticker(row.get('ticker'))
-              qty = (
-                  row['quantity']
-                  if ('quantity' in row and pd.notna(row['quantity']))
-                  else 0
-              )
-              curr = row.get('currency', 'KRW')
-              base_price = (
-                  row['current_price']
-                  if ('current_price' in row and pd.notna(row['current_price']))
-                  else 0
-              )
+          total_acc_eval = 0
+          total_acc_eval_ex_fx = 0
+          item_eval_list = []
 
-              item_name = (
-                  row['item_name']
-                  if (
-                      'item_name' in row
-                      and pd.notna(row['item_name'])
-                      and str(row['item_name']).strip() != ''
-                  )
-                  else '미지정종목'
-              )
-              cat4 = (
-                  row['category4']
-                  if (
-                      'category4' in row
-                      and pd.notna(row['category4'])
-                      and str(row['category4']).strip() != ''
-                  )
-                  else '미지정'
-              )
+          current_pf_dict = {}
+          for _, row in current_pf.iterrows():
+            key = (str(row.get('item_name')), str(row.get('ticker')))
+            current_pf_dict[key] = row
 
-              price = 0
-              if fmt_tk is None:
-                price = base_price if base_price > 0 else 0
-              else:
-                if fmt_tk in market_data.columns and not market_data.empty:
-                  if pd.to_datetime(t_str) in market_data.index:
-                    price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
-                  else:
-                    price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+          for item_info in all_account_items:
+            iname = item_info['item_name']
+            tk = item_info['ticker']
+            cat4 = item_info['category4']
+            curr = item_info['currency'] if pd.notna(item_info['currency']) else 'KRW'
+            key = (str(iname), str(tk))
 
-                  if (
-                      (pd.isna(price) or price == 0)
-                      and fmt_tk in market_data.columns
-                      and not market_data[fmt_tk].dropna().empty
-                  ):
-                    price = float(market_data[fmt_tk].dropna().iloc[0])
+            if key in current_pf_dict:
+              row = current_pf_dict[key]
+              qty = row.get('quantity', 0) if pd.notna(row.get('quantity')) else 0
+              base_price = row.get('current_price', 0) if pd.notna(row.get('current_price')) else 0
+              if pd.notna(row.get('category4')) and str(row.get('category4')).strip() != '':
+                cat4 = row.get('category4')
+            else:
+              qty = 0
+              base_price = 0
 
-                if pd.isna(price) or price == 0:
-                  price = base_price
+            fmt_tk = format_ticker(tk)
+            price = 0
+            if fmt_tk is None or pd.isna(fmt_tk):
+              price = base_price if base_price > 0 else 0
+            else:
+              if fmt_tk in market_data.columns and not market_data.empty:
+                if pd.to_datetime(t_str) in market_data.index:
+                  price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
+                else:
+                  price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+                if (pd.isna(price) or price == 0) and not market_data[fmt_tk].dropna().empty:
+                  price = float(market_data[fmt_tk].dropna().iloc[0])
+              if pd.isna(price) or price == 0:
+                price = base_price
 
-              item_eval = (
-                  (qty * price * usd_krw) if curr == 'USD' else (qty * price)
-              )
-              item_eval_ex_fx = (
-                  (qty * price * usd_krw_first)
-                  if curr == 'USD'
-                  else (qty * price)
-              )
+            prev_p = item_prev_prices.get(key, price)
+            price_diff = price - prev_p if prev_p is not None else 0
 
-              total_acc_eval += item_eval
-              total_acc_eval_ex_fx += item_eval_ex_fx
-              item_eval_list.append(
-                  (item_name, cat4, item_eval, item_eval_ex_fx)
-              )
+            period_pl = price_diff * qty * usd_krw if curr == 'USD' else price_diff * qty * 1.0
+            period_pl_ex = price_diff * qty * usd_krw_first if curr == 'USD' else price_diff * qty * 1.0
 
-            item_count = len(item_eval_list)
-            for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
-              if total_acc_eval > 0:
-                ratio = item_eval / total_acc_eval
-              else:
-                ratio = 1.0 / item_count if item_count > 0 else 0
+            cum_pl = item_cum_pl.get(key, 0.0) + period_pl
+            cum_pl_ex = item_cum_pl_ex.get(key, 0.0) + period_pl_ex
 
-              if total_acc_eval_ex_fx > 0:
-                ratio_ex = item_eval_ex / total_acc_eval_ex_fx
-              else:
-                ratio_ex = 1.0 / item_count if item_count > 0 else 0
+            item_prev_prices[key] = price
+            item_cum_pl[key] = cum_pl
+            item_cum_pl_ex[key] = cum_pl_ex
 
-              item_principal = principal * ratio
-              item_p_loss = item_eval - item_principal
+            item_eval = qty * price * usd_krw if curr == 'USD' else qty * price
+            item_eval_ex = qty * price * usd_krw_first if curr == 'USD' else qty * price
 
-              item_principal_ex = principal * ratio_ex
-              item_p_loss_ex = item_eval_ex - item_principal_ex
+            item_return = ((price - prev_p) / prev_p * 100) if (prev_p and prev_p > 0) else 0.0
 
-              base_records.append({
-                  'Date': t_str,
-                  'account_num': acc_label,
-                  'broker': broker_name,
-                  'account_type': acc_type,
-                  'category4': cat4,
-                  'item_name': item_name,
-                  'whose': whose_val,
-                  '원금': item_principal,
-                  '평가손익': item_p_loss,
-                  '총평가금액': item_eval,
-                  '원금_ex_fx': item_principal_ex,
-                  '평가손익_ex_fx': item_p_loss_ex,
-                  '총평가금액_ex_fx': item_eval_ex,
-              })
+            total_acc_eval += item_eval
+            total_acc_eval_ex_fx += item_eval_ex
+
+            if qty > 0 or abs(cum_pl) > 1e-5:
+              item_eval_list.append((iname, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_return, qty))
+
+          item_count = len(item_eval_list)
+          for item_name, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_ret, qty in item_eval_list:
+            if total_acc_eval > 0:
+              ratio = item_eval / total_acc_eval
+            else:
+              ratio = 1.0 / item_count if item_count > 0 else 0
+
+            if total_acc_eval_ex_fx > 0:
+              ratio_ex = item_eval_ex / total_acc_eval_ex_fx
+            else:
+              ratio_ex = 1.0 / item_count if item_count > 0 else 0
+
+            item_principal = principal * ratio
+            item_principal_ex = principal * ratio_ex
+
+            base_records.append({
+                'Date': t_str,
+                'account_num': acc_label,
+                'broker': broker_name,
+                'account_type': acc_type,
+                'category4': cat4,
+                'item_name': item_name,
+                'whose': whose_val,
+                '원금': item_principal,
+                '평가손익': cum_pl,
+                '총평가금액': item_eval,
+                '주기별 평가손익': period_pl,
+                '주기별 수익률': item_ret,
+                '원금_ex_fx': item_principal_ex,
+                '평가손익_ex_fx': cum_pl_ex,
+                '총평가금액_ex_fx': item_eval_ex,
+            })
 
       bm_calc_dict = {}
       for bm_label in selected_bm:
@@ -867,46 +861,81 @@ if menu == '트렌드 리포트':
             df_curr['평가손익'] = df_curr['평가손익_ex_fx']
             df_curr['총평가금액'] = df_curr['총평가금액_ex_fx']
 
-          grp_agg = (
-              df_curr.groupby(['Date', group_col])[
-                  ['원금', '평가손익', '총평가금액']
-              ]
-              .sum()
-              .reset_index()
-          )
+          if group_col in ['item_name', 'category4']:
+            df_curr = df_curr[~df_curr['item_name'].str.contains('현금', na=False)]
+
+          if group_col == 'item_name':
+            grp_agg = (
+                df_curr.groupby(['Date', group_col])[
+                    ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
+                ]
+                .agg({
+                    '원금': 'sum',
+                    '평가손익': 'last',
+                    '총평가금액': 'sum',
+                    '주기별 평가손익': 'sum',
+                    '주기별 수익률': 'mean'
+                })
+                .reset_index()
+            )
+          elif group_col == 'category4':
+            item_agg = (
+                df_curr.groupby(['Date', 'category4', 'item_name'])[
+                    ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
+                ]
+                .sum()
+                .reset_index()
+            )
+            grp_agg = (
+                item_agg.groupby(['Date', group_col])[
+                    ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
+                ]
+                .agg({
+                    '원금': 'sum',
+                    '평가손익': 'sum',
+                    '총평가금액': 'sum',
+                    '주기별 평가손익': 'sum',
+                    '주기별 수익률': 'mean'
+                })
+                .reset_index()
+            )
+          else:
+            grp_agg = (
+                df_curr.groupby(['Date', group_col])[
+                    ['원금', '평가손익', '총평가금액']
+                ]
+                .sum()
+                .reset_index()
+            )
+            grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)['총평가금액'].diff()
+            first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform('first')
+            grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+            grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
+            grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
+            grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
+            grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
+            grp_agg['주기별 수익률'] = np.where(
+                grp_agg['period_start_base'] > 0,
+                (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
+                0
+            )
 
           grp_agg['dt_temp'] = pd.to_datetime(grp_agg['Date'])
-          grp_agg = grp_agg.sort_values(
-              [group_col, 'dt_temp'], ascending=True
-          ).reset_index(drop=True)
+          grp_agg = grp_agg.sort_values([group_col, 'dt_temp'], ascending=True).reset_index(drop=True)
           grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
           grp_agg.drop(columns=['dt_temp'], inplace=True)
 
-          grp_agg['수익률'] = np.where(
-              grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
-          )
-          grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)[
-              '총평가금액'
-          ].diff()
-          first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform(
-              'first'
-          )
-          grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
-
-          grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
-          grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
-          grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
-          grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
-          
-          grp_agg['주기별 수익률'] = np.where(
-              grp_agg['period_start_base'] > 0,
-              (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
-              0
-          )
-          
-          grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
-          grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
-          grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
+          if group_col in ['item_name', 'category4']:
+            grp_agg['선택구간 누적손익'] = grp_agg['평가손익']
+            grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
+            grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
+            grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
+          else:
+            first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform('first')
+            grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+            grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
+            grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
+            grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
           return grp_agg
 
@@ -924,9 +953,6 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표
-        # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         
@@ -941,8 +967,6 @@ if menu == '트렌드 리포트':
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
-            
-            # 최종 조회 날짜(latest_date) 기준 해당 그룹(종목 등)의 존재 여부 확인
             sub_latest = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
             if sub_latest.empty:
               final_eval = 0.0
@@ -1323,9 +1347,6 @@ if menu == '트렌드 리포트':
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
-        # -------------------------------------------------------------------------
-        # 하단 추가 기능: [계좌별] 및 [계좌유형별] 관점 필터링 누적 세로 막대 차트
-        # -------------------------------------------------------------------------
         if group_col in ['account_num', 'account_type']:
           st.write('---')
           st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트')
@@ -1399,9 +1420,6 @@ if menu == '트렌드 리포트':
           else:
             st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
 
-      # -------------------------------------------------------------------------
-      # 전체 합산 차트
-      # -------------------------------------------------------------------------
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
 
@@ -1458,9 +1476,6 @@ if menu == '트렌드 리포트':
         agg1_def = get_whose_agg(False)
         whose_list = sorted(agg1_def['whose'].unique())
 
-        # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표
-        # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
         
@@ -1843,9 +1858,6 @@ if menu == '트렌드 리포트':
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
-        # -------------------------------------------------------------------------
-        # 하단 추가 기능: [전체 합산] 관점 일자별 총 평가 금액 누적 세로 막대 차트
-        # -------------------------------------------------------------------------
         st.write('---')
         st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)')
         
