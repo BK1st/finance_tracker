@@ -36,16 +36,9 @@ def init_db():
             category4 TEXT,
             quantity REAL,
             current_price REAL,
-            currency TEXT,
-            whose TEXT
+            currency TEXT
         )
     ''')
-
-  # 기존 DB 테이블에 whose 컬럼이 없는 경우 마이그레이션
-  c.execute("PRAGMA table_info(portfolio)")
-  columns = [column[1] for column in c.fetchall()]
-  if 'whose' not in columns:
-    c.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT")
 
   c.execute('''
         CREATE TABLE IF NOT EXISTS initial_principal (
@@ -301,31 +294,19 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    cols_to_select = ['broker', 'account_num', 'account_type']
-    if 'whose' in pf_df.columns:
-      cols_to_select.append('whose')
-
-    acc_info_df = pf_df[cols_to_select].drop_duplicates()
+    acc_info_df = pf_df[
+        ['broker', 'account_num', 'account_type']
+    ].drop_duplicates()
     whose_mapping = {}
     for _, row in acc_info_df.iterrows():
       acc_num = str(row['account_num'])
       alias = alias_map.get(acc_num, '')
-      broker_str = str(row['broker'])
-      db_whose = (
-          str(row['whose']).strip()
-          if ('whose' in row and pd.notna(row['whose']) and str(row['whose']).strip() != '')
-          else None
-      )
-
-      if db_whose:
-        whose_mapping[acc_num] = db_whose
+      broker_str = row['broker']
+      combined_str = f'{acc_num} {alias} {broker_str}'
+      if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
+        whose_mapping[acc_num] = 'SH'
       else:
-        combined_str = f'{acc_num} {alias} {broker_str}'
-        if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
-          whose_mapping[acc_num] = 'SH'
-        else:
-          whose_mapping[acc_num] = 'BJ'
-
+        whose_mapping[acc_num] = 'BJ'
     acc_info_df['whose'] = acc_info_df['account_num'].map(whose_mapping)
     all_whose_options = sorted(acc_info_df['whose'].unique().tolist())
 
@@ -354,50 +335,44 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    st.subheader('⚙️ 분석 조건 설정')
-
-    # [수정 2 해결] session_state에 trend_sel_whose 초기화 보장
-    if 'trend_sel_whose' not in st.session_state:
-      st.session_state['trend_sel_whose'] = all_whose_options
-    else:
-      # 기존 상태 값 중 올바른 선택지 표현 보장
-      valid_whose = [w for w in st.session_state['trend_sel_whose'] if w in all_whose_options]
-      st.session_state['trend_sel_whose'] = valid_whose if valid_whose else all_whose_options
-
-    selected_whose = st.multiselect(
-        '👤 WHOSE 선택 (우선순위)',
-        options=all_whose_options,
-        key='trend_sel_whose',
-        help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 즉시 연동되어 표시됩니다.',
-    )
-
-    filtered_acc_info = acc_info_df[
-        acc_info_df['whose'].isin(selected_whose)
-    ]
-
-    acc_options = []
-    for _, row in filtered_acc_info.iterrows():
-      acc_num = str(row['account_num'])
-      alias = alias_map.get(acc_num, '')
-      display_alias = (
-          alias
-          if alias
-          else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
-      )
-      acc_type_str = (
-          row['account_type']
-          if ('account_type' in row and pd.notna(row['account_type']))
-          else '미지정'
-      )
-      broker_str = (
-          row['broker']
-          if ('broker' in row and pd.notna(row['broker']))
-          else '증권사미지정'
-      )
-      label = f'{broker_str} | {display_alias} [{acc_type_str}]'
-      acc_options.append(label)
-
     with st.form('trend_control_form'):
+      st.subheader('⚙️ 분석 조건 설정')
+
+      selected_whose = st.multiselect(
+          '👤 WHOSE 선택 (우선순위)',
+          options=all_whose_options,
+          default=st.session_state.get(
+              'trend_sel_whose', all_whose_options
+          ),
+          help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
+      )
+
+      filtered_acc_info = acc_info_df[
+          acc_info_df['whose'].isin(selected_whose)
+      ]
+
+      acc_options = []
+      for _, row in filtered_acc_info.iterrows():
+        acc_num = str(row['account_num'])
+        alias = alias_map.get(acc_num, '')
+        display_alias = (
+            alias
+            if alias
+            else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
+        )
+        acc_type_str = (
+            row['account_type']
+            if ('account_type' in row and pd.notna(row['account_type']))
+            else '미지정'
+        )
+        broker_str = (
+            row['broker']
+            if ('broker' in row and pd.notna(row['broker']))
+            else '증권사미지정'
+        )
+        label = f'{broker_str} | {display_alias} [{acc_type_str}]'
+        acc_options.append(label)
+
       f_col1, f_col2 = st.columns([3, 3])
 
       with f_col1:
@@ -456,7 +431,7 @@ if menu == '트렌드 리포트':
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
-      # [수정 2 해결] key='trend_sel_whose'에 의해 세션 상태가 이미 바인딩되어 있으므로 중복 입력 제거
+      st.session_state['trend_sel_whose'] = selected_whose
       st.session_state['trend_sel_accs'] = selected_acc_labels
       st.session_state['trend_view_types'] = view_types
       st.session_state['trend_sel_bm'] = selected_bm
@@ -584,7 +559,15 @@ if menu == '트렌드 리포트':
               else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
           )
 
-          whose_val = whose_mapping.get(acc, 'BJ')
+          combined_str = f'{acc} {acc_alias_val} {broker_name}'
+          if (
+              '소희' in combined_str
+              or 'SH' in combined_str
+              or 'sh' in combined_str
+          ):
+            whose_val = 'SH'
+          else:
+            whose_val = 'BJ'
 
           init_val = (
               init_p_df[init_p_df['account_num'].astype(str) == acc][
@@ -774,7 +757,7 @@ if menu == '트렌드 리포트':
       active_views = st.session_state.get('trend_view_types', all_view_types)
 
       st.write('---')
-      st.subheader('🖥 화면 디스플레이 설정 (실시간 반영)')
+      st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
       disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2.5, 2.5, 2, 3])
 
@@ -914,10 +897,14 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
+        # -------------------------------------------------------------------------
+        # 각 항목별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
+        # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         
         grp_agg_summary = get_grp_agg(ex_summary)
+        latest_df_summary = grp_agg_summary[grp_agg_summary['Date'] == latest_date]
 
         summary_table_data = []
         total_eval_sum = 0
@@ -1361,6 +1348,9 @@ if menu == '트렌드 리포트':
         agg1_def = get_whose_agg(False)
         whose_list = sorted(agg1_def['whose'].unique())
 
+        # -------------------------------------------------------------------------
+        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
+        # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
         
@@ -1472,6 +1462,7 @@ if menu == '트렌드 리포트':
         date_order_list = sorted(agg1['Chart_Date'].unique().tolist())
         colors = {'BJ': '#2b5c8f', 'SH': '#ff7f0e'}
 
+        # 첫화면 전체 자산 평가 금액 차트에 보조축(secondary_y) 설정 적용
         fig1 = make_subplots(specs=[[{'secondary_y': True}]])
         for w in whose_list:
           sub = agg1[agg1['whose'] == w]
@@ -1810,7 +1801,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 3: 포트폴리오 업로드 (ID 컬럼 자동 채움 및 안전 적재)
+# 메뉴 3: 포트폴리오 업로드
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📤 포트폴리오 엑셀 업로드')
@@ -1821,63 +1812,13 @@ elif menu == '포트폴리오 업로드':
   if uploaded_file is not None:
     try:
       df_upload = pd.read_excel(uploaded_file)
-
-      # [수정 1 해결] 업로드 파일에 id 컬럼이 존재하더라도 DB AUTOINCREMENT 작동을 위해 제외 처리
-      if 'id' in df_upload.columns:
-        df_upload = df_upload.drop(columns=['id'])
-
-      # 엑셀 날짜 컬럼 표준화
-      if 'record_date' in df_upload.columns:
-        df_upload['record_date'] = pd.to_datetime(df_upload['record_date']).dt.strftime('%Y-%m-%d')
-
-      alias_map = get_account_aliases()
-
-      def resolve_whose(row):
-        val = row.get('whose')
-        if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() != 'nan':
-          return str(val).strip()
-        acc_num = str(row.get('account_num', ''))
-        broker = str(row.get('broker', ''))
-        alias = alias_map.get(acc_num, '')
-        combined = f'{acc_num} {broker} {alias}'
-        if '소희' in combined or 'SH' in combined or 'sh' in combined:
-          return 'SH'
-        return 'BJ'
-
-      df_upload['whose'] = df_upload.apply(resolve_whose, axis=1)
-
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
         conn = get_connection()
-        c = conn.cursor()
-
-        # 업로드한 데이터의 기준일자(record_date) 기존 데이터 교체 처리
-        if 'record_date' in df_upload.columns:
-          upload_dates = df_upload['record_date'].unique().tolist()
-          for d_str in upload_dates:
-            c.execute("DELETE FROM portfolio WHERE record_date = ?", (d_str,))
-          conn.commit()
-
-        # DB 필수 컬럼 정렬 및 적재
-        db_cols = [
-            'record_date', 'broker', 'account_num', 'account_type',
-            'item_name', 'ticker', 'category1', 'category2',
-            'category3', 'category4', 'quantity', 'current_price',
-            'currency', 'whose'
-        ]
-        
-        for col in db_cols:
-          if col not in df_upload.columns:
-            df_upload[col] = None
-
-        df_to_save = df_upload[db_cols]
-        df_to_save.to_sql('portfolio', conn, if_exists='append', index=False)
+        df_upload.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-
-        st.cache_data.clear()
-        st.success('포트폴리오 데이터가 성공적으로 적재 및 업데이트되었습니다!')
-        st.rerun()
+        st.success('포트폴리오 데이터가 성공적으로 적재되었습니다!')
     except Exception as e:
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
@@ -1970,7 +1911,7 @@ elif menu == '원금 및 입출금 관리':
         st.info('등록된 입출금 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
-# 메뉴 5: 등록 데이터 조회 및 웹 수정 (테이블 구조 파괴 방지 처리)
+# 메뉴 5: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
   st.header('🔍 등록 데이터 조회 및 웹 수정')
@@ -1982,23 +1923,14 @@ elif menu == '등록 데이터 조회 및 웹 수정':
     st.warning('등록된 포트폴리오 데이터가 없습니다.')
   else:
     st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/저장할 수 있습니다.')
-
+    
     edited_df = st.data_editor(pf_full_df, num_rows='dynamic', use_container_width=True, key='portfolio_data_editor')
 
     if st.button('💾 수정 사항 데이터베이스에 반영'):
       try:
         conn = get_connection()
-        c = conn.cursor()
-        c.execute('DELETE FROM portfolio')
-        conn.commit()
-        
-        # [수정 1 해결] id 컬럼 재할당 및 안전한 테이블 구조 보장
-        if 'id' in edited_df.columns:
-          edited_df = edited_df.drop(columns=['id'])
-          
-        edited_df.to_sql('portfolio', conn, if_exists='append', index=False)
+        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
-        st.cache_data.clear()
         st.success('포트폴리오 데이터가 성공적으로 갱신되었습니다!')
         st.rerun()
       except Exception as e:
@@ -2058,7 +1990,6 @@ elif menu == '데이터 백업 및 복구':
         try:
           with open(DB_FILE, 'wb') as f:
             f.write(uploaded_backup.getbuffer())
-          st.cache_data.clear()
           st.success(
               '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
               ' 새로고침됩니다.'
