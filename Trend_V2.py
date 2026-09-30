@@ -21,7 +21,7 @@ def init_db():
   conn = sqlite3.connect(DB_FILE)
   c = conn.cursor()
 
-  # 첨부된 portfolio_0929_3.xlsx의 모든 열을 수용할 수 있도록 스키마 확장
+  # 첨부된 portfolio 엑셀의 모든 열을 수용할 수 있도록 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -875,6 +875,32 @@ if menu == '트렌드 리포트':
               .reset_index()
           )
 
+          # 매도하여 보유하지 않는 항목에 대해 직전 보유일의 누적 손익 및 평가금액 등을 유지(ffill) 처리
+          all_target_dates = sorted(raw_df['Date'].unique().tolist())
+          filled_groups = []
+          for grp in grp_agg[group_col].unique():
+            g_df = grp_agg[grp_agg[group_col] == grp].copy()
+            g_df['dt'] = pd.to_datetime(g_df['Date'])
+            g_df = g_df.sort_values('dt')
+
+            date_template = pd.DataFrame({'Date': all_target_dates})
+            date_template['dt'] = pd.to_datetime(date_template['Date'])
+
+            m = pd.merge(
+                date_template,
+                g_df,
+                on=['Date', 'dt'],
+                how='left',
+                suffixes=('', '_dup'),
+            )
+            m[group_col] = grp
+            # 선택구간 누적손익 등은 마지막 보유일 이후 ffill 유지
+            m['원금'] = m['원금'].ffill().fillna(0)
+            m['총평가금액'] = m['총평가금액'].ffill().fillna(0)
+            filled_groups.append(m)
+
+          grp_agg = pd.concat(filled_groups, ignore_index=True)
+
           grp_agg['dt_temp'] = pd.to_datetime(grp_agg['Date'])
           grp_agg = grp_agg.sort_values(
               [group_col, 'dt_temp'], ascending=True
@@ -882,30 +908,49 @@ if menu == '트렌드 리포트':
           grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
           grp_agg.drop(columns=['dt_temp'], inplace=True)
 
+          # 현금 유입분(추가 매수 원금)을 반영한 보정 누적손익 계산 (주기별 총평가변화 - 원금변화의 누적합)
+          grp_agg['주기별_총평가변화'] = (
+              grp_agg.groupby(group_col)['총평가금액'].diff().fillna(0)
+          )
+          grp_agg['주기별_원금변화'] = (
+              grp_agg.groupby(group_col)['원금'].diff().fillna(0)
+          )
+          grp_agg['주기별_순수손익'] = (
+              grp_agg['주기별_총평가변화'] - grp_agg['주기별_원금변화']
+          )
+          grp_agg['선택구간 누적손익'] = grp_agg.groupby(group_col)[
+              '주기별_순수손익'
+          ].cumsum()
+
           grp_agg['수익률'] = np.where(
-              grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
+              grp_agg['원금'] > 0,
+              (grp_agg['선택구간 누적손익'] / grp_agg['원금']) * 100,
+              0,
           )
-          grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)[
-              '총평가금액'
-          ].diff()
-          first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform(
-              'first'
-          )
-          grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+          grp_agg['주기별 평가손익'] = grp_agg['주기별_순수손익']
 
           grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
           grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
-          grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
-          grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
-          
+          grp_agg['period_cash_flow'] = (
+              grp_agg['원금'] - grp_agg['prev_principal']
+          )
+          grp_agg['period_start_base'] = (
+              grp_agg['prev_eval'].fillna(grp_agg['총평가금액'])
+              + grp_agg['period_cash_flow'].fillna(0)
+          )
+
           grp_agg['주기별 수익률'] = np.where(
               grp_agg['period_start_base'] > 0,
               (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
-              0
+              0,
           )
-          
-          grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
-          grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
+
+          grp_agg['growth_factor'] = 1 + (
+              grp_agg['주기별 수익률'].fillna(0) / 100
+          )
+          grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)[
+              'growth_factor'
+          ].cumprod()
           grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
           return grp_agg
@@ -928,8 +973,10 @@ if menu == '트렌드 리포트':
         # 각 항목별 최종 핵심지표 요약 표
         # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
-        ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
-        
+        ex_summary = st.toggle(
+            '🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}'
+        )
+
         grp_agg_summary = get_grp_agg(ex_summary)
 
         summary_table_data = []
@@ -940,16 +987,29 @@ if menu == '트렌드 리포트':
         for grp in groups:
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
           if not sub.empty:
-            final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
+
+            # 최종 기말 시점(latest_date)의 평가금액이 0원이거나 데이터가 없으면 요약 표에서 제외
+            if final_eval <= 0 or pd.isna(final_eval):
+              continue
+
+            final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
-            
+
             if ex_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+              sub_raw = raw_df[
+                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
+              ]
+              final_principal = (
+                  sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+              )
             else:
-              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+              sub_raw = raw_df[
+                  (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
+              ]
+              final_principal = (
+                  sub_raw['원금'].sum() if not sub_raw.empty else 0
+              )
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss
@@ -965,11 +1025,19 @@ if menu == '트렌드 리포트':
             })
 
         for row in summary_table_data:
-          row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
+          row['점유율 (%)'] = (
+              (row['_eval'] / total_eval_sum * 100)
+              if total_eval_sum > 0
+              else 0
+          )
           del row['_eval']
           del row['_principal']
 
-        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        total_ret = (
+            (total_pl_sum / total_principal_sum * 100)
+            if total_principal_sum > 0
+            else 0
+        )
         summary_table_data.append({
             prefix: '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
@@ -979,7 +1047,13 @@ if menu == '트렌드 리포트':
         })
 
         summary_df = pd.DataFrame(summary_table_data)
-        cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
+        cols = [
+            prefix,
+            '선택구간 누적 평가 손익 (원)',
+            '최종 기말 평가 금액 (원)',
+            '점유율 (%)',
+            '선택구간 누적 수익률 (%)',
+        ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
         st.dataframe(
@@ -1323,38 +1397,51 @@ if menu == '트렌드 리포트':
         # -------------------------------------------------------------------------
         if group_col in ['account_num', 'account_type']:
           st.write('---')
-          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트')
-          
+          st.markdown(
+              f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대'
+              ' 차트'
+          )
+
           c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
           with c_sub1:
-            all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
+            all_filter_items = sorted(
+                raw_df[group_col].dropna().unique().tolist()
+            )
             selected_filter_items = st.multiselect(
                 f'특정 {prefix} 선택 (중복 가능)',
                 options=all_filter_items,
                 default=all_filter_items,
-                key=f'sub_filter_{prefix}'
+                key=f'sub_filter_{prefix}',
             )
           with c_sub2:
             target_group_opt = st.radio(
                 '분류 기준 선택',
                 options=['category4별', '보유 항목별'],
                 horizontal=True,
-                key=f'sub_group_opt_{prefix}'
+                key=f'sub_group_opt_{prefix}',
             )
           with c_sub3:
             pos_sub_stack = st.selectbox(
                 '📌 범례(Legend) 배치',
                 options=leg_pos_options,
                 index=default_idx,
-                key=f'pos_sub_stack_{prefix}'
+                key=f'pos_sub_stack_{prefix}',
             )
 
-          target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
+          target_col = (
+              'category4' if target_group_opt == 'category4별' else 'item_name'
+          )
 
           if selected_filter_items:
-            sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
-            sub_agg = sub_raw.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
-            
+            sub_raw = raw_df[
+                raw_df[group_col].isin(selected_filter_items)
+            ].copy()
+            sub_agg = (
+                sub_raw.groupby(['Date', target_col])['총평가금액']
+                .sum()
+                .reset_index()
+            )
+
             sub_agg['dt_temp'] = pd.to_datetime(sub_agg['Date'])
             sub_agg = sub_agg.sort_values('dt_temp').reset_index(drop=True)
             sub_agg['Chart_Date'] = sub_agg['dt_temp'].dt.strftime('%Y-%m-%d')
@@ -1369,28 +1456,45 @@ if menu == '트렌드 리포트':
                       x=c_df['Chart_Date'],
                       y=c_df['총평가금액'],
                       name=str(cat),
-                      hovertemplate='%{y:,.0f} 원'
+                      hovertemplate='%{y:,.0f} 원',
                   )
               )
 
-            leg_cfg_sub, show_sub, margin_sub = build_legend_config(pos_sub_stack)
+            leg_cfg_sub, show_sub, margin_sub = build_legend_config(
+                pos_sub_stack
+            )
             fig_sub_stack.update_layout(
                 title=dict(
-                    text=f'🔹 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
-                    y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
+                    text=(
+                        f'🔹 선택된 {prefix}의 일자별 총 평가 금액'
+                        f' ({target_group_opt} 기준 누적)'
+                    ),
+                    y=0.95,
+                    x=0.01,
+                    xanchor='left',
+                    yanchor='top',
+                    yref='container',
                 ),
                 barmode='stack',
                 hovermode='closest',
                 height=500,
                 margin=margin_sub,
                 showlegend=show_sub,
-                legend=leg_cfg_sub
+                legend=leg_cfg_sub,
             )
-            fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
+            fig_sub_stack.update_xaxes(
+                type='category',
+                categoryorder='array',
+                categoryarray=date_order,
+            )
             apply_y_axis_config(fig_sub_stack, is_money=True)
-            fig_sub_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+            fig_sub_stack.update_yaxes(
+                title_text='총 평가금액 (원)', tickformat=',.0f'
+            )
 
-            render_resizable_plotly_chart(fig_sub_stack, key=f'fig_sub_stack_{prefix}')
+            render_resizable_plotly_chart(
+                fig_sub_stack, key=f'fig_sub_stack_{prefix}'
+            )
           else:
             st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
 
@@ -1432,20 +1536,29 @@ if menu == '트렌드 리포트':
           grp_agg['수익률'] = np.where(
               grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
           )
-          
+
           grp_agg['prev_eval'] = grp_agg.groupby('whose')['총평가금액'].shift(1)
           grp_agg['prev_principal'] = grp_agg.groupby('whose')['원금'].shift(1)
-          grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
-          grp_agg['period_start_base'] = grp_agg['prev_eval'].fillna(grp_agg['총평가금액']) + grp_agg['period_cash_flow'].fillna(0)
-          
+          grp_agg['period_cash_flow'] = (
+              grp_agg['원금'] - grp_agg['prev_principal']
+          )
+          grp_agg['period_start_base'] = (
+              grp_agg['prev_eval'].fillna(grp_agg['총평가금액'])
+              + grp_agg['period_cash_flow'].fillna(0)
+          )
+
           grp_agg['주기별 수익률'] = np.where(
               grp_agg['period_start_base'] > 0,
               (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
-              0
+              0,
           )
-          
-          grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
-          grp_agg['누적_성장지수'] = grp_agg.groupby('whose')['growth_factor'].cumprod()
+
+          grp_agg['growth_factor'] = 1 + (
+              grp_agg['주기별 수익률'].fillna(0) / 100
+          )
+          grp_agg['누적_성장지수'] = grp_agg.groupby('whose')[
+              'growth_factor'
+          ].cumprod()
           grp_agg['구간별 누적수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
           return grp_agg
@@ -1457,8 +1570,10 @@ if menu == '트렌드 리포트':
         # [전체 합산] WHOSE별 최종 핵심지표 요약 표
         # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
-        ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
-        
+        ex_whose_summary = st.toggle(
+            '🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total'
+        )
+
         agg_whose_summary = get_whose_agg(ex_whose_summary)
         latest_date = raw_df['Date'].max()
 
@@ -1473,13 +1588,21 @@ if menu == '트렌드 리포트':
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
-            
+
             if ex_whose_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+              sub_raw = raw_df[
+                  (raw_df['whose'] == w) & (raw_df['Date'] == latest_date)
+              ]
+              final_principal = (
+                  sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+              )
             else:
-              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+              sub_raw = raw_df[
+                  (raw_df['whose'] == w) & (raw_df['Date'] == latest_date)
+              ]
+              final_principal = (
+                  sub_raw['원금'].sum() if not sub_raw.empty else 0
+              )
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss
@@ -1494,10 +1617,18 @@ if menu == '트렌드 리포트':
             })
 
         for row in whose_summary_data:
-          row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
+          row['점유율 (%)'] = (
+              (row['_eval'] / total_eval_sum * 100)
+              if total_eval_sum > 0
+              else 0
+          )
           del row['_eval']
 
-        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        total_ret = (
+            (total_pl_sum / total_principal_sum * 100)
+            if total_principal_sum > 0
+            else 0
+        )
         whose_summary_data.append({
             'WHOSE': '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
@@ -1507,8 +1638,16 @@ if menu == '트렌드 리포트':
         })
 
         whose_summary_df = pd.DataFrame(whose_summary_data)
-        cols_w = ['WHOSE', '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
-        whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
+        cols_w = [
+            'WHOSE',
+            '선택구간 누적 평가 손익 (원)',
+            '최종 기말 평가 금액 (원)',
+            '점유율 (%)',
+            '선택구간 누적 수익률 (%)',
+        ]
+        whose_summary_df = whose_summary_df[
+            [c for c in cols_w if c in whose_summary_df.columns]
+        ]
 
         st.dataframe(
             whose_summary_df.style.format({
@@ -1521,7 +1660,7 @@ if menu == '트렌드 리포트':
         )
         st.write('---')
 
-        st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+        st.markdown('##### ⚙️️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -1842,35 +1981,41 @@ if menu == '트렌드 리포트':
         # 하단 추가 기능: [전체 합산] 관점 일자별 총 평가 금액 누적 세로 막대 차트
         # -------------------------------------------------------------------------
         st.write('---')
-        st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)')
-        
+        st.markdown(
+            '### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)'
+        )
+
         group_opt_map = {
             '계좌별': 'account_num',
             '증권사별': 'broker',
             '계좌유형별': 'account_type',
             'category4별': 'category4',
-            '보유 항목별': 'item_name'
+            '보유 항목별': 'item_name',
         }
-        
+
         c_tot1, c_tot2 = st.columns([3, 2])
         with c_tot1:
           selected_total_group = st.radio(
               '분류 항목 선택',
               options=list(group_opt_map.keys()),
               horizontal=True,
-              key='total_stack_group_opt'
+              key='total_stack_group_opt',
           )
         with c_tot2:
           pos_total_stack = st.selectbox(
               '📌 범례(Legend) 배치',
               options=leg_pos_options,
               index=default_idx,
-              key='pos_total_stack'
+              key='pos_total_stack',
           )
-        
+
         target_col = group_opt_map[selected_total_group]
-        
-        total_agg = raw_df.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
+
+        total_agg = (
+            raw_df.groupby(['Date', target_col])['총평가금액']
+            .sum()
+            .reset_index()
+        )
         total_agg['dt_temp'] = pd.to_datetime(total_agg['Date'])
         total_agg = total_agg.sort_values('dt_temp').reset_index(drop=True)
         total_agg['Chart_Date'] = total_agg['dt_temp'].dt.strftime('%Y-%m-%d')
@@ -1885,28 +2030,45 @@ if menu == '트렌드 리포트':
                   x=c_df['Chart_Date'],
                   y=c_df['총평가금액'],
                   name=str(cat),
-                  hovertemplate='%{y:,.0f} 원'
+                  hovertemplate='%{y:,.0f} 원',
               )
           )
 
-        leg_cfg_tot, show_tot, margin_tot = build_legend_config(pos_total_stack)
+        leg_cfg_tot, show_tot, margin_tot = build_legend_config(
+            pos_total_stack
+        )
         fig_total_stack.update_layout(
             title=dict(
-                text=f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group} 기준 누적)',
-                y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
+                text=(
+                    f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group}'
+                    ' 기준 누적)'
+                ),
+                y=0.95,
+                x=0.01,
+                xanchor='left',
+                yanchor='top',
+                yref='container',
             ),
             barmode='stack',
             hovermode='closest',
             height=500,
             margin=margin_tot,
             showlegend=show_tot,
-            legend=leg_cfg_tot
+            legend=leg_cfg_tot,
         )
-        fig_total_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
+        fig_total_stack.update_xaxes(
+            type='category',
+            categoryorder='array',
+            categoryarray=date_order,
+        )
         apply_y_axis_config(fig_total_stack, is_money=True)
-        fig_total_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+        fig_total_stack.update_yaxes(
+            title_text='총 평가금액 (원)', tickformat=',.0f'
+        )
 
-        render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
+        render_resizable_plotly_chart(
+            fig_total_stack, key='fig_total_stack_chart'
+        )
 
       if active_views:
         tabs = st.tabs(active_views)
@@ -1933,7 +2095,9 @@ if menu == '트렌드 리포트':
 elif menu == '계좌 별칭 관리':
   st.header('🏷️ 계좌 별칭 관리')
   conn = get_connection()
-  pf_df = pd.read_sql('SELECT DISTINCT broker, account_num, account_type FROM portfolio', conn)
+  pf_df = pd.read_sql(
+      'SELECT DISTINCT broker, account_num, account_type FROM portfolio', conn
+  )
   conn.close()
 
   if pf_df.empty:
@@ -1942,9 +2106,13 @@ elif menu == '계좌 별칭 관리':
     conn = get_connection()
     current_aliases = pd.read_sql('SELECT * FROM account_alias', conn)
     conn.close()
-    alias_dict = dict(zip(current_aliases['account_num'], current_aliases['alias']))
+    alias_dict = dict(
+        zip(current_aliases['account_num'], current_aliases['alias'])
+    )
 
-    st.markdown('##### 각 계좌 번호별로 직관적인 별칭을 부여할 수 있습니다.')
+    st.markdown(
+        '##### 각 계좌 번호별로 직관적인 별칭을 부여할 수 있습니다.'
+    )
     with st.form('alias_form'):
       updated_aliases = {}
       for _, row in pf_df.iterrows():
@@ -1989,7 +2157,6 @@ elif menu == '포트폴리오 업로드':
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
-        # 포트폴리오 엑셀 열 이름 표준화 유틸리티
         col_map = {
             '기준일자': 'record_date',
             '증권사': 'broker',
@@ -2009,23 +2176,26 @@ elif menu == '포트폴리오 업로드':
             '평가손익': 'eval_profit_loss',
             '수익률': 'return_rate',
             '포트폴리오비중': 'portfolio_weight',
-            '통화': 'currency'
+            '통화': 'currency',
         }
-        
-        # 맵핑 변환 적용 (한글 컬럼명이 있을 경우 영문 DB 컬럼명으로 변경)
+
         renamed_df = df_upload.rename(columns=col_map)
 
-        # DB에 존재하는 컬럼만 선별하여 적재
         conn = get_connection()
         c = conn.cursor()
-        c.execute("PRAGMA table_info(portfolio)")
+        c.execute('PRAGMA table_info(portfolio)')
         db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
-        
-        valid_df = renamed_df[[col for col in db_cols if col in renamed_df.columns]].copy()
-        
+
+        valid_df = renamed_df[
+            [col for col in db_cols if col in renamed_df.columns]
+        ].copy()
+
         valid_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-        st.success('포트폴리오의 모든 엑셀 열 정보가 데이터베이스에 성공적으로 적재되었습니다!')
+        st.success(
+            '포트폴리오의 모든 엑셀 열 정보가 데이터베이스에 성공적으로'
+            ' 적재되었습니다!'
+        )
     except Exception as e:
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
@@ -2035,7 +2205,9 @@ elif menu == '포트폴리오 업로드':
 elif menu == '원금 및 입출금 관리':
   st.header('💰 초기 원금 및 추가 입출금 관리')
   conn = get_connection()
-  acc_df = pd.read_sql('SELECT DISTINCT broker, account_num FROM portfolio', conn)
+  acc_df = pd.read_sql(
+      'SELECT DISTINCT broker, account_num FROM portfolio', conn
+  )
   init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
   conn.close()
@@ -2055,7 +2227,10 @@ elif menu == '원금 및 입출금 관리':
           acc = str(row['account_num'])
           cur_val = init_dict.get(acc, 0.0)
           val = st.number_input(
-              f'[{b}] {acc}', value=float(cur_val), step=100000.0, key=f'init_{acc}'
+              f'[{b}] {acc}',
+              value=float(cur_val),
+              step=100000.0,
+              key=f'init_{acc}',
           )
           new_init_data.append((acc, b, val))
 
@@ -2129,8 +2304,14 @@ elif menu == '등록 데이터 조회 및 웹 수정':
   if pf_full_df.empty:
     st.warning('등록된 포트폴리오 데이터가 없습니다.')
   else:
-    st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수 있습니다.')
-    st.caption('💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접 수정할 수 있습니다.')
+    st.markdown(
+        '##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할'
+        ' 수 있습니다.'
+    )
+    st.caption(
+        '💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을'
+        ' 직접 수정할 수 있습니다.'
+    )
 
     edited_df = st.data_editor(
         pf_full_df,
@@ -2142,11 +2323,12 @@ elif menu == '등록 데이터 조회 및 웹 수정':
     if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
       try:
         conn = get_connection()
-        # edited_df에는 웹 화면에서의 삭제/수정 사항이 이미 반영되어 있습니다.
         edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
 
-        st.success('포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!')
+        st.success(
+            '포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!'
+        )
         st.rerun()
       except Exception as e:
         st.error(f'데이터 갱신 중 오류 발생: {e}')
@@ -2181,7 +2363,9 @@ elif menu == '데이터 백업 및 복구':
           data=db_bytes,
           file_name=backup_filename,
           mime='application/octet-stream',
-          help='클릭하여 모든 등록 데이터가 포함된 백업 파일을 다운로드하세요.',
+          help=(
+              '클릭하여 모든 등록 데이터가 포함된 백업 파일을 다운로드하세요.'
+          ),
       )
     else:
       st.warning('백업할 데이터베이스 파일이 존재하지 않습니다.')
