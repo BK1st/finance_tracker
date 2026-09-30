@@ -21,7 +21,7 @@ def init_db():
   conn = sqlite3.connect(DB_FILE)
   c = conn.cursor()
 
-  # 첨부된 portfolio_0929_3.xlsx의 모든 열을 수용할 수 있도록 스키마 확장
+  # 첨부된 portfolio의 모든 열을 수용할 수 있도록 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -941,15 +941,20 @@ if menu == '트렌드 리포트':
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
           if not sub.empty:
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
-            final_eval = sub['총평가금액'].iloc[-1]
+            
+            # 최종 조회 날짜(latest_date) 기준 해당 그룹(종목 등)의 존재 여부 확인
+            sub_latest = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
+            if sub_latest.empty:
+              final_eval = 0.0
+            else:
+              final_eval = sub['총평가금액'].iloc[-1]
+              
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             
             if ex_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
+              final_principal = sub_latest['원금_ex_fx'].sum() if not sub_latest.empty else 0
             else:
-              sub_raw = raw_df[(raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+              final_principal = sub_latest['원금'].sum() if not sub_latest.empty else 0
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss
@@ -1989,7 +1994,6 @@ elif menu == '포트폴리오 업로드':
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
-        # 포트폴리오 엑셀 열 이름 표준화 유틸리티
         col_map = {
             '기준일자': 'record_date',
             '증권사': 'broker',
@@ -2012,16 +2016,13 @@ elif menu == '포트폴리오 업로드':
             '통화': 'currency'
         }
         
-        # 맵핑 변환 적용 (한글 컬럼명이 있을 경우 영문 DB 컬럼명으로 변경)
         renamed_df = df_upload.rename(columns=col_map)
 
-        # RECORD DATE (record_date) 날짜를 일('YYYY-MM-DD')까지만 보이도록 형식 수정
         if 'record_date' in renamed_df.columns:
           renamed_df['record_date'] = pd.to_datetime(
               renamed_df['record_date']
           ).dt.strftime('%Y-%m-%d')
 
-        # DB에 존재하는 컬럼만 선별하여 적재
         conn = get_connection()
         c = conn.cursor()
         c.execute("PRAGMA table_info(portfolio)")
@@ -2061,18 +2062,28 @@ elif menu == '원금 및 입출금 관리':
           acc = str(row['account_num'])
           cur_val = init_dict.get(acc, 0.0)
           val = st.number_input(
-              f'[{b}] {acc}', value=float(cur_val), step=100000.0, key=f'init_{acc}'
+              f'[{b}] 계좌: {acc}',
+              value=float(cur_val),
+              step=100000.0,
+              format='%f',
           )
-          new_init_data.append((acc, b, val))
+          new_init_data.append(
+              {'account_num': acc, 'broker': b, 'initial_amount': val}
+          )
 
-        if st.form_submit_button('💾 초기 원금 저장'):
+        sub_init = st.form_submit_button('💾 초기 원금 저장')
+        if sub_init:
           conn = get_connection()
           c = conn.cursor()
-          for acc, b, val in new_init_data:
+          for item in new_init_data:
             c.execute(
-                'INSERT OR REPLACE INTO initial_principal (account_num, broker,'
-                ' initial_amount) VALUES (?, ?, ?)',
-                (acc, b, val),
+                'INSERT OR REPLACE INTO initial_principal (account_num,'
+                ' broker, initial_amount) VALUES (?, ?, ?)',
+                (
+                    item['account_num'],
+                    item['broker'],
+                    item['initial_amount'],
+                ),
             )
           conn.commit()
           conn.close()
@@ -2080,16 +2091,23 @@ elif menu == '원금 및 입출금 관리':
           st.rerun()
 
     with tab2:
-      st.subheader('➕ 추가 입출금 내역 등록 및 조회')
-      with st.form('cash_flow_form'):
-        cf_date = st.date_input('거래일자', value=date.today())
-        acc_list = acc_df['account_num'].astype(str).tolist()
-        cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
-        cf_type = st.selectbox('구분', options=['입금', '출금'])
-        cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0)
-        cf_note = st.text_input('적요 / 메모')
+      st.subheader('💵 추가 입출금(캐시플로우) 내역 등록')
+      acc_options_cf = []
+      for _, row in acc_df.iterrows():
+        acc_options_cf.append(f"{row['broker']} | {row['account_num']}")
 
-        if st.form_submit_button('➕ 입출금 내역 추가'):
+      with st.form('cash_flow_form'):
+        cf_date = st.date_input('거래 일자', date.today())
+        cf_acc_label = st.selectbox('대상 계좌', options=acc_options_cf)
+        cf_type = st.selectbox('구분', options=['입금', '출금'])
+        cf_amount = st.number_input(
+            '금액 (원)', value=0.0, step=100000.0, format='%f'
+        )
+        cf_note = st.text_input('메모 (선택사항)')
+
+        sub_cf = st.form_submit_button('➕ 입출금 내역 추가')
+        if sub_cf:
+          acc_num_val = cf_acc_label.split('|')[1].strip()
           conn = get_connection()
           c = conn.cursor()
           c.execute(
@@ -2097,7 +2115,7 @@ elif menu == '원금 및 입출금 관리':
               ' amount, note) VALUES (?, ?, ?, ?, ?)',
               (
                   cf_date.strftime('%Y-%m-%d'),
-                  cf_acc,
+                  acc_num_val,
                   cf_type,
                   cf_amount,
                   cf_note,
@@ -2108,11 +2126,14 @@ elif menu == '원금 및 입출금 관리':
           st.success('입출금 내역이 추가되었습니다!')
           st.rerun()
 
-      st.markdown('##### 📋 등록된 입출금 내역 목록')
+      st.write('---')
+      st.subheader('📋 등록된 입출금 내역 목록')
       if not cf_df.empty:
         st.dataframe(cf_df, use_container_width=True)
-        del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
-        if st.button('🗑️ 선택 내역 삭제'):
+        del_id = st.number_input(
+            '삭제할 내역 ID 입력', min_value=1, step=1, value=1
+        )
+        if st.button('🗑️ 선택한 내역 삭제'):
           conn = get_connection()
           c = conn.cursor()
           c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
@@ -2127,93 +2148,76 @@ elif menu == '원금 및 입출금 관리':
 # 메뉴 5: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
 elif menu == '등록 데이터 조회 및 웹 수정':
-  st.header('🔍 등록 데이터 조회 및 웹 수정')
+  st.header('🔍 등록 데이터 조회 및 관리')
   conn = get_connection()
-  pf_full_df = pd.read_sql('SELECT * FROM portfolio', conn)
+  pf_df = pd.read_sql('SELECT rowid as id, * FROM portfolio', conn)
   conn.close()
 
-  if pf_full_df.empty:
-    st.warning('등록된 포트폴리오 데이터가 없습니다.')
+  if pf_df.empty:
+    st.warning('조회할 포트폴리오 데이터가 없습니다.')
   else:
-    st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수 있습니다.')
-    st.caption('💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접 수정할 수 있습니다.')
+    st.subheader('📋 포트폴리오 전체 데이터 (에디터)')
+    edited_df = st.data_editor(pf_df, num_rows='dynamic', use_container_width=True)
 
-    edited_df = st.data_editor(
-        pf_full_df,
-        num_rows='dynamic',
-        use_container_width=True,
-        key='portfolio_data_editor',
-    )
-
-    if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
+    if st.button('💾 데이터 변경사항 저장'):
       try:
         conn = get_connection()
-        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
-        conn.close()
+        c = conn.cursor()
+        c.execute('DELETE FROM portfolio')
+        conn.commit()
 
-        st.success('포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!')
-        st.rerun()
+        save_df = edited_df.drop(columns=['id'], errors='ignore')
+        save_df.to_sql('portfolio', conn, if_exists='append', index=False)
+        conn.close()
+        st.success('데이터가 성공적으로 업데이트되었습니다!')
       except Exception as e:
-        st.error(f'데이터 갱신 중 오류 발생: {e}')
+        st.error(f'저장 중 오류 발생: {e}')
+
+    st.write('---')
+    st.subheader('🗑️ 전체 포트폴리오 데이터 초기화')
+    if st.warning(
+        '⚠️ 주의: 아래 버튼을 누르면 데이터베이스의 모든 포트폴리오'
+        ' 데이터가 삭제됩니다.'
+    ):
+      if st.button('🚨 모든 포트폴리오 데이터 삭제'):
+        conn = get_connection()
+        c = conn.cursor()
+        c.execute('DELETE FROM portfolio')
+        conn.commit()
+        conn.close()
+        st.success('모든 포트폴리오 데이터가 삭제되었습니다.')
+        st.rerun()
 
 # -----------------------------------------------------------------------------
 # 메뉴 6: 데이터 백업 및 복구
 # -----------------------------------------------------------------------------
 elif menu == '데이터 백업 및 복구':
-  st.header('💾 데이터 백업 및 복구 관리')
-  st.markdown(
-      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 초기 원금, 입출금 내역,'
-      ' 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게 백업하거나, 추후'
-      ' 초기화 시 일괄 복구할 수 있습니다.'
+  st.header('💾 데이터 백업 및 복구')
+
+  if os.path.exists(DB_FILE):
+    with open(DB_FILE, 'rb') as f:
+      db_bytes = f.read()
+
+    st.download_button(
+        label='📥 SQLite DB 파일 백업 다운로드',
+        data=db_bytes,
+        file_name='asset_tracker.db',
+        mime='application/octet-stream',
+    )
+  else:
+    st.warning('백업할 데이터베이스 파일이 존재하지 않습니다.')
+
+  st.write('---')
+  st.subheader('🔄 데이터베이스 복구 (덮어쓰기)')
+  uploaded_db = st.file_uploader(
+      '백업해 둔 asset_tracker.db 파일을 업로드하세요', type=['db', 'sqlite']
   )
 
-  col_bk, col_rc = st.columns(2)
-
-  with col_bk:
-    st.subheader('📥 데이터 백업 (다운로드)')
-    st.markdown(
-        '현재 저장된 전체 데이터베이스 파일을 내 컴퓨터에 다운로드합니다.'
-    )
-    if os.path.exists(DB_FILE):
-      with open(DB_FILE, 'rb') as f:
-        db_bytes = f.read()
-
-      backup_filename = (
-          f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db'
-      )
-      st.download_button(
-          label='📦 백업 파일 다운로드 (.db)',
-          data=db_bytes,
-          file_name=backup_filename,
-          mime='application/octet-stream',
-          help='클릭하여 모든 등록 데이터가 포함된 백업 파일을 다운로드하세요.',
-      )
-    else:
-      st.warning('백업할 데이터베이스 파일이 존재하지 않습니다.')
-
-  with col_rc:
-    st.subheader('📤 데이터 복구 (업로드)')
-    st.markdown(
-        '이전에 백업해둔 데이터베이스 파일(`.db`)을 업로드하여 데이터를 일괄'
-        ' 복구합니다.'
-    )
-    uploaded_backup = st.file_uploader(
-        '백업 파일(`.db`) 선택', type=['db'], key='restore_backup_uploader'
-    )
-
-    if uploaded_backup is not None:
-      st.warning(
-          '⚠️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
-          ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
-      )
-      if st.button('🔄 데이터 복구 실행'):
-        try:
-          with open(DB_FILE, 'wb') as f:
-            f.write(uploaded_backup.getbuffer())
-          st.success(
-              '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
-              ' 새로고침됩니다.'
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f'데이터 복구 중 오류 발생: {e}')
+  if uploaded_db is not None:
+    if st.button('⚠️ 기존 데이터를 덮어쓰고 복구하기'):
+      try:
+        with open(DB_FILE, 'wb') as f:
+          f.write(uploaded_db.getbuffer())
+        st.success('데이터베이스가 성공적으로 복구되었습니다! 앱을 새로고침해 주세요.')
+      except Exception as e:
+        st.error(f'복구 중 오류 발생: {e}')
