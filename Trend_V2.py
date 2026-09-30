@@ -91,7 +91,7 @@ def init_db():
         )
     ''')
 
-  # 5) 거래 내역 통합 관리용 스키마
+  # 5) 거래 내역 스키마
   c.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +133,7 @@ def get_account_aliases():
 
 
 # -----------------------------------------------------------------------------
-# 2. 티커 포맷팅 및 시세 수집 함수
+# 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
 def format_ticker(t):
   """연금 계좌 종목 및 국내 ETF/주식 Ticker 포맷 표준화 함수"""
@@ -531,23 +531,13 @@ if menu == '트렌드 리포트':
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
+      unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
+      # transactions에 있는 신규 티커도 수집 대상에 포함
+      if not tx_df.empty and 'ticker' in tx_df.columns:
+        tx_tickers = tx_df['ticker'].dropna().unique().tolist()
+        unique_tickers = list(set(unique_tickers + tx_tickers))
 
-      # 거래 내역의 티커도 시세 수집 대상에 포함
-      tx_tickers = []
-      if not tx_df.empty:
-        tx_tickers = (
-            tx_df[tx_df['account_num'].astype(str).isin(selected_accounts)][
-                'ticker'
-            ]
-            .dropna()
-            .unique()
-            .tolist()
-        )
-
-      unique_tickers = (
-          filtered_pf_df['ticker'].dropna().unique().tolist() + tx_tickers
-      )
-      fetch_tickers = list(set(unique_tickers)) + list(bm_ticker_map.values())
+      fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
@@ -653,7 +643,7 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # 스냅샷 기준 포트폴리오 로드
+          # --- [핵심 수정] 시점별(t_str 이하) 거래 내역 누적 및 스냅샷 구성 로직 ---
           acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
@@ -671,11 +661,10 @@ if menu == '트렌드 리포트':
             latest_date = acc_pf['record_date'].max()
             current_pf = acc_pf[acc_pf['record_date'] == latest_date].copy()
 
-            # --- [개선] 기준 스냅샷 일자 이후부터 현재 조회일(t_str)까지의 거래 내역을 모두 반영 ---
+            # t_str 일자 이하에 발생한 모든 거래 내역(transactions)을 누적 반영
             if not tx_df.empty:
               acc_tx = tx_df[
                   (tx_df['account_num'].astype(str) == acc)
-                  & (tx_df['trans_date'] > latest_date)
                   & (tx_df['trans_date'] <= t_str)
               ]
 
@@ -689,7 +678,7 @@ if menu == '트렌드 리포트':
                 ]['net_amount'].sum()
                 principal += in_tx - out_tx
 
-                # 매수/매도 수량 업데이트
+                # 매수/매도 수량 및 보유 현황 정밀 업데이트
                 for _, tx_row in acc_tx.iterrows():
                   ttype = str(tx_row.get('trans_type', '')).strip()
                   tk_tx = format_ticker(tx_row.get('ticker'))
@@ -698,22 +687,15 @@ if menu == '트렌드 리포트':
                   )
 
                   if ttype in ['매수', '주식매수']:
-                    matched_mask = (
-                        current_pf['ticker'].apply(format_ticker) == tk_tx
-                    )
-                    if tk_tx and matched_mask.any():
-                      current_pf.loc[matched_mask, 'quantity'] += qty_tx
-                    else:
-                      # Category4 등 정보 보완
-                      cat4_val = tx_row.get('category4')
-                      if pd.isna(cat4_val) or not cat4_val:
-                        cat4_val = (
-                            current_pf['category4'].iloc[0]
-                            if 'category4' in current_pf.columns
-                            and not current_pf.empty
-                            else '국내주식'
-                        )
-
+                    matched = False
+                    if tk_tx:
+                      for idx_cp, row_cp in current_pf.iterrows():
+                        if format_ticker(row_cp.get('ticker')) == tk_tx:
+                          current_pf.loc[idx_cp, 'quantity'] += qty_tx
+                          matched = True
+                          break
+                    if not matched:
+                      # 신규 종목 추가 시 메타데이터 완벽히 채우기
                       new_row = {
                           'record_date': t_str,
                           'broker': broker_name,
@@ -721,8 +703,14 @@ if menu == '트렌드 리포트':
                           'account_type': acc_type,
                           'item_name': tx_row.get('item_name', '신규종목'),
                           'ticker': tx_row.get('ticker'),
-                          'category4': cat4_val,
+                          'category1': tx_row.get('category1', '기타'),
+                          'category2': tx_row.get('category2', '기타'),
+                          'category3': tx_row.get('category3', '기타'),
+                          'category4': tx_row.get(
+                              'category4', '국내주식/ETF'
+                          ),  # 적절한 기본 카테고리
                           'quantity': qty_tx,
+                          'purchase_price': tx_row.get('unit_price', 0),
                           'current_price': tx_row.get('unit_price', 0),
                           'currency': tx_row.get('currency', 'KRW'),
                       }
@@ -730,14 +718,15 @@ if menu == '트렌드 리포트':
                           [current_pf, pd.DataFrame([new_row])],
                           ignore_index=True,
                       )
-                  elif ttype in ['매도', '주식매도']:
-                    matched_mask = (
-                        current_pf['ticker'].apply(format_ticker) == tk_tx
-                    )
-                    if tk_tx and matched_mask.any():
-                      current_pf.loc[matched_mask, 'quantity'] -= qty_tx
 
-            # --- [핵심 개선] 수량이 0 이하인 종목(전량 매도 종목) 제거 ---
+                  elif ttype in ['매도', '주식매도']:
+                    if tk_tx:
+                      for idx_cp, row_cp in current_pf.iterrows():
+                        if format_ticker(row_cp.get('ticker')) == tk_tx:
+                          current_pf.loc[idx_cp, 'quantity'] -= qty_tx
+                          break
+
+            # [필수] 수량이 0 이하가 된 종목은 데이터프레임에서 완전히 제거 (Filter Out)
             current_pf = current_pf[current_pf['quantity'] > 0].copy()
 
             total_acc_eval = 0
@@ -1720,7 +1709,7 @@ if menu == '트렌드 리포트':
         )
         st.write('---')
 
-        st.markdown('##### ⚙️️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
+        st.markdown('##### ⚙️ [전체 합산] 차트별 범주 및 환율 옵션 설정')
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
@@ -2517,68 +2506,59 @@ elif menu == '데이터 백업 및 복구':
       try:
         conn = get_connection()
         pf_b = pd.read_sql('SELECT * FROM portfolio', conn)
-        tx_b = pd.read_sql('SELECT * FROM transactions', conn)
         init_b = pd.read_sql('SELECT * FROM initial_principal', conn)
         cf_b = pd.read_sql('SELECT * FROM cash_flow', conn)
         alias_b = pd.read_sql('SELECT * FROM account_alias', conn)
+        tx_b = pd.read_sql('SELECT * FROM transactions', conn)
         conn.close()
 
-        output_filename = (
-            f'db_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-        )
-        with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+        output_path = os.path.join(DATA_DIR, 'backup_asset_tracker.xlsx')
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
           pf_b.to_excel(writer, sheet_name='portfolio', index=False)
-          tx_b.to_excel(writer, sheet_name='transactions', index=False)
           init_b.to_excel(writer, sheet_name='initial_principal', index=False)
           cf_b.to_excel(writer, sheet_name='cash_flow', index=False)
           alias_b.to_excel(writer, sheet_name='account_alias', index=False)
+          tx_b.to_excel(writer, sheet_name='transactions', index=False)
 
-        st.success(
-            f'성공적으로 데이터가 로컬에 백업되었습니다: {output_filename}'
-        )
+        with open(output_path, 'rb') as f:
+          st.download_button(
+              label='💾 백업 파일 다운로드 (.xlsx)',
+              data=f,
+              file_name=f"asset_tracker_backup_{datetime.now().strftime('%Y%m%d')}.xlsx",
+              mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          )
+        st.success('백업 파일 생성이 완료되었습니다.')
       except Exception as e:
-        st.error(f'백업 파일 생성 중 오류 발생: {e}')
+        st.error(f'백업 진행 중 오류 발생: {e}')
 
   with col_b2:
-    st.subheader('📥 데이터 복구 (불러오기)')
-    uploaded_backup = st.file_uploader(
-        '백업 엑셀 파일(.xlsx)을 선택하세요',
+    st.subheader('📥 데이터 복구 (복원하기)')
+    restore_file = st.file_uploader(
+        '백업된 엑셀 파일(.xlsx)을 업로드하세요',
         type=['xlsx'],
-        key='backup_uploader',
+        key='restore_uploader',
     )
-    if uploaded_backup is not None:
-      if st.button('⚠️️ 백업 파일로 DB 덮어쓰기 복구'):
+    if restore_file is not None:
+      if st.button('⚠️ 기존 DB를 덮어쓰고 복구 진행'):
         try:
-          xls = pd.ExcelFile(uploaded_backup)
+          xls = pd.ExcelFile(restore_file)
           conn = get_connection()
 
-          if 'portfolio' in xls.sheet_names:
-            df_p = pd.read_excel(xls, sheet_name='portfolio')
-            df_p.to_sql('portfolio', conn, if_exists='replace', index=False)
+          sheet_table_map = {
+              'portfolio': 'portfolio',
+              'initial_principal': 'initial_principal',
+              'cash_flow': 'cash_flow',
+              'account_alias': 'account_alias',
+              'transactions': 'transactions',
+          }
 
-          if 'transactions' in xls.sheet_names:
-            df_t = pd.read_excel(xls, sheet_name='transactions')
-            df_t.to_sql('transactions', conn, if_exists='replace', index=False)
-
-          if 'initial_principal' in xls.sheet_names:
-            df_i = pd.read_excel(xls, sheet_name='initial_principal')
-            df_i.to_sql(
-                'initial_principal', conn, if_exists='replace', index=False
-            )
-
-          if 'cash_flow' in xls.sheet_names:
-            df_c = pd.read_excel(xls, sheet_name='cash_flow')
-            df_c.to_sql('cash_flow', conn, if_exists='replace', index=False)
-
-          if 'account_alias' in xls.sheet_names:
-            df_a = pd.read_excel(xls, sheet_name='account_alias')
-            df_a.to_sql('account_alias', conn, if_exists='replace', index=False)
+          for sheet, table in sheet_table_map.items():
+            if sheet in xls.sheet_names:
+              df_res = pd.read_excel(xls, sheet_name=sheet)
+              df_res.to_sql(table, conn, if_exists='replace', index=False)
 
           conn.close()
-          st.success(
-              '모든 테이블의 데이터가 성공적으로 백업 파일 기준으로'
-              ' 복구되었습니다!'
-          )
+          st.success('모든 데이터베이스가 복구되었습니다!')
           st.rerun()
         except Exception as e:
-          st.error(f'데이터 복구 처리 중 오류 발생: {e}')
+          st.error(f'복구 중 오류 발생: {e}')
