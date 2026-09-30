@@ -83,6 +83,19 @@ def init_db():
         )
     ''')
 
+  # cash_flow 테이블 마이그레이션 (매매 및 배당 관련 상세 컬럼 추가)
+  c.execute('PRAGMA table_info(cash_flow)')
+  cf_existing_cols = [col[1] for col in c.fetchall()]
+  cf_new_cols = {
+      'ticker': 'TEXT',
+      'item_name': 'TEXT',
+      'quantity': 'REAL',
+      'price': 'REAL',
+  }
+  for col, dtype in cf_new_cols.items():
+    if col not in cf_existing_cols:
+      c.execute(f'ALTER TABLE cash_flow ADD COLUMN {col} {dtype}')
+
   c.execute('''
         CREATE TABLE IF NOT EXISTS account_alias (
             account_num TEXT PRIMARY KEY,
@@ -278,7 +291,7 @@ menu = st.sidebar.selectbox(
         '트렌드 리포트',
         '계좌 별칭 관리',
         '포트폴리오 업로드',
-        '원금 및 입출금 관리',
+        '원금 및 통합 거래 관리',
         '등록 데이터 조회 및 웹 수정',
         '데이터 백업 및 복구',
     ],
@@ -600,6 +613,9 @@ if menu == '트렌드 리포트':
               if not init_p_df.empty
               else 0
           )
+
+          # 입출금 및 배당금 반영
+          in_flow, out_flow, acc_dividends = 0, 0, 0
           if not cf_df.empty:
             acc_cf = cf_df[
                 (cf_df['account_num'].astype(str) == acc)
@@ -607,8 +623,10 @@ if menu == '트렌드 리포트':
             ]
             in_flow = acc_cf[acc_cf['flow_type'] == '입금']['amount'].sum()
             out_flow = acc_cf[acc_cf['flow_type'] == '출금']['amount'].sum()
-          else:
-            in_flow, out_flow = 0, 0
+            acc_dividends = acc_cf[acc_cf['flow_type'] == '배당금'][
+                'amount'
+            ].sum()
+
           principal = init_val + in_flow - out_flow
 
           acc_pf = filtered_pf_df[
@@ -698,6 +716,10 @@ if menu == '트렌드 리포트':
               item_eval_list.append(
                   (item_name, cat4, item_eval, item_eval_ex_fx)
               )
+
+            # 수령한 누적 배당금을 현금성 자산으로 평가금액에 가산하여 정합성 유지
+            total_acc_eval += acc_dividends
+            total_acc_eval_ex_fx += acc_dividends
 
             item_count = len(item_eval_list)
             for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
@@ -875,7 +897,6 @@ if menu == '트렌드 리포트':
               .reset_index()
           )
 
-          # 매도하여 보유하지 않는 항목에 대해 사후 기간 가상 평가액 유지 방지 (보유 기간 내에만 ffill 적용 및 외에는 0 처리)
           all_target_dates = sorted(raw_df['Date'].unique().tolist())
           filled_groups = []
           for grp in grp_agg[group_col].unique():
@@ -897,8 +918,7 @@ if menu == '트렌드 리포트':
                 suffixes=('', '_dup'),
             )
             m[group_col] = grp
-            
-            # 실제 보유 기간(grp_min_date ~ grp_max_date) 내에서만 ffill 적용, 외에는 0 처리
+
             active_mask = (m['dt'] >= grp_min_date) & (m['dt'] <= grp_max_date)
             m['원금'] = np.where(active_mask, m['원금'], 0)
             m['총평가금액'] = np.where(active_mask, m['총평가금액'], 0)
@@ -920,7 +940,6 @@ if menu == '트렌드 리포트':
           grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
           grp_agg.drop(columns=['dt_temp'], inplace=True)
 
-          # 현금 유입분(추가 매수 원금)을 반영한 보정 누적손익 계산 (주기별 총평가변화 - 원금변화의 누적합)
           grp_agg['주기별_총평가변화'] = (
               grp_agg.groupby(group_col)['총평가금액'].diff().fillna(0)
           )
@@ -981,9 +1000,6 @@ if menu == '트렌드 리포트':
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
-        # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표 (latest_date 기준 원본 보유 여부 체크 추가)
-        # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle(
             '🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}'
@@ -997,7 +1013,6 @@ if menu == '트렌드 리포트':
         total_principal_sum = 0
 
         for grp in groups:
-          # latest_date 시점의 원본 데이터 보유 여부(총평가금액 > 0) 체크
           raw_latest = raw_df[
               (raw_df[group_col] == grp) & (raw_df['Date'] == latest_date)
           ]
@@ -1404,9 +1419,6 @@ if menu == '트렌드 리포트':
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
-        # -------------------------------------------------------------------------
-        # 하단 추가 기능: [계좌별] 및 [계좌유형별] 관점 필터링 누적 세로 막대 차트
-        # -------------------------------------------------------------------------
         if group_col in ['account_num', 'account_type']:
           st.write('---')
           st.markdown(
@@ -1578,9 +1590,6 @@ if menu == '트렌드 리포트':
         agg1_def = get_whose_agg(False)
         whose_list = sorted(agg1_def['whose'].unique())
 
-        # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표
-        # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle(
             '🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total'
@@ -1989,9 +1998,6 @@ if menu == '트렌드 리포트':
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
-        # -------------------------------------------------------------------------
-        # 하단 추가 기능: [전체 합산] 관점 일자별 총 평가 금액 누적 세로 막대 차트
-        # -------------------------------------------------------------------------
         st.write('---')
         st.markdown(
             '### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)'
@@ -2091,7 +2097,7 @@ if menu == '트렌드 리포트':
             elif v_type == '계좌별':
               draw_group_summary_charts(calc_df, 'account_num', '계좌별')
             elif v_type == '증권사(Broker)별':
-              draw_group_summary_charts(calc_df, 'broker', '증권사별')
+              draw_group_summary_charts(calc_df, 'broker', '증권사(Broker)별')
             elif v_type == '계좌유형별':
               draw_group_summary_charts(calc_df, 'account_type', '계좌유형별')
             elif v_type == 'Category 4별':
@@ -2212,22 +2218,25 @@ elif menu == '포트폴리오 업로드':
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 입출금 관리
+# 메뉴 4: 원금 및 통합 거래 관리 (입출금 + 매매 + 배당)
 # -----------------------------------------------------------------------------
-elif menu == '원금 및 입출금 관리':
-  st.header('💰 초기 원금 및 추가 입출금 관리')
+elif menu == '원금 및 통합 거래 관리':
+  st.header('💰 초기 원금 및 통합 거래(입출금/매매/배당) 관리')
   conn = get_connection()
   acc_df = pd.read_sql(
       'SELECT DISTINCT broker, account_num FROM portfolio', conn
   )
   init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
+  portfolio_items_df = pd.read_sql(
+      'SELECT DISTINCT account_num, item_name, ticker FROM portfolio', conn
+  )
   conn.close()
 
   if acc_df.empty:
     st.warning('등록된 계좌 정보가 없습니다.')
   else:
-    tab1, tab2 = st.tabs(['초기 원금 설정', '추가 입출금 내역 관리'])
+    tab1, tab2 = st.tabs(['초기 원금 설정', '통합 거래(입출금/매매/배당) 관리'])
 
     with tab1:
       st.subheader('📌 계좌별 초기 원금 설정')
@@ -2261,35 +2270,97 @@ elif menu == '원금 및 입출금 관리':
           st.rerun()
 
     with tab2:
-      st.subheader('➕ 추가 입출금 내역 등록 및 조회')
+      st.subheader('➕ 통합 거래 내역 등록 (입금, 출금, 매수, 매도, 배당금)')
       with st.form('cash_flow_form'):
         cf_date = st.date_input('거래일자', value=date.today())
         acc_list = acc_df['account_num'].astype(str).tolist()
         cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
-        cf_type = st.selectbox('구분', options=['입금', '출금'])
-        cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0)
-        cf_note = st.text_input('적요 / 메모')
 
-        if st.form_submit_button('➕ 입출금 내역 추가'):
+        # 구분 확대 (입금, 출금, 매수, 매도, 배당금)
+        cf_type = st.selectbox(
+            '거래 구분', options=['입금', '출금', '매수', '매도', '배당금']
+        )
+
+        # 매수/매도/배당금인 경우 종목 선택 또는 직접 입력
+        item_name_input = None
+        ticker_input = None
+        quantity_input = 0.0
+        price_input = 0.0
+        amount_input = 0.0
+
+        if cf_type in ['매수', '매도', '배당금']:
+          st.markdown('---')
+          st.markdown(
+              '**📌 종목 상세 정보 (매수/매도/배당금 발생 시 입력)**'
+          )
+          # 해당 계좌의 보유 종목 리스트 추출
+          acc_items = portfolio_items_df[
+              portfolio_items_df['account_num'].astype(str) == cf_acc
+          ]
+          item_choices = (
+              acc_items['item_name'].dropna().unique().tolist()
+              if not acc_items.empty
+              else []
+          )
+          item_choices.append('직접 입력')
+
+          selected_item_choice = st.selectbox(
+              '대상 종목 선택', options=item_choices
+          )
+          if selected_item_choice == '직접 입력':
+            item_name_input = st.text_input('종목명 입력')
+            ticker_input = st.text_input('티커 입력 (선택사항)')
+          else:
+            item_name_input = selected_item_choice
+            matched_tk = acc_items[acc_items['item_name'] == item_name_input][
+                'ticker'
+            ].values
+            ticker_input = matched_tk[0] if len(matched_tk) > 0 else ''
+
+          if cf_type in ['매수', '매도']:
+            quantity_input = st.number_input(
+                '거래 수량', value=0.0, step=1.0, format='%.4f'
+            )
+            price_input = st.number_input(
+                '거래 단가', value=0.0, step=100.0, format='%.2f'
+            )
+            amount_input = quantity_input * price_input
+            st.info(f'💡 자동 계산된 총 거래금액: {amount_input:,.2f} 원')
+          else:  # 배당금
+            amount_input = st.number_input(
+                '배당금 총액 (원화 또는 환산금액)', value=0.0, step=1000.0
+            )
+          st.markdown('---')
+        else:
+          amount_input = st.number_input('금액 (원)', value=0.0, step=100000.0)
+
+        cf_note = st.text_input('적요 / 메모 (예: 3분기 배당금 수령 등)')
+
+        if st.form_submit_button('➕ 통합 거래 내역 추가'):
           conn = get_connection()
           c = conn.cursor()
           c.execute(
               'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
-              ' amount, note) VALUES (?, ?, ?, ?, ?)',
+              ' amount, note, ticker, item_name, quantity, price) VALUES (?, ?,'
+              ' ?, ?, ?, ?, ?, ?, ?)',
               (
                   cf_date.strftime('%Y-%m-%d'),
                   cf_acc,
                   cf_type,
-                  cf_amount,
+                  amount_input,
                   cf_note,
+                  ticker_input,
+                  item_name_input,
+                  quantity_input if cf_type in ['매수', '매도'] else None,
+                  price_input if cf_type in ['매수', '매도'] else None,
               ),
           )
           conn.commit()
           conn.close()
-          st.success('입출금 내역이 추가되었습니다!')
+          st.success('통합 거래 내역이 성공적으로 추가되었습니다!')
           st.rerun()
 
-      st.markdown('##### 📋 등록된 입출금 내역 목록')
+      st.markdown('##### 📋 등록된 통합 거래 내역 목록')
       if not cf_df.empty:
         st.dataframe(cf_df, use_container_width=True)
         del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
@@ -2302,7 +2373,7 @@ elif menu == '원금 및 입출금 관리':
           st.success(f'ID {del_id} 내역이 삭제되었습니다.')
           st.rerun()
       else:
-        st.info('등록된 입출금 내역이 없습니다.')
+        st.info('등록된 거래 내역이 없습니다.')
 
 # -----------------------------------------------------------------------------
 # 메뉴 5: 등록 데이터 조회 및 웹 수정
@@ -2351,9 +2422,9 @@ elif menu == '등록 데이터 조회 및 웹 수정':
 elif menu == '데이터 백업 및 복구':
   st.header('💾 데이터 백업 및 복구 관리')
   st.markdown(
-      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 초기 원금, 입출금 내역,'
-      ' 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게 백업하거나, 추후'
-      ' 초기화 시 일괄 복구할 수 있습니다.'
+      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 초기 원금, 입출금 및'
+      ' 매매/배당 내역, 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게'
+      ' 백업하거나, 추후 초기화 시 일괄 복구할 수 있습니다.'
   )
 
   col_bk, col_rc = st.columns(2)
@@ -2394,7 +2465,7 @@ elif menu == '데이터 백업 및 복구':
 
     if uploaded_backup is not None:
       st.warning(
-          '⚠️️ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
+          '⚠ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
           ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
       )
       if st.button('🔄 데이터 복구 실행'):
