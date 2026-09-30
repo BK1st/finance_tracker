@@ -1301,7 +1301,7 @@ if menu == '트렌드 리포트':
           st.write('---')
           st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트')
           
-          c_sub1, c_sub2 = st.columns([2, 2])
+          c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
           with c_sub1:
             all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
             selected_filter_items = st.multiselect(
@@ -1316,6 +1316,13 @@ if menu == '트렌드 리포트':
                 options=['category4별', '보유 항목별'],
                 horizontal=True,
                 key=f'sub_group_opt_{prefix}'
+            )
+          with c_sub3:
+            pos_sub_stack = st.selectbox(
+                '📌 범례(Legend) 배치',
+                options=leg_pos_options,
+                index=default_idx,
+                key=f'pos_sub_stack_{prefix}'
             )
 
           target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
@@ -1342,6 +1349,7 @@ if menu == '트렌드 리포트':
                   )
               )
 
+            leg_cfg_sub, show_sub, margin_sub = build_legend_config(pos_sub_stack)
             fig_sub_stack.update_layout(
                 title=dict(
                     text=f'🔹 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
@@ -1350,8 +1358,9 @@ if menu == '트렌드 리포트':
                 barmode='stack',
                 hovermode='closest',
                 height=500,
-                margin=dict(t=120, b=100, l=10, r=20),
-                legend=dict(orientation='h', y=-0.2, x=0)
+                margin=margin_sub,
+                showlegend=show_sub,
+                legend=leg_cfg_sub
             )
             fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
             apply_y_axis_config(fig_sub_stack, is_money=True)
@@ -1819,12 +1828,21 @@ if menu == '트렌드 리포트':
             '보유 항목별': 'item_name'
         }
         
-        selected_total_group = st.radio(
-            '분류 항목 선택',
-            options=list(group_opt_map.keys()),
-            horizontal=True,
-            key='total_stack_group_opt'
-        )
+        c_tot1, c_tot2 = st.columns([3, 2])
+        with c_tot1:
+          selected_total_group = st.radio(
+              '분류 항목 선택',
+              options=list(group_opt_map.keys()),
+              horizontal=True,
+              key='total_stack_group_opt'
+          )
+        with c_tot2:
+          pos_total_stack = st.selectbox(
+              '📌 범례(Legend) 배치',
+              options=leg_pos_options,
+              index=default_idx,
+              key='pos_total_stack'
+          )
         
         target_col = group_opt_map[selected_total_group]
         
@@ -1847,6 +1865,7 @@ if menu == '트렌드 리포트':
               )
           )
 
+        leg_cfg_tot, show_tot, margin_tot = build_legend_config(pos_total_stack)
         fig_total_stack.update_layout(
             title=dict(
                 text=f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group} 기준 누적)',
@@ -1855,8 +1874,9 @@ if menu == '트렌드 리포트':
             barmode='stack',
             hovermode='closest',
             height=500,
-            margin=dict(t=120, b=100, l=10, r=20),
-            legend=dict(orientation='h', y=-0.2, x=0)
+            margin=margin_tot,
+            showlegend=show_tot,
+            legend=leg_cfg_tot
         )
         fig_total_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
         apply_y_axis_config(fig_total_stack, is_money=True)
