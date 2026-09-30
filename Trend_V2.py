@@ -354,44 +354,44 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    with st.form('trend_control_form'):
-      st.subheader('⚙️ 분석 조건 설정')
+    st.subheader('⚙️ 분석 조건 설정')
 
-      selected_whose = st.multiselect(
-          '👤 WHOSE 선택 (우선순위)',
-          options=all_whose_options,
-          default=st.session_state.get(
-              'trend_sel_whose', all_whose_options
-          ),
-          help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
+    # [수정 1] WHOSE 선택 필드를 Form 외부로 이동하여 실시간 반응형 연동 구현
+    selected_whose = st.multiselect(
+        '👤 WHOSE 선택 (우선순위)',
+        options=all_whose_options,
+        default=st.session_state.get('trend_sel_whose', all_whose_options),
+        key='trend_sel_whose',
+        help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 즉시 연동되어 표시됩니다.',
+    )
+
+    filtered_acc_info = acc_info_df[
+        acc_info_df['whose'].isin(selected_whose)
+    ]
+
+    acc_options = []
+    for _, row in filtered_acc_info.iterrows():
+      acc_num = str(row['account_num'])
+      alias = alias_map.get(acc_num, '')
+      display_alias = (
+          alias
+          if alias
+          else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
       )
+      acc_type_str = (
+          row['account_type']
+          if ('account_type' in row and pd.notna(row['account_type']))
+          else '미지정'
+      )
+      broker_str = (
+          row['broker']
+          if ('broker' in row and pd.notna(row['broker']))
+          else '증권사미지정'
+      )
+      label = f'{broker_str} | {display_alias} [{acc_type_str}]'
+      acc_options.append(label)
 
-      filtered_acc_info = acc_info_df[
-          acc_info_df['whose'].isin(selected_whose)
-      ]
-
-      acc_options = []
-      for _, row in filtered_acc_info.iterrows():
-        acc_num = str(row['account_num'])
-        alias = alias_map.get(acc_num, '')
-        display_alias = (
-            alias
-            if alias
-            else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
-        )
-        acc_type_str = (
-            row['account_type']
-            if ('account_type' in row and pd.notna(row['account_type']))
-            else '미지정'
-        )
-        broker_str = (
-            row['broker']
-            if ('broker' in row and pd.notna(row['broker']))
-            else '증권사미지정'
-        )
-        label = f'{broker_str} | {display_alias} [{acc_type_str}]'
-        acc_options.append(label)
-
+    with st.form('trend_control_form'):
       f_col1, f_col2 = st.columns([3, 3])
 
       with f_col1:
@@ -768,7 +768,7 @@ if menu == '트렌드 리포트':
       active_views = st.session_state.get('trend_view_types', all_view_types)
 
       st.write('---')
-      st.subheader('🖥️️ 화면 디스플레이 설정 (실시간 반영)')
+      st.subheader('🖥 화면 디스플레이 설정 (실시간 반영)')
 
       disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2.5, 2.5, 2, 3])
 
@@ -909,7 +909,7 @@ if menu == '트렌드 리포트':
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         # -------------------------------------------------------------------------
-        # 각 항목별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
+        # 각 항목별 최종 핵심지표 요약 표
         # -------------------------------------------------------------------------
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
@@ -1358,9 +1358,6 @@ if menu == '트렌드 리포트':
         agg1_def = get_whose_agg(False)
         whose_list = sorted(agg1_def['whose'].unique())
 
-        # -------------------------------------------------------------------------
-        # [전체 합산] WHOSE별 최종 핵심지표 요약 표 (환차손 제외 보기 토글 추가)
-        # -------------------------------------------------------------------------
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
         
@@ -1810,7 +1807,7 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 메뉴 3: 포트폴리오 업로드 (whose 컬럼 자동/수동 보완 로직 적용)
+# 메뉴 3: 포트폴리오 업로드 (업데이트 불일치 및 whose 자동 판별 로직 완전 수정)
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
   st.header('📤 포트폴리오 엑셀 업로드')
@@ -1822,11 +1819,15 @@ elif menu == '포트폴리오 업로드':
     try:
       df_upload = pd.read_excel(uploaded_file)
 
+      # 엑셀 날짜 컬럼 표준화
+      if 'record_date' in df_upload.columns:
+        df_upload['record_date'] = pd.to_datetime(df_upload['record_date']).dt.strftime('%Y-%m-%d')
+
       alias_map = get_account_aliases()
 
       def resolve_whose(row):
         val = row.get('whose')
-        if pd.notna(val) and str(val).strip() != '':
+        if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() != 'nan':
           return str(val).strip()
         acc_num = str(row.get('account_num', ''))
         broker = str(row.get('broker', ''))
@@ -1836,18 +1837,40 @@ elif menu == '포트폴리오 업로드':
           return 'SH'
         return 'BJ'
 
-      if 'whose' not in df_upload.columns:
-        st.info("💡 업로드한 엑셀 파일에 'whose' 컬럼이 없어 계좌 정보 및 별칭을 기준으로 'whose' 컬럼을 자동 생성하였습니다.")
-
       df_upload['whose'] = df_upload.apply(resolve_whose, axis=1)
 
       st.write('미리보기 (상위 5행):', df_upload.head())
 
       if st.button('📥 데이터베이스에 적재하기'):
         conn = get_connection()
-        df_upload.to_sql('portfolio', conn, if_exists='append', index=False)
+        c = conn.cursor()
+
+        # [수정 2] 업로드한 데이터의 기준일자(record_date) 기존 데이터 교체 처리
+        if 'record_date' in df_upload.columns:
+          upload_dates = df_upload['record_date'].unique().tolist()
+          for d_str in upload_dates:
+            c.execute("DELETE FROM portfolio WHERE record_date = ?", (d_str,))
+          conn.commit()
+
+        # 컬럼 순서 정렬 및 적재
+        db_cols = [
+            'record_date', 'broker', 'account_num', 'account_type',
+            'item_name', 'ticker', 'category1', 'category2',
+            'category3', 'category4', 'quantity', 'current_price',
+            'currency', 'whose'
+        ]
+        
+        for col in db_cols:
+          if col not in df_upload.columns:
+            df_upload[col] = None
+
+        df_to_save = df_upload[db_cols]
+        df_to_save.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-        st.success('포트폴리오 데이터가 성공적으로 적재되었습니다!')
+
+        st.cache_data.clear()
+        st.success('포트폴리오 데이터가 성공적으로 적재 및 업데이트되었습니다!')
+        st.rerun()
     except Exception as e:
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
@@ -1952,7 +1975,7 @@ elif menu == '등록 데이터 조회 및 웹 수정':
     st.warning('등록된 포트폴리오 데이터가 없습니다.')
   else:
     st.markdown('##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/저장할 수 있습니다.')
-    
+
     edited_df = st.data_editor(pf_full_df, num_rows='dynamic', use_container_width=True, key='portfolio_data_editor')
 
     if st.button('💾 수정 사항 데이터베이스에 반영'):
@@ -1960,6 +1983,7 @@ elif menu == '등록 데이터 조회 및 웹 수정':
         conn = get_connection()
         edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
         conn.close()
+        st.cache_data.clear()
         st.success('포트폴리오 데이터가 성공적으로 갱신되었습니다!')
         st.rerun()
       except Exception as e:
@@ -2019,6 +2043,7 @@ elif menu == '데이터 백업 및 복구':
         try:
           with open(DB_FILE, 'wb') as f:
             f.write(uploaded_backup.getbuffer())
+          st.cache_data.clear()
           st.success(
               '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
               ' 새로고침됩니다.'
