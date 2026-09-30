@@ -72,25 +72,48 @@ def init_db():
         )
     ''')
 
+  # PORTFOLIO 정보와 동일한 FORMAT을 갖도록 cash_flow 테이블 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS cash_flow (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             trans_date TEXT,
+            owner TEXT,
+            broker TEXT,
             account_num TEXT,
+            account_name TEXT,
+            account_type TEXT,
             flow_type TEXT,
+            item_name TEXT,
+            ticker TEXT,
+            category1 TEXT,
+            category2 TEXT,
+            category3 TEXT,
+            category4 TEXT,
+            quantity REAL,
+            price REAL,
             amount REAL,
+            currency TEXT,
             note TEXT
         )
     ''')
 
-  # cash_flow 테이블 마이그레이션 (매매 및 배당 관련 상세 컬럼 추가)
+  # cash_flow 테이블 자동 마이그레이션
   c.execute('PRAGMA table_info(cash_flow)')
   cf_existing_cols = [col[1] for col in c.fetchall()]
   cf_new_cols = {
+      'owner': 'TEXT',
+      'broker': 'TEXT',
+      'account_name': 'TEXT',
+      'account_type': 'TEXT',
       'ticker': 'TEXT',
       'item_name': 'TEXT',
+      'category1': 'TEXT',
+      'category2': 'TEXT',
+      'category3': 'TEXT',
+      'category4': 'TEXT',
       'quantity': 'REAL',
       'price': 'REAL',
+      'currency': 'TEXT',
   }
   for col, dtype in cf_new_cols.items():
     if col not in cf_existing_cols:
@@ -2218,18 +2241,22 @@ elif menu == '포트폴리오 업로드':
       st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
 
 # -----------------------------------------------------------------------------
-# 메뉴 4: 원금 및 통합 거래 관리 (입출금 + 매매 + 배당)
+# 메뉴 4: 원금 및 통합 거래 관리 (PORTFOLIO 포맷 동기화 및 웹 실시간 수정)
 # -----------------------------------------------------------------------------
 elif menu == '원금 및 통합 거래 관리':
   st.header('💰 초기 원금 및 통합 거래(입출금/매매/배당) 관리')
   conn = get_connection()
   acc_df = pd.read_sql(
-      'SELECT DISTINCT broker, account_num FROM portfolio', conn
+      'SELECT DISTINCT broker, account_num, account_name, account_type FROM'
+      ' portfolio',
+      conn,
   )
   init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
-  portfolio_items_df = pd.read_sql(
-      'SELECT DISTINCT account_num, item_name, ticker FROM portfolio', conn
+  pf_items_df = pd.read_sql(
+      'SELECT DISTINCT account_num, item_name, ticker, category1, category2,'
+      ' category3, category4, currency FROM portfolio',
+      conn,
   )
   conn.close()
 
@@ -2270,110 +2297,174 @@ elif menu == '원금 및 통합 거래 관리':
           st.rerun()
 
     with tab2:
-      st.subheader('➕ 통합 거래 내역 등록 (입금, 출금, 매수, 매도, 배당금)')
-      with st.form('cash_flow_form'):
-        cf_date = st.date_input('거래일자', value=date.today())
-        acc_list = acc_df['account_num'].astype(str).tolist()
-        cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
+      st.subheader('📝 통합 거래 내역 관리 (PORTFOLIO 포맷 표준 적용)')
+      st.caption(
+          '💡 아래 데이터 테이블에서 줄을 직접 삭제, 수정 또는 하단 **+**'
+          ' 버튼으로 줄을 추가하여 작성할 수 있습니다. (매도 시 계좌 보유'
+          ' 종목 자동 연결)'
+      )
 
-        # 구분 확대 (입금, 출금, 매수, 매도, 배당금)
-        cf_type = st.selectbox(
-            '거래 구분', options=['입금', '출금', '매수', '매도', '배당금']
-        )
+      # 1. 포트폴리오 기준 드롭다운 옵션 준비
+      all_accounts = acc_df['account_num'].astype(str).unique().tolist()
+      all_brokers = acc_df['broker'].dropna().unique().tolist()
+      all_owners = ['BJ', 'SH']
+      all_flow_types = ['입금', '출금', '매수', '매도', '배당금']
+      all_currencies = ['KRW', 'USD']
 
-        # 매수/매도/배당금인 경우 종목 선택 또는 직접 입력
-        item_name_input = None
-        ticker_input = None
-        quantity_input = 0.0
-        price_input = 0.0
-        amount_input = 0.0
+      # 계좌별 보유 종목 맵 (매도 시 보유 종목 연동용)
+      acc_item_map = {}
+      for acc_n in all_accounts:
+        sub_items = pf_items_df[
+            pf_items_df['account_num'].astype(str) == acc_n
+        ]
+        acc_item_map[acc_n] = sub_items['item_name'].dropna().unique().tolist()
 
-        if cf_type in ['매수', '매도', '배당금']:
-          st.markdown('---')
-          st.markdown(
-              '**📌 종목 상세 정보 (매수/매도/배당금 발생 시 입력)**'
-          )
-          # 해당 계좌의 보유 종목 리스트 추출
-          acc_items = portfolio_items_df[
-              portfolio_items_df['account_num'].astype(str) == cf_acc
-          ]
-          item_choices = (
-              acc_items['item_name'].dropna().unique().tolist()
-              if not acc_items.empty
-              else []
-          )
-          item_choices.append('직접 입력')
+      all_items = pf_items_df['item_name'].dropna().unique().tolist()
 
-          selected_item_choice = st.selectbox(
-              '대상 종목 선택', options=item_choices
-          )
-          if selected_item_choice == '직접 입력':
-            item_name_input = st.text_input('종목명 입력')
-            ticker_input = st.text_input('티커 입력 (선택사항)')
-          else:
-            item_name_input = selected_item_choice
-            matched_tk = acc_items[acc_items['item_name'] == item_name_input][
-                'ticker'
-            ].values
-            ticker_input = matched_tk[0] if len(matched_tk) > 0 else ''
+      # 컬럼 정렬 (PORTFOLIO 동일 포맷 적용)
+      target_cols = [
+          'trans_date',
+          'owner',
+          'account_num',
+          'broker',
+          'account_name',
+          'account_type',
+          'flow_type',
+          'item_name',
+          'ticker',
+          'quantity',
+          'price',
+          'amount',
+          'currency',
+          'category1',
+          'category2',
+          'category3',
+          'category4',
+          'note',
+      ]
 
-          if cf_type in ['매수', '매도']:
-            quantity_input = st.number_input(
-                '거래 수량', value=0.0, step=1.0, format='%.4f'
-            )
-            price_input = st.number_input(
-                '거래 단가', value=0.0, step=100.0, format='%.2f'
-            )
-            amount_input = quantity_input * price_input
-            st.info(f'💡 자동 계산된 총 거래금액: {amount_input:,.2f} 원')
-          else:  # 배당금
-            amount_input = st.number_input(
-                '배당금 총액 (원화 또는 환산금액)', value=0.0, step=1000.0
-            )
-          st.markdown('---')
-        else:
-          amount_input = st.number_input('금액 (원)', value=0.0, step=100000.0)
-
-        cf_note = st.text_input('적요 / 메모 (예: 3분기 배당금 수령 등)')
-
-        if st.form_submit_button('➕ 통합 거래 내역 추가'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute(
-              'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
-              ' amount, note, ticker, item_name, quantity, price) VALUES (?, ?,'
-              ' ?, ?, ?, ?, ?, ?, ?)',
-              (
-                  cf_date.strftime('%Y-%m-%d'),
-                  cf_acc,
-                  cf_type,
-                  amount_input,
-                  cf_note,
-                  ticker_input,
-                  item_name_input,
-                  quantity_input if cf_type in ['매수', '매도'] else None,
-                  price_input if cf_type in ['매수', '매도'] else None,
-              ),
-          )
-          conn.commit()
-          conn.close()
-          st.success('통합 거래 내역이 성공적으로 추가되었습니다!')
-          st.rerun()
-
-      st.markdown('##### 📋 등록된 통합 거래 내역 목록')
       if not cf_df.empty:
-        st.dataframe(cf_df, use_container_width=True)
-        del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
-        if st.button('🗑️ 선택 내역 삭제'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
-          conn.commit()
-          conn.close()
-          st.success(f'ID {del_id} 내역이 삭제되었습니다.')
-          st.rerun()
+        for c_col in target_cols:
+          if c_col not in cf_df.columns:
+            cf_df[c_col] = None
+        edit_cf_df = cf_df[target_cols].copy()
       else:
-        st.info('등록된 거래 내역이 없습니다.')
+        edit_cf_df = pd.DataFrame(columns=target_cols)
+
+      # 2. 웹 에디터 인터페이스 및 자동 종목/티커 연동 Column Config
+      column_config = {
+          'trans_date': st.column_config.DateColumn(
+              '거래일자', format='YYYY-MM-DD', required=True
+          ),
+          'owner': st.column_config.SelectboxColumn(
+              '소유주', options=all_owners, required=True
+          ),
+          'account_num': st.column_config.SelectboxColumn(
+              '계좌번호', options=all_accounts, required=True
+          ),
+          'broker': st.column_config.SelectboxColumn(
+              '증권사', options=all_brokers
+          ),
+          'account_name': st.column_config.TextColumn('계좌명'),
+          'account_type': st.column_config.TextColumn('계좌유형'),
+          'flow_type': st.column_config.SelectboxColumn(
+              '거래 구분', options=all_flow_types, required=True
+          ),
+          'item_name': st.column_config.SelectboxColumn(
+              '종목명 (보유 종목 선택)', options=all_items
+          ),
+          'ticker': st.column_config.TextColumn('티커'),
+          'quantity': st.column_config.NumberColumn('수량', format='%.4f'),
+          'price': st.column_config.NumberColumn('매도가/단가', format='%.2f'),
+          'amount': st.column_config.NumberColumn(
+              '거래총액', format='%,.0f'
+          ),
+          'currency': st.column_config.SelectboxColumn(
+              '통화단위', options=all_currencies, default='KRW'
+          ),
+          'category1': st.column_config.TextColumn('category1'),
+          'category2': st.column_config.TextColumn('category2'),
+          'category3': st.column_config.TextColumn('category3'),
+          'category4': st.column_config.TextColumn('category4'),
+          'note': st.column_config.TextColumn('적요 / 메모'),
+      }
+
+      edited_cf = st.data_editor(
+          edit_cf_df,
+          num_rows='dynamic',
+          use_container_width=True,
+          column_config=column_config,
+          key='cash_flow_data_editor',
+      )
+
+      # 3. 데이터 저장 및 자동 연동 (종목명 선택 시 티커, 카테고리, 증권사 자동 매핑)
+      if st.button('💾 통합 거래 내역 저장/수정 반영'):
+        try:
+          updated_df = edited_cf.copy()
+
+          # 매도 및 매수 거래 종목 선택 시 포트폴리오의 티커 및 카테고리 정보 자동 연동
+          for idx, row in updated_df.iterrows():
+            item_n = row.get('item_name')
+            acc_n = str(row.get('account_num'))
+
+            # 증권사/계좌 정보 자동 채움
+            if pd.isna(row.get('broker')) or not row.get('broker'):
+              matched_acc = acc_df[acc_df['account_num'].astype(str) == acc_n]
+              if not matched_acc.empty:
+                updated_df.loc[idx, 'broker'] = matched_acc['broker'].iloc[0]
+                updated_df.loc[idx, 'account_name'] = matched_acc[
+                    'account_name'
+                ].iloc[0]
+                updated_df.loc[idx, 'account_type'] = matched_acc[
+                    'account_type'
+                ].iloc[0]
+
+            # 티커 및 카테고리 정보 자동 매핑
+            if pd.notna(item_n) and item_n:
+              matched_item = pf_items_df[
+                  (pf_items_df['item_name'] == item_n)
+                  & (pf_items_df['account_num'].astype(str) == acc_n)
+              ]
+              if matched_item.empty:
+                matched_item = pf_items_df[pf_items_df['item_name'] == item_n]
+
+              if not matched_item.empty:
+                if (
+                    pd.isna(updated_df.loc[idx, 'ticker'])
+                    or not updated_df.loc[idx, 'ticker']
+                ):
+                  updated_df.loc[idx, 'ticker'] = matched_item['ticker'].iloc[0]
+                if pd.isna(updated_df.loc[idx, 'currency']):
+                  updated_df.loc[idx, 'currency'] = matched_item[
+                      'currency'
+                  ].iloc[0]
+                updated_df.loc[idx, 'category1'] = matched_item[
+                    'category1'
+                ].iloc[0]
+                updated_df.loc[idx, 'category2'] = matched_item[
+                    'category2'
+                ].iloc[0]
+                updated_df.loc[idx, 'category3'] = matched_item[
+                    'category3'
+                ].iloc[0]
+                updated_df.loc[idx, 'category4'] = matched_item[
+                    'category4'
+                ].iloc[0]
+
+            # 거래총액 자동 계산 (수량 * 단가)
+            q = updated_df.loc[idx, 'quantity']
+            p = updated_df.loc[idx, 'price']
+            if pd.notna(q) and pd.notna(p) and q > 0 and p > 0:
+              updated_df.loc[idx, 'amount'] = q * p
+
+          conn = get_connection()
+          updated_df.to_sql('cash_flow', conn, if_exists='replace', index_label='id')
+          conn.close()
+
+          st.success('통합 거래 내역이 성공적으로 수정/저장되었습니다!')
+          st.rerun()
+        except Exception as e:
+          st.error(f'거래 내역 저장 중 오류가 발생했습니다: {e}')
 
 # -----------------------------------------------------------------------------
 # 메뉴 5: 등록 데이터 조회 및 웹 수정
@@ -2460,22 +2551,17 @@ elif menu == '데이터 백업 및 복구':
         ' 복구합니다.'
     )
     uploaded_backup = st.file_uploader(
-        '백업 파일(`.db`) 선택', type=['db'], key='restore_backup_uploader'
+        '백업 파일(.db)을 선택하세요', type=['db']
     )
-
     if uploaded_backup is not None:
-      st.warning(
-          '⚠ 주의: 복구를 진행하면 현재 등록된 모든 데이터가 업로드한 백업'
-          ' 파일의 내용으로 완전히 덮어씌워(초기화되어) 교체됩니다!'
-      )
-      if st.button('🔄 데이터 복구 실행'):
+      if st.button('♻️ 데이터 일괄 복구 실행'):
         try:
           with open(DB_FILE, 'wb') as f:
             f.write(uploaded_backup.getbuffer())
           st.success(
-              '데이터가 성공적으로 복구되었습니다! 잠시 후 앱이'
-              ' 새로고침됩니다.'
+              '데이터베이스가成功적으로 복구되었습니다! 페이지를'
+              ' 새로고침합니다.'
           )
           st.rerun()
         except Exception as e:
-          st.error(f'데이터 복구 중 오류 발생: {e}')
+          st.error(f'복구 처리 중 오류가 발생했습니다: {e}')
