@@ -336,7 +336,7 @@ if menu == '트렌드 리포트':
   pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
   init_p_df = pd.read_sql('SELECT * FROM initial_principal', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
-  tx_df = pd.read_sql('SELECT * FROM transactions', conn)  # 거래 내역 추가
+  tx_df = pd.read_sql('SELECT * FROM transactions', conn)
   conn.close()
 
   if pf_df.empty:
@@ -531,19 +531,7 @@ if menu == '트렌드 리포트':
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
-      filtered_tx_df = (
-          tx_df[tx_df['account_num'].astype(str).isin(selected_accounts)].copy()
-          if not tx_df.empty
-          else pd.DataFrame()
-      )
-
-      unique_tickers_pf = filtered_pf_df['ticker'].dropna().unique().tolist()
-      unique_tickers_tx = (
-          filtered_tx_df['ticker'].dropna().unique().tolist()
-          if not filtered_tx_df.empty and 'ticker' in filtered_tx_df.columns
-          else []
-      )
-      unique_tickers = list(set(unique_tickers_pf + unique_tickers_tx))
+      unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
@@ -650,270 +638,159 @@ if menu == '트렌드 리포트':
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
 
-          # --- [수정 핵심 로직] 거래 내역(transactions) 반영 시점별 보유 잔고 수량 재계산 ---
-          acc_pf_all = filtered_pf_df[
+          # 포트폴리오 스냅샷 불러오기
+          acc_pf = filtered_pf_df[
               (filtered_pf_df['account_num'].astype(str) == acc)
               & (filtered_pf_df['record_date'] <= t_str)
           ]
-
-          snap_date = None
-          items_dict = {}
-
-          # 1) 기준일 이하 가장 최근 스냅샷 기본 수량 반영
-          if not acc_pf_all.empty:
-            snap_date = acc_pf_all['record_date'].max()
-            current_pf = acc_pf_all[acc_pf_all['record_date'] == snap_date]
-            for _, row in current_pf.iterrows():
-              fmt_tk = format_ticker(row.get('ticker'))
-              item_name = (
-                  str(row.get('item_name', '')).strip()
-                  if pd.notna(row.get('item_name'))
-                  else '미지정종목'
-              )
-              key = fmt_tk if fmt_tk else item_name
-
-              items_dict[key] = {
-                  'ticker': row.get('ticker'),
-                  'item_name': item_name,
-                  'category1': (
-                      row.get('category1')
-                      if pd.notna(row.get('category1'))
-                      else '미지정'
-                  ),
-                  'category2': (
-                      row.get('category2')
-                      if pd.notna(row.get('category2'))
-                      else '미지정'
-                  ),
-                  'category3': (
-                      row.get('category3')
-                      if pd.notna(row.get('category3'))
-                      else '미지정'
-                  ),
-                  'category4': (
-                      row.get('category4')
-                      if pd.notna(row.get('category4'))
-                      else '미지정'
-                  ),
-                  'quantity': (
-                      float(row.get('quantity', 0))
-                      if pd.notna(row.get('quantity'))
-                      else 0.0
-                  ),
-                  'purchase_price': (
-                      float(row.get('purchase_price', 0))
-                      if pd.notna(row.get('purchase_price'))
-                      else 0.0
-                  ),
-                  'current_price': (
-                      float(row.get('current_price', 0))
-                      if pd.notna(row.get('current_price'))
-                      else 0.0
-                  ),
-                  'currency': (
-                      row.get('currency', 'KRW')
-                      if pd.notna(row.get('currency'))
-                      else 'KRW'
-                  ),
-              }
-          else:
-            # 스냅샷이 없는 경우 메타데이터 템플릿 확보
+          if acc_pf.empty:
             min_date = filtered_pf_df[
                 filtered_pf_df['account_num'].astype(str) == acc
             ]['record_date'].min()
-            if pd.notna(min_date):
-              current_pf = filtered_pf_df[
-                  (filtered_pf_df['account_num'].astype(str) == acc)
-                  & (filtered_pf_df['record_date'] == min_date)
-              ]
-              for _, row in current_pf.iterrows():
-                fmt_tk = format_ticker(row.get('ticker'))
-                item_name = (
-                    str(row.get('item_name', '')).strip()
-                    if pd.notna(row.get('item_name'))
-                    else '미지정종목'
-                )
-                key = fmt_tk if fmt_tk else item_name
-                items_dict[key] = {
-                    'ticker': row.get('ticker'),
-                    'item_name': item_name,
-                    'category1': (
-                        row.get('category1')
-                        if pd.notna(row.get('category1'))
-                        else '미지정'
-                    ),
-                    'category2': (
-                        row.get('category2')
-                        if pd.notna(row.get('category2'))
-                        else '미지정'
-                    ),
-                    'category3': (
-                        row.get('category3')
-                        if pd.notna(row.get('category3'))
-                        else '미지정'
-                    ),
-                    'category4': (
-                        row.get('category4')
-                        if pd.notna(row.get('category4'))
-                        else '미지정'
-                    ),
-                    'quantity': 0.0,
-                    'purchase_price': (
-                        float(row.get('purchase_price', 0))
-                        if pd.notna(row.get('purchase_price'))
-                        else 0.0
-                    ),
-                    'current_price': (
-                        float(row.get('current_price', 0))
-                        if pd.notna(row.get('current_price'))
-                        else 0.0
-                    ),
-                    'currency': (
-                        row.get('currency', 'KRW')
-                        if pd.notna(row.get('currency'))
-                        else 'KRW'
-                    ),
-                }
-
-          # 2) 스냅샷 날짜 이후 ~ t_str 까지의 거래 내역(매수/매도) 수량 가산/차감
-          if not tx_df.empty:
-            acc_tx = tx_df[
-                (tx_df['account_num'].astype(str) == acc)
-                & (tx_df['trans_date'] <= t_str)
+            acc_pf = filtered_pf_df[
+                (filtered_pf_df['account_num'].astype(str) == acc)
+                & (filtered_pf_df['record_date'] == min_date)
             ]
-            if snap_date is not None:
-              acc_tx = acc_tx[acc_tx['trans_date'] > snap_date]
 
-            for _, tx_row in acc_tx.iterrows():
-              t_type = str(tx_row.get('trans_type', '')).strip()
+          if not acc_pf.empty:
+            latest_date = acc_pf['record_date'].max()
+            current_pf = acc_pf[acc_pf['record_date'] == latest_date].copy()
+            
+            # --- [핵심 수정 1] 거래 내역(transactions)을 반영하여 잔고 수량(quantity) 최신화 ---
+            if not tx_df.empty:
+              acc_tx = tx_df[
+                  (tx_df['account_num'].astype(str) == acc) &
+                  (tx_df['trans_date'] > latest_date) &
+                  (tx_df['trans_date'] <= t_str)
+              ]
+              if not acc_tx.empty:
+                # 종목별 누적 거래 수량 계산 (매수 +, 매도 -)
+                tx_qty_map = {}
+                for _, tx_row in acc_tx.iterrows():
+                  item_k = tx_row.get('item_name')
+                  ttype = str(tx_row.get('trans_type', ''))
+                  q = float(tx_row.get('quantity', 0) or 0)
+                  if '매도' in ttype:
+                    tx_qty_map[item_k] = tx_qty_map.get(item_k, 0) - q
+                  elif '매수' in ttype:
+                    tx_qty_map[item_k] = tx_qty_map.get(item_k, 0) + q
+
+                for idx, row in current_pf.iterrows():
+                  item_k = row.get('item_name')
+                  if item_k in tx_qty_map:
+                    new_q = max(0, float(row.get('quantity', 0) or 0) + tx_qty_map[item_k])
+                    current_pf.at[idx, 'quantity'] = new_q
+
+            total_acc_eval = 0
+            total_acc_eval_ex_fx = 0
+            item_eval_list = []
+
+            for _, row in current_pf.iterrows():
+              fmt_tk = format_ticker(row.get('ticker'))
               qty = (
-                  float(tx_row.get('quantity', 0))
-                  if pd.notna(tx_row.get('quantity'))
-                  else 0.0
+                  row['quantity']
+                  if ('quantity' in row and pd.notna(row['quantity']))
+                  else 0
+              )
+              
+              # --- [핵심 수정 2] 수량이 0인 종목(전량 매도 종목)은 완전히 제외 ---
+              if qty <= 0:
+                continue
+
+              curr = row.get('currency', 'KRW')
+              base_price = (
+                  row['current_price']
+                  if ('current_price' in row and pd.notna(row['current_price']))
+                  else 0
               )
 
-              fmt_tk = format_ticker(tx_row.get('ticker'))
               item_name = (
-                  str(tx_row.get('item_name', '')).strip()
-                  if pd.notna(tx_row.get('item_name'))
+                  row['item_name']
+                  if (
+                      'item_name' in row
+                      and pd.notna(row['item_name'])
+                      and str(row['item_name']).strip() != ''
+                  )
                   else '미지정종목'
               )
-              key = fmt_tk if fmt_tk else item_name
+              cat4 = (
+                  row['category4']
+                  if (
+                      'category4' in row
+                      and pd.notna(row['category4'])
+                      and str(row['category4']).strip() != ''
+                  )
+                  else '미지정'
+              )
 
-              if key not in items_dict:
-                items_dict[key] = {
-                    'ticker': tx_row.get('ticker'),
-                    'item_name': item_name,
-                    'category1': '미지정',
-                    'category2': '미지정',
-                    'category3': '미지정',
-                    'category4': '미지정',
-                    'quantity': 0.0,
-                    'purchase_price': (
-                        float(tx_row.get('unit_price', 0))
-                        if pd.notna(tx_row.get('unit_price'))
-                        else 0.0
-                    ),
-                    'current_price': (
-                        float(tx_row.get('unit_price', 0))
-                        if pd.notna(tx_row.get('unit_price'))
-                        else 0.0
-                    ),
-                    'currency': (
-                        tx_row.get('currency', 'KRW')
-                        if pd.notna(tx_row.get('currency'))
-                        else 'KRW'
-                    ),
-                }
+              price = 0
+              if fmt_tk is None:
+                price = base_price if base_price > 0 else 0
+              else:
+                if fmt_tk in market_data.columns and not market_data.empty:
+                  if pd.to_datetime(t_str) in market_data.index:
+                    price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
+                  else:
+                    price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
 
-              if any(keyword in t_type for keyword in ['매수', '입고']):
-                items_dict[key]['quantity'] += qty
-              elif any(keyword in t_type for keyword in ['매도', '출고']):
-                items_dict[key]['quantity'] -= qty
+                  if (
+                      (pd.isna(price) or price == 0)
+                      and fmt_tk in market_data.columns
+                      and not market_data[fmt_tk].dropna().empty
+                  ):
+                    price = float(market_data[fmt_tk].dropna().iloc[0])
 
-          # 3) 당일 실시간 수량이 0 초과인 종목만 잔고 및 평가 대상 포함 (전량 매도 종목 완전 제의)
-          valid_items = [
-              item for item in items_dict.values() if item['quantity'] > 1e-5
-          ]
+                if pd.isna(price) or price == 0:
+                  price = base_price
 
-          total_acc_eval = 0
-          total_acc_eval_ex_fx = 0
-          item_eval_list = []
+              item_eval = (
+                  (qty * price * usd_krw) if curr == 'USD' else (qty * price)
+              )
+              item_eval_ex_fx = (
+                  (qty * price * usd_krw_first)
+                  if curr == 'USD'
+                  else (qty * price)
+              )
 
-          for item in valid_items:
-            fmt_tk = format_ticker(item.get('ticker'))
-            qty = item['quantity']
-            curr = item.get('currency', 'KRW')
-            base_price = item.get('current_price', 0)
-            item_name = item.get('item_name', '미지정종목')
-            cat4 = item.get('category4', '미지정')
+              total_acc_eval += item_eval
+              total_acc_eval_ex_fx += item_eval_ex_fx
+              item_eval_list.append(
+                  (item_name, cat4, item_eval, item_eval_ex_fx)
+              )
 
-            price = 0
-            if fmt_tk is None:
-              price = base_price if base_price > 0 else 0
-            else:
-              if fmt_tk in market_data.columns and not market_data.empty:
-                if pd.to_datetime(t_str) in market_data.index:
-                  price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
-                else:
-                  price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+            item_count = len(item_eval_list)
+            for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
+              if total_acc_eval > 0:
+                ratio = item_eval / total_acc_eval
+              else:
+                ratio = 1.0 / item_count if item_count > 0 else 0
 
-                if (
-                    (pd.isna(price) or price == 0)
-                    and fmt_tk in market_data.columns
-                    and not market_data[fmt_tk].dropna().empty
-                ):
-                  price = float(market_data[fmt_tk].dropna().iloc[0])
+              if total_acc_eval_ex_fx > 0:
+                ratio_ex = item_eval_ex / total_acc_eval_ex_fx
+              else:
+                ratio_ex = 1.0 / item_count if item_count > 0 else 0
 
-              if pd.isna(price) or price == 0:
-                price = base_price
+              item_principal = principal * ratio
+              item_p_loss = item_eval - item_principal
 
-            item_eval = (
-                (qty * price * usd_krw) if curr == 'USD' else (qty * price)
-            )
-            item_eval_ex_fx = (
-                (qty * price * usd_krw_first)
-                if curr == 'USD'
-                else (qty * price)
-            )
+              item_principal_ex = principal * ratio_ex
+              item_p_loss_ex = item_eval_ex - item_principal_ex
 
-            total_acc_eval += item_eval
-            total_acc_eval_ex_fx += item_eval_ex_fx
-            item_eval_list.append((item_name, cat4, item_eval, item_eval_ex_fx))
-
-          item_count = len(item_eval_list)
-          for item_name, cat4, item_eval, item_eval_ex in item_eval_list:
-            if total_acc_eval > 0:
-              ratio = item_eval / total_acc_eval
-            else:
-              ratio = 1.0 / item_count if item_count > 0 else 0
-
-            if total_acc_eval_ex_fx > 0:
-              ratio_ex = item_eval_ex / total_acc_eval_ex_fx
-            else:
-              ratio_ex = 1.0 / item_count if item_count > 0 else 0
-
-            item_principal = principal * ratio
-            item_p_loss = item_eval - item_principal
-
-            item_principal_ex = principal * ratio_ex
-            item_p_loss_ex = item_eval_ex - item_principal_ex
-
-            base_records.append({
-                'Date': t_str,
-                'account_num': acc_label,
-                'broker': broker_name,
-                'account_type': acc_type,
-                'category4': cat4,
-                'item_name': item_name,
-                'whose': whose_val,
-                '원금': item_principal,
-                '평가손익': item_p_loss,
-                '총평가금액': item_eval,
-                '원금_ex_fx': item_principal_ex,
-                '평가손익_ex_fx': item_p_loss_ex,
-                '총평가금액_ex_fx': item_eval_ex,
-            })
+              base_records.append({
+                  'Date': t_str,
+                  'account_num': acc_label,
+                  'broker': broker_name,
+                  'account_type': acc_type,
+                  'category4': cat4,
+                  'item_name': item_name,
+                  'whose': whose_val,
+                  '원금': item_principal,
+                  '평가손익': item_p_loss,
+                  '총평가금액': item_eval,
+                  '원금_ex_fx': item_principal_ex,
+                  '평가손익_ex_fx': item_p_loss_ex,
+                  '총평가금액_ex_fx': item_eval_ex,
+              })
 
       bm_calc_dict = {}
       for bm_label in selected_bm:
@@ -2305,307 +2182,14 @@ elif menu == '포트폴리오 업로드':
         c.execute('PRAGMA table_info(portfolio)')
         db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
 
-        valid_df = renamed_df[
-            [col for col in db_cols if col in renamed_df.columns]
-        ].copy()
+        # 존재하지 않는 컬럼은 기본값 채우기
+        for col in db_cols:
+          if col not in renamed_df.columns:
+            renamed_df[col] = None
 
-        valid_df.to_sql('portfolio', conn, if_exists='append', index=False)
+        renamed_df = renamed_df[db_cols]
+        renamed_df.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.close()
-        st.success(
-            '포트폴리오의 모든 엑셀 열 정보가 데이터베이스에 성공적으로'
-            ' 적재되었습니다!'
-        )
+        st.success('포트폴리오 데이터가 성공적으로 적재되었습니다!')
     except Exception as e:
-      st.error(f'파일 업로드 및 적재 중 오류 발생: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 4: 거래 내역 업로드
-# -----------------------------------------------------------------------------
-elif menu == '거래 내역 업로드':
-  st.header('📑 거래 내역 엑셀 업로드 (매수/매도/배당/입출금)')
-  st.markdown(
-      '##### 매수, 매도, 배당금 입금, 현금 입출금 등 상세 거래 정보가 포함된 엑셀'
-      ' 파일(`history_0930_2.xlsx` 양식)을 적재합니다.'
-  )
-
-  uploaded_tx_file = st.file_uploader(
-      '거래 내역 엑셀 파일(.xlsx)을 업로드하세요',
-      type=['xlsx'],
-      key='tx_uploader',
-  )
-
-  if uploaded_tx_file is not None:
-    try:
-      df_tx_upload = pd.read_excel(uploaded_tx_file)
-      st.write('미리보기 (상위 5행):', df_tx_upload.head())
-
-      if st.button('📥 거래 내역 데이터베이스에 적재하기'):
-        tx_col_map = {
-            '거래일자': 'trans_date',
-            '증권사': 'broker',
-            '계좌번호': 'account_num',
-            '계좌명': 'account_name',
-            '계좌유형': 'account_type',
-            '거래종류': 'trans_type',
-            '종목명': 'item_name',
-            '티커': 'ticker',
-            '거래수량': 'quantity',
-            '거래단가': 'unit_price',
-            '거래금액': 'amount',
-            '수수료': 'fee',
-            '제세금': 'tax',
-            '정산금액': 'net_amount',
-            '통화': 'currency',
-            '메모/적요': 'note',
-            '적요': 'note',
-        }
-
-        renamed_tx_df = df_tx_upload.rename(columns=tx_col_map)
-
-        conn = get_connection()
-        c = conn.cursor()
-        c.execute('PRAGMA table_info(transactions)')
-        tx_db_cols = [row[1] for row in c.fetchall() if row[1] != 'id']
-
-        valid_tx_df = renamed_tx_df[
-            [col for col in tx_db_cols if col in renamed_tx_df.columns]
-        ].copy()
-
-        # 거래일자 포맷 표준화 (YYYY-MM-DD)
-        if 'trans_date' in valid_tx_df.columns:
-          valid_tx_df['trans_date'] = pd.to_datetime(
-              valid_tx_df['trans_date']
-          ).dt.strftime('%Y-%m-%d')
-
-        valid_tx_df.to_sql(
-            'transactions', conn, if_exists='append', index=False
-        )
-        conn.close()
-        st.success(
-            '거래 내역 데이터가 데이터베이스(transactions 테이블)에 성공적으로'
-            ' 적재되었습니다!'
-        )
-    except Exception as e:
-      st.error(f'거래 내역 파일 업로드 중 오류 발생: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 5: 거래 내역 조회 및 웹 수정
-# -----------------------------------------------------------------------------
-elif menu == '거래 내역 조회 및 웹 수정':
-  st.header('🔍 거래 내역 데이터 조회 및 웹 수정')
-  conn = get_connection()
-  tx_full_df = pd.read_sql(
-      'SELECT * FROM transactions ORDER BY trans_date DESC', conn
-  )
-  conn.close()
-
-  if tx_full_df.empty:
-    st.warning('등록된 거래 내역 데이터가 없습니다.')
-  else:
-    st.markdown(
-        '##### DB에 저장된 거래 내역(매수/매도/배당/입출금 등)을 조회하고 직접'
-        ' 수정/삭제/저장할 수 있습니다.'
-    )
-    st.caption(
-        '💡 셀을 더블클릭하여 값을 수정하거나 행을 추가/삭제한 후 아래 [데이터베이스 반영]'
-        ' 버튼을 눌러주세요.'
-    )
-
-    edited_tx_df = st.data_editor(
-        tx_full_df,
-        num_rows='dynamic',
-        use_container_width=True,
-        key='transactions_data_editor',
-    )
-
-    if st.button('💾 거래 내역 수정/삭제 사항 데이터베이스에 반영'):
-      try:
-        conn = get_connection()
-        edited_tx_df.to_sql(
-            'transactions', conn, if_exists='replace', index=False
-        )
-        conn.close()
-
-        st.success('거래 내역 데이터가 성공적으로 갱신되었습니다!')
-        st.rerun()
-      except Exception as e:
-        st.error(f'거래 내역 갱신 중 오류 발생: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 6: 원금 및 입출금 관리
-# -----------------------------------------------------------------------------
-elif menu == '원금 및 입출금 관리':
-  st.header('💰 초기 원금 및 추가 입출금 관리')
-  conn = get_connection()
-  acc_df = pd.read_sql(
-      'SELECT DISTINCT broker, account_num FROM portfolio', conn
-  )
-  init_df = pd.read_sql('SELECT * FROM initial_principal', conn)
-  cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
-  conn.close()
-
-  if acc_df.empty:
-    st.warning('등록된 계좌 정보가 없습니다.')
-  else:
-    tab1, tab2 = st.tabs(['초기 원금 설정', '추가 입출금 내역 관리'])
-
-    with tab1:
-      st.subheader('📌 계좌별 초기 원금 설정')
-      init_dict = dict(zip(init_df['account_num'], init_df['initial_amount']))
-      with st.form('init_principal_form'):
-        new_init_data = []
-        for _, row in acc_df.iterrows():
-          b = row['broker']
-          acc = str(row['account_num'])
-          cur_val = init_dict.get(acc, 0.0)
-          val = st.number_input(
-              f'[{b}] {acc}',
-              value=float(cur_val),
-              step=100000.0,
-              key=f'init_{acc}',
-          )
-          new_init_data.append((acc, b, val))
-
-        if st.form_submit_button('💾 초기 원금 저장'):
-          conn = get_connection()
-          c = conn.cursor()
-          for acc, b, val in new_init_data:
-            c.execute(
-                'INSERT OR REPLACE INTO initial_principal (account_num, broker,'
-                ' initial_amount) VALUES (?, ?, ?)',
-                (acc, b, val),
-            )
-          conn.commit()
-          conn.close()
-          st.success('초기 원금이 저장되었습니다!')
-          st.rerun()
-
-    with tab2:
-      st.subheader('➕ 추가 입출금 내역 등록 및 조회')
-      with st.form('cash_flow_form'):
-        cf_date = st.date_input('거래일자', value=date.today())
-        acc_list = acc_df['account_num'].astype(str).tolist()
-        cf_acc = st.selectbox('대상 계좌번호', options=acc_list)
-        cf_type = st.selectbox('구분', options=['입금', '출금'])
-        cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0)
-        cf_note = st.text_input('적요 / 메모')
-
-        if st.form_submit_button('➕ 입출금 내역 추가'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute(
-              'INSERT INTO cash_flow (trans_date, account_num, flow_type,'
-              ' amount, note) VALUES (?, ?, ?, ?, ?)',
-              (
-                  cf_date.strftime('%Y-%m-%d'),
-                  cf_acc,
-                  cf_type,
-                  cf_amount,
-                  cf_note,
-              ),
-          )
-          conn.commit()
-          conn.close()
-          st.success('입출금 내역이 추가되었습니다!')
-          st.rerun()
-
-      st.markdown('##### 📋 등록된 입출금 내역 목록')
-      if not cf_df.empty:
-        st.dataframe(cf_df, use_container_width=True)
-        del_id = st.number_input('삭제할 내역 ID 입력', value=0, step=1)
-        if st.button('🗑️ 선택 내역 삭제'):
-          conn = get_connection()
-          c = conn.cursor()
-          c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
-          conn.commit()
-          conn.close()
-          st.success(f'ID {del_id} 내역이 삭제되었습니다.')
-          st.rerun()
-      else:
-        st.info('등록된 입출금 내역이 없습니다.')
-
-# -----------------------------------------------------------------------------
-# 메뉴 7: 포트폴리오 등록 데이터 조회 및 웹 수정
-# -----------------------------------------------------------------------------
-elif menu == '등록 데이터 조회 및 웹 수정':
-  st.header('🔍 등록 포트폴리오 데이터 조회 및 웹 수정')
-  conn = get_connection()
-  pf_full_df = pd.read_sql('SELECT * FROM portfolio', conn)
-  conn.close()
-
-  if pf_full_df.empty:
-    st.warning('등록된 포트폴리오 데이터가 없습니다.')
-  else:
-    st.markdown(
-        '##### 포트폴리오 데이터를 조회하고 웹 화면에서 직접 수정/삭제/저장할 수'
-        ' 있습니다.'
-    )
-    st.caption(
-        '💡 좌측 체크박스를 선택하여 행을 삭제하거나, 셀을 더블클릭하여 값을 직접'
-        ' 수정할 수 있습니다.'
-    )
-
-    edited_df = st.data_editor(
-        pf_full_df,
-        num_rows='dynamic',
-        use_container_width=True,
-        key='portfolio_data_editor',
-    )
-
-    if st.button('💾 수정/삭제 사항 데이터베이스에 반영'):
-      try:
-        conn = get_connection()
-        edited_df.to_sql('portfolio', conn, if_exists='replace', index=False)
-        conn.close()
-
-        st.success(
-            '포트폴리오 데이터가 성공적으로 갱신(수정 및 삭제 반영)되었습니다!'
-        )
-        st.rerun()
-      except Exception as e:
-        st.error(f'데이터 갱신 중 오류 발생: {e}')
-
-# -----------------------------------------------------------------------------
-# 메뉴 8: 데이터 백업 및 복구
-# -----------------------------------------------------------------------------
-elif menu == '데이터 백업 및 복구':
-  st.header('💾 데이터 백업 및 복구 관리')
-  st.markdown(
-      '##### 프로그램에 등록된 모든 데이터(포트폴리오, 거래 내역, 초기 원금,'
-      ' 입출금 내역, 계좌 별칭 등)를 하나의 백업 파일(`.db`)로 안전하게 백업하거나,'
-      ' 백업된 데이터를 복구합니다.'
-  )
-
-  b_col1, b_col2 = st.columns(2)
-
-  with b_col1:
-    st.subheader('📤 데이터 백업 다운로드')
-    if os.path.exists(DB_FILE):
-      with open(DB_FILE, 'rb') as f:
-        db_bytes = f.read()
-      st.download_button(
-          label='💾 asset_tracker.db 백업 파일 다운로드',
-          data=db_bytes,
-          file_name=f'asset_tracker_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db',
-          mime='application/x-sqlite3',
-      )
-    else:
-      st.info('백업할 DB 파일이 생성되지 않았습니다.')
-
-  with b_col2:
-    st.subheader('📥 백업 데이터 복구')
-    uploaded_db = st.file_uploader(
-        '복구할 `.db` 파일을 업로드하세요', type=['db']
-    )
-    if uploaded_db is not None:
-      if st.button('⚠️ 기존 데이터를 덮어쓰고 복구 진행'):
-        try:
-          with open(DB_FILE, 'wb') as f:
-            f.write(uploaded_db.getbuffer())
-          st.success(
-              '데이터베이스 복구가 완벽히 완료되었습니다! 페이지를'
-              ' 새로고침합니다.'
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f'복구 실패: {e}')
+      st.error(f'엑셀 처리 중 오류 발생: {e}')
