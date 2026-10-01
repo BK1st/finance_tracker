@@ -1,4 +1,3 @@
-# name=treemap_v2.py
 import io
 import json
 import os
@@ -26,15 +25,6 @@ from reportlab.platypus import (
 import streamlit as st
 import yfinance as yf
 
-# matplotlib 선택적 임포트
-try:
-  import matplotlib.font_manager as fm
-  import matplotlib.pyplot as plt
-
-  HAS_MATPLOTLIB = True
-except ImportError:
-  HAS_MATPLOTLIB = False
-
 # ---------------------------------------------------------
 # 모바일 전용 페이지 설정 (상단 1회만 호출)
 # ---------------------------------------------------------
@@ -53,7 +43,7 @@ DATA_DIR = ".data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ---------------------------------------------------------
-# 한글 폰트 자동 검색, 다운로드 및 등록 (ReportLab & Matplotlib 동시 설정)
+# 한글 폰트 자동 검색, 다운로드 및 등록 (ReportLab 한글 깨짐 방지)
 # ---------------------------------------------------------
 FONT_NAME = "Helvetica"
 KOREAN_FONT_PATH = None
@@ -97,15 +87,6 @@ def setup_korean_font():
       FONT_NAME = "KoreanFont"
     except Exception:
       pass
-
-    if HAS_MATPLOTLIB:
-      try:
-        fm.fontManager.addFont(found_path)
-        font_prop = fm.FontProperties(fname=found_path)
-        plt.rcParams["font.family"] = font_prop.get_name()
-        plt.rcParams["axes.unicode_minus"] = False
-      except Exception:
-        pass
 
 
 setup_korean_font()
@@ -425,7 +406,7 @@ def update_all_prices_and_rate_batch(curr_rate):
 
 
 # ---------------------------------------------------------
-# PDF 리포트 생성 함수 (ReportLab & Matplotlib 차트)
+# PDF 리포트 생성 함수 (ReportLab & Plotly 차트 이미지 변환)
 # ---------------------------------------------------------
 def create_treemap_pdf(summary_metrics, summary_df, hierarchy_df, fig_treemap):
   buffer = io.BytesIO()
@@ -1878,7 +1859,7 @@ elif menu == "일별/시점별 보유 현황 분석":
       st.markdown("---")
 
       # ---------------------------------------------------------
-      # PDF 다운로드 영역
+      # [새 기능 추가] PDF 리포트 생성 및 다운로드 영역
       # ---------------------------------------------------------
       st.subheader("📄 분석 결과 PDF 다운로드")
       summary_metrics = {
@@ -1906,6 +1887,7 @@ elif menu == "일별/시점별 보유 현황 분석":
       )
 
       st.markdown("---")
+
       st.subheader("📋 선택 시점 상세 보유 목록")
       sub_df["점유율(%)"] = (
           (sub_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
