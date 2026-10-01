@@ -4,6 +4,7 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from io import BytesIO
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,19 +27,29 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 
 # -----------------------------------------------------------------------------
-# 한글 폰트 등록 (ReportLab PDF용)
+# 폰트 설정 (한글 깨짐 방지 안전 처리)
 # -----------------------------------------------------------------------------
+FONT_NAME = 'Helvetica'
 try:
-  # 윈도우 환경 기본 맑은 고딕 폰트 경로 시도
+  # 시스템에 등록된 맑은 고딕 또는 나눔고딕 시도
   pdfmetrics.registerFont(TTFont('Malgun', 'malgun.ttf'))
   FONT_NAME = 'Malgun'
 except:
   try:
-    # 리눅스/맥 환경 등 대체 폰트 시도 (예: NanumGothic 등 시스템 폰트)
     pdfmetrics.registerFont(TTFont('NanumGothic', 'NanumGothic.ttf'))
     FONT_NAME = 'NanumGothic'
   except:
-    FONT_NAME = 'Helvetica'  # 한글이 깨질 경우 영문 폴백
+    pass
+
+# Matplotlib 한글 폰트 설정
+plt.rcParams['font.family'] = (
+    'Malgun Gothic'
+    if os.name == 'nt'
+    else 'AppleGothic'
+    if sys.platform == 'darwin'
+    else 'DejaVu Sans'
+)
+plt.rcParams['axes.unicode_minus'] = False
 
 # -----------------------------------------------------------------------------
 # 1. DB 초기화 및 관리 함수
@@ -293,7 +304,58 @@ def render_resizable_plotly_chart(fig, key):
 
 
 # -----------------------------------------------------------------------------
-# 4. PDF 리포트 생성 함수
+# 4. Matplotlib 기반 PDF용 차트 이미지 생성 함수 (크롬/Kaleido 불필요)
+# -----------------------------------------------------------------------------
+def create_matplotlib_chart_image(title_text, fig):
+  """Plotly Figure 데이터를 받아 Matplotlib 이미지 바이트로 변환합니다."""
+  try:
+    plt.figure(figsize=(8, 3.5), dpi=150)
+
+    # Plotly 데이터 추출 시도
+    data_plotted = False
+    for data in fig.data:
+      if hasattr(data, 'x') and hasattr(data, 'y') and data.x is not None and data.y is not None:
+        x_vals = list(data.x)
+        y_vals = list(data.y)
+        if len(x_vals) > 0 and len(y_vals) > 0:
+          label = getattr(data, 'name', 'Series')
+          if data.type == 'bar':
+            plt.bar(x_vals, y_vals, label=label, alpha=0.8)
+          else:
+            plt.plot(x_vals, y_vals, marker='o', linewidth=2, label=label)
+          data_plotted = True
+
+    if not data_plotted:
+      plt.text(
+          0.5,
+          0.5,
+          '시각화 데이터 없음',
+          horizontalalignment='center',
+          verticalalignment='center',
+          transform=plt.gca().transAxes,
+      )
+
+    plt.title(title_text, fontsize=10, fontweight='bold', pad=10)
+    plt.xticks(rotation=30, fontsize=8)
+    plt.yticks(fontsize=8)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    if len(fig.data) > 1:
+      plt.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
+
+    plt.tight_layout()
+
+    img_io = BytesIO()
+    plt.savefig(img_io, format='png', bbox_inches='tight')
+    plt.close()
+    img_io.seek(0)
+    return img_io
+  except Exception as e:
+    plt.close()
+    raise e
+
+
+# -----------------------------------------------------------------------------
+# 5. PDF 리포트 생성 함수
 # -----------------------------------------------------------------------------
 def generate_trend_pdf(summary_dfs_dict, figures_dict):
   buffer = BytesIO()
@@ -312,43 +374,50 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
       'TitleStyle',
       parent=styles['Heading1'],
       fontName=FONT_NAME,
-      fontSize=18,
-      leading=22,
-      spaceAfter=15,
+      fontSize=16,
+      leading=20,
+      spaceAfter=12,
   )
   heading_style = ParagraphStyle(
       'HeadingStyle',
       parent=styles['Heading2'],
       fontName=FONT_NAME,
-      fontSize=13,
-      leading=16,
-      spaceBefore=15,
-      spaceAfter=10,
+      fontSize=12,
+      leading=15,
+      spaceBefore=12,
+      spaceAfter=8,
+  )
+  normal_style = ParagraphStyle(
+      'NormalStyle',
+      parent=styles['Normal'],
+      fontName=FONT_NAME,
+      fontSize=9,
+      leading=12,
   )
 
   # 1. 문서 제목
   story.append(
-      Paragraph(
-          '<b>자산 평가액 및 수익률 트렌드 종합 분석 리포트</b>', title_style
-      )
+      Paragraph('<b>자산 평가액 및 수익률 트렌드 종합 분석 리포트</b>', title_style)
   )
   story.append(
       Paragraph(
           f'생성 일시: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
-          styles['Normal'],
+          normal_style,
       )
   )
-  story.append(Spacer(1, 15))
+  story.append(Spacer(1, 10))
 
   # 2. 요약 표들 추가
   for title_text, df in summary_dfs_dict.items():
     story.append(Paragraph(f'<b>[요약 표] {title_text}</b>', heading_style))
     if df is not None and not df.empty:
-      # 컬럼명 및 데이터 문자열화
       cols = df.columns.tolist()
-      table_data = [cols] + df.astype(str).values.tolist()
+      table_data = [[Paragraph(f'<b>{c}</b>', normal_style) for c in cols]]
+      for _, row in df.iterrows():
+        table_data.append(
+            [Paragraph(str(val), normal_style) for val in row.values]
+        )
 
-      # A4 폭에 맞춘 컬럼 너비 배분
       col_widths = [110] + [
           (535 - 110) / (len(cols) - 1) if len(cols) > 1 else 425
           for _ in range(len(cols) - 1)
@@ -358,39 +427,34 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
       t.setStyle(
           TableStyle([
               ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2b5c8f')),
-              ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
               ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-              ('FONTNAME', (0, 0), (-1, -1), FONT_NAME),
-              ('FONTSIZE', (0, 0), (-1, -1), 8),
-              ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
-              ('TOPPADDING', (0, 0), (-1, 0), 5),
+              ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+              ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+              ('TOPPADDING', (0, 0), (-1, -1), 4),
               ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
           ])
       )
       story.append(t)
     else:
-      story.append(Paragraph('데이터가 없습니다.', styles['Normal']))
-    story.append(Spacer(1, 15))
+      story.append(Paragraph('데이터가 없습니다.', normal_style))
+    story.append(Spacer(1, 10))
 
-  # 3. 차트 이미지 추가
-  story.append(
-      Paragraph('<b>[분석 차트 시각화 자료]</b>', title_style)
-  )
-  story.append(Spacer(1, 10))
+  # 3. 차트 이미지 추가 (Matplotlib 전환 방식 적용)
+  story.append(Paragraph('<b>[분석 차트 시각화 자료]</b>', title_style))
+  story.append(Spacer(1, 5))
 
   for title_text, fig in figures_dict.items():
     story.append(Paragraph(f'<b>{title_text}</b>', heading_style))
     try:
-      img_bytes = fig.to_image(format='png', width=750, height=380, scale=2)
-      img_io = BytesIO(img_bytes)
-      rl_img = RLImage(img_io, width=480, height=243)
+      img_io = create_matplotlib_chart_image(title_text, fig)
+      rl_img = RLImage(img_io, width=480, height=210)
       story.append(rl_img)
-      story.append(Spacer(1, 15))
+      story.append(Spacer(1, 10))
     except Exception as e:
       story.append(
-          Paragraph(f'(차트 이미지 변환 실패 또는 Kaleido 미설치: {e})', styles['Normal'])
+          Paragraph(f'(차트 이미지 변환 실패: {e})', normal_style)
       )
-      story.append(Spacer(1, 15))
+      story.append(Spacer(1, 10))
 
   doc.build(story)
   buffer.seek(0)
@@ -398,7 +462,7 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
 
 
 # -----------------------------------------------------------------------------
-# 5. Streamlit 대시보드 메인
+# 6. Streamlit 대시보드 메인
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title='원금 대비 평가액 TREND 관리', layout='wide')
 st.title('📈 자산 평가액 및 수익률 분석 시스템')
@@ -955,7 +1019,6 @@ if menu == '트렌드 리포트':
 
       st.session_state['trend_calc_df'] = pd.DataFrame(base_records)
       st.session_state['trend_bm_calc'] = bm_calc_dict
-      # 리포트 생성을 위한 캐시 초기화
       st.session_state['pdf_summary_tables'] = {}
       st.session_state['pdf_figures'] = {}
 
@@ -969,7 +1032,6 @@ if menu == '트렌드 리포트':
 
       st.write('---')
 
-      # PDF 다운로드 섹션 컨테이너 구성
       if 'pdf_summary_tables' not in st.session_state:
         st.session_state['pdf_summary_tables'] = {}
       if 'pdf_figures' not in st.session_state:
@@ -977,7 +1039,7 @@ if menu == '트렌드 리포트':
 
       pdf_col1, pdf_col2 = st.columns([3, 1])
       with pdf_col1:
-        st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
+        st.subheader('🖥️️ 화면 디스플레이 설정 (실시간 반영)')
       with pdf_col2:
         if st.button('📄 전체 PDF 리포트 생성 및 다운로드'):
           with st.spinner(
@@ -1280,7 +1342,6 @@ if menu == '트렌드 리포트':
         ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        # PDF 리포트용 포맷팅 복사본 저장
         pdf_df_view = summary_df.copy()
         pdf_df_view['선택구간 누적 평가 손익 (원)'] = pdf_df_view[
             '선택구간 누적 평가 손익 (원)'
@@ -1582,7 +1643,6 @@ if menu == '트렌드 리포트':
             secondary_y=True,
         )
 
-        # PDF 저장용 딕셔너리에 차트 추가
         st.session_state['pdf_figures'][f'[{prefix}] 선택구간 누적손익'] = (
             fig_sel_p
         )
@@ -1791,7 +1851,6 @@ if menu == '트렌드 리포트':
             [c for c in cols_w if c in whose_summary_df.columns]
         ]
 
-        # PDF 저장용 포맷팅 복사본 저장
         pdf_whose_view = whose_summary_df.copy()
         pdf_whose_view['선택구간 누적 평가 손익 (원)'] = pdf_whose_view[
             '선택구간 누적 평가 손익 (원)'
@@ -2111,7 +2170,6 @@ if menu == '트렌드 리포트':
             zeroline=True,
         )
 
-        # PDF 저장용 차트 등록
         st.session_state['pdf_figures']['[전체합산] 전체 자산 평가 금액'] = fig1
         st.session_state['pdf_figures']['[전체합산] 구간 손익 금액 추이'] = fig2
         st.session_state['pdf_figures']['[전체합산] 구간 누적수익률 추이'] = (
