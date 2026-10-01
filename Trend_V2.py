@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import sys
+import urllib.request
 from datetime import date, datetime, timedelta
 from io import BytesIO
 
@@ -28,40 +29,86 @@ from plotly.subplots import make_subplots
 
 # matplotlib 선택적 임포트 (미설치 시 예외 방지)
 try:
+  import matplotlib.font_manager as fm
   import matplotlib.pyplot as plt
 
   HAS_MATPLOTLIB = True
-  plt.rcParams['font.family'] = (
-      'Malgun Gothic'
-      if os.name == 'nt'
-      else 'AppleGothic'
-      if sys.platform == 'darwin'
-      else 'DejaVu Sans'
-  )
-  plt.rcParams['axes.unicode_minus'] = False
 except ImportError:
   HAS_MATPLOTLIB = False
 
 # -----------------------------------------------------------------------------
-# 폰트 설정 (한글 깨짐 방지 안전 처리)
-# -----------------------------------------------------------------------------
-FONT_NAME = 'Helvetica'
-try:
-  pdfmetrics.registerFont(TTFont('Malgun', 'malgun.ttf'))
-  FONT_NAME = 'Malgun'
-except:
-  try:
-    pdfmetrics.registerFont(TTFont('NanumGothic', 'NanumGothic.ttf'))
-    FONT_NAME = 'NanumGothic'
-  except:
-    pass
-
-# -----------------------------------------------------------------------------
-# 1. DB 초기화 및 관리 함수
+# 1. DB 및 기본 데이터 디렉토리 설정
 # -----------------------------------------------------------------------------
 DATA_DIR = os.path.join(os.path.dirname(__file__), '.data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, 'asset_tracker.db')
+
+# -----------------------------------------------------------------------------
+# 한글 폰트 자동 검색, 다운로드 및 등록 (ReportLab & Matplotlib 동시 설정)
+# -----------------------------------------------------------------------------
+FONT_NAME = 'Helvetica'
+KOREAN_FONT_PATH = None
+
+
+def setup_korean_font():
+  global FONT_NAME, KOREAN_FONT_PATH
+
+  candidate_paths = [
+      # Windows
+      'C:/Windows/Fonts/malgun.ttf',
+      'C:/Windows/Fonts/gulim.ttc',
+      # Mac
+      '/System/Library/Fonts/Supplemental/AppleGothic.ttf',
+      '/Library/Fonts/AppleGothic.ttf',
+      # Linux / Streamlit Cloud (apt-get install fonts-nanum)
+      '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+      '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+      '/usr/share/fonts/nanum/NanumGothic.ttf',
+      # 작업 디렉토리
+      'NanumGothic.ttf',
+      'malgun.ttf',
+      os.path.join(DATA_DIR, 'NanumGothic.ttf'),
+  ]
+
+  found_path = None
+  for p in candidate_paths:
+    if os.path.exists(p):
+      found_path = p
+      break
+
+  # 폰트 파일이 없으면 Google Fonts 저장소에서 NanumGothic.ttf 자동 다운로드
+  if not found_path:
+    target_path = os.path.join(DATA_DIR, 'NanumGothic.ttf')
+    url = 'https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf'
+    try:
+      urllib.request.urlretrieve(url, target_path)
+      if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+        found_path = target_path
+    except Exception:
+      pass
+
+  if found_path:
+    KOREAN_FONT_PATH = found_path
+
+    # 1) ReportLab 폰트 등록
+    try:
+      pdfmetrics.registerFont(TTFont('KoreanFont', found_path))
+      FONT_NAME = 'KoreanFont'
+    except Exception:
+      pass
+
+    # 2) Matplotlib 폰트 등록
+    if HAS_MATPLOTLIB:
+      try:
+        fm.fontManager.addFont(found_path)
+        font_prop = fm.FontProperties(fname=found_path)
+        plt.rcParams['font.family'] = font_prop.get_name()
+        plt.rcParams['axes.unicode_minus'] = False
+      except Exception:
+        pass
+
+
+setup_korean_font()
 
 
 def init_db():
@@ -309,13 +356,20 @@ def render_resizable_plotly_chart(fig, key):
 
 
 # -----------------------------------------------------------------------------
-# 4. PDF용 차트 이미지 생성 함수 (안전 모드 포함)
+# 4. PDF용 차트 이미지 생성 함수 (한글 폰트 객체 명시 지정)
 # -----------------------------------------------------------------------------
 def create_chart_image(title_text, fig):
-  """Plotly Figure를 받아서 안전하게 이미지 바이트로 변환합니다."""
+  """Plotly Figure를 받아서 Matplotlib 한글 폰트 적용 이미지 바이트로 변환합니다."""
   if HAS_MATPLOTLIB:
     try:
-      plt.figure(figsize=(8, 3.5), dpi=150)
+      fig_plt, ax = plt.subplots(figsize=(8, 3.5), dpi=150)
+
+      font_prop = (
+          fm.FontProperties(fname=KOREAN_FONT_PATH)
+          if KOREAN_FONT_PATH
+          else None
+      )
+
       data_plotted = False
       for data in fig.data:
         if (
@@ -329,40 +383,60 @@ def create_chart_image(title_text, fig):
           if len(x_vals) > 0 and len(y_vals) > 0:
             label = getattr(data, 'name', 'Series')
             if getattr(data, 'type', '') == 'bar':
-              plt.bar(x_vals, y_vals, label=label, alpha=0.8)
+              ax.bar(x_vals, y_vals, label=label, alpha=0.8)
             else:
-              plt.plot(x_vals, y_vals, marker='o', linewidth=2, label=label)
+              ax.plot(x_vals, y_vals, marker='o', linewidth=2, label=label)
             data_plotted = True
 
       if not data_plotted:
-        plt.text(
+        ax.text(
             0.5,
             0.5,
-            'Data Not Available',
+            '시각화 데이터 없음',
             horizontalalignment='center',
             verticalalignment='center',
-            transform=plt.gca().transAxes,
+            transform=ax.transAxes,
+            fontproperties=font_prop,
         )
 
-      plt.title(title_text, fontsize=10, fontweight='bold', pad=10)
-      plt.xticks(rotation=30, fontsize=8)
-      plt.yticks(fontsize=8)
-      plt.grid(True, linestyle='--', alpha=0.5)
-      if len(fig.data) > 1:
-        plt.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
+      if font_prop:
+        ax.set_title(
+            title_text, fontsize=10, fontweight='bold', pad=10, fontproperties=font_prop
+        )
+        for label in ax.get_xticklabels():
+          label.set_fontproperties(font_prop)
+          label.set_fontsize(8)
+          label.set_rotation(30)
+        for label in ax.get_yticklabels():
+          label.set_fontproperties(font_prop)
+          label.set_fontsize(8)
 
+        if len(fig.data) > 1:
+          legend = ax.legend(
+              loc='upper left', bbox_to_anchor=(1, 1), prop=font_prop
+          )
+          for text in legend.get_texts():
+            text.set_fontproperties(font_prop)
+            text.set_fontsize(8)
+      else:
+        ax.set_title(title_text, fontsize=10, fontweight='bold', pad=10)
+        plt.xticks(rotation=30, fontsize=8)
+        plt.yticks(fontsize=8)
+        if len(fig.data) > 1:
+          ax.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
+
+      ax.grid(True, linestyle='--', alpha=0.5)
       plt.tight_layout()
 
       img_io = BytesIO()
       plt.savefig(img_io, format='png', bbox_inches='tight')
-      plt.close()
+      plt.close(fig_plt)
       img_io.seek(0)
       return img_io
     except Exception:
-      if 'plt' in locals():
-        plt.close()
+      if 'fig_plt' in locals():
+        plt.close(fig_plt)
 
-  # Matplotlib 미설치 시 fallback 처리
   return None
 
 
@@ -419,7 +493,7 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
   )
   story.append(Spacer(1, 10))
 
-  # 2. 요약 표들 추가
+  # 2. 요약 표 추가
   for title_text, df in summary_dfs_dict.items():
     story.append(Paragraph(f'<b>[요약 표] {title_text}</b>', heading_style))
     if df is not None and not df.empty:
@@ -465,8 +539,7 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
     else:
       story.append(
           Paragraph(
-              '(차트 이미지 변환을 위해 requirements.txt에 matplotlib 추가가'
-              ' 필요합니다.)',
+              '(차트 이미지 변환 중 오류가 발생했습니다.)',
               normal_style,
           )
       )
