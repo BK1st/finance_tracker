@@ -8,4 +8,5 @@ requests>=2.31.0
 curl_cffi>=0.5.10
 xlsxwriter
 reportlab
+kaleido
 matplotlib
