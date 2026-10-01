@@ -231,15 +231,15 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
     if not ticker:
         return None
 
-# 수정 코드
-today_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
-target_dt = pd.to_datetime(target_date_str)
+    # 수정 코드
+    today_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
+    target_dt = pd.to_datetime(target_date_str)
 
-# 지정한 날짜가 오늘이거나 미래인 경우에만 실시간 시세 사용
-if target_dt >= today_dt:
-    live_p = fetch_live_ticker_price(ticker)
-    if live_p is not None:
-        return live_p
+    # 지정한 날짜가 오늘이거나 미래인 경우에만 실시간 시세 사용
+    if target_dt >= today_dt:
+        live_p = fetch_live_ticker_price(ticker)
+        if live_p is not None:
+            return live_p
 
     if market_data.empty:
         return fetch_live_ticker_price(ticker)
