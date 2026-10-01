@@ -533,13 +533,13 @@ if menu == "자산 입력 및 관리":
             "🖥️ 웹 화면 직접 수정/편집 (추천)",
             "신규 데이터 개별 추가",
             "엑셀 파일로 일괄 추가",
-            "🗑️️ 데이터 삭제 관리",
+            "🗑 데이터 삭제 관리",
         ],
         horizontal=True,
     )
 
-    if mode == "🖥️️ 웹 화면 직접 수정/편집 (추천)":
-        st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
+    if mode == "🖥 웹 화면 직접 수정/편집 (추천)":
+        st.subheader("🖥️️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
         if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
             open_trading_dialog()
@@ -1066,7 +1066,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                                     if curr_p and p_price and float(p_price) > 0:
                                         rate = round(((float(curr_p) - float(p_price)) / float(p_price)) * 100, 2)
-                                        profit_amt = (float(curr_p) - float(p_price)) * qty * ex_r
+                                        profit_amt = (float(curr_p) - float(p_price)) * ex_r * qty
 
                         change_rates.append(rate)
                         period_profits.append(profit_amt)
@@ -1089,13 +1089,56 @@ elif menu == "일별/시점별 보유 현황 분석":
             rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
             # ---------------------------------------------------------
-            # [수정 영역] 계층 피벗 구조 요약 현황 표 생성
+            # Treemap 드릴다운 상태 연동 동적 경로 옵션 수집 및 선택
             # ---------------------------------------------------------
-            st.write(f"📌 **단계별 계층 요약 현황 표 (TREEMAP 분류 및 색상 연동: `{color_option}`)**")
+            path_options = ["🌐 전체 (Root - 100% 점유)"]
+            
+            if group_cols:
+                path_set = set()
+                for _, r in sub_df.iterrows():
+                    curr_p = ""
+                    for col in group_cols:
+                        val = str(r[col])
+                        curr_p = f"{curr_p} > {val}" if curr_p else val
+                        path_set.add(curr_p)
+                path_options.extend(sorted(list(path_set)))
+
+            col_drill1, col_drill2 = st.columns([2.5, 1.5])
+            with col_drill1:
+                selected_drill_path = st.selectbox(
+                    "🔍 TREEMAP 계층 드릴다운 / 하위 분류 화면 선택 (상단 표 100% 점유 연동)",
+                    options=path_options,
+                    index=0,
+                    key="treemap_drilldown_selector"
+                )
+            with col_drill2:
+                st.caption("💡 특정 하위 분류를 선택하면 해당 분류의 총액을 100% 점유율로 자동 계산하여 상단 표와 Treemap이 완벽하게 연동됩니다.")
+
+            # 선택한 드릴다운 경로에 따른 데이터 프레임 필터링
+            if selected_drill_path == "🌐 전체 (Root - 100% 점유)":
+                filtered_df = sub_df.copy()
+                view_root_label = "🌐 전체 총합"
+                active_group_cols = group_cols
+            else:
+                path_parts = [p.strip() for p in selected_drill_path.split(">")]
+                filter_mask = pd.Series(True, index=sub_df.index)
+                for idx, part in enumerate(path_parts):
+                    if idx < len(group_cols):
+                        filter_mask &= (sub_df[group_cols[idx]].astype(str) == part)
+                filtered_df = sub_df[filter_mask].copy()
+                view_root_label = f"🎯 [{selected_drill_path}] 총합"
+                active_group_cols = group_cols[len(path_parts):]
+
+            active_total_eval = filtered_df["평가액(원)"].sum()
+
+            # ---------------------------------------------------------
+            # [수정 연동] Treemap 화면 상의 100% 점유 기준 표 생성
+            # ---------------------------------------------------------
+            st.write(f"📌 **현재 화면 기준 계층 요약 현황 표 (화면 점유율: 100.00% 기준)**")
 
             tree_rows = []
 
-            def build_tree_summary(df_sub, active_cols, depth=0):
+            def build_tree_summary_filtered(df_sub, active_cols, depth=0):
                 if not active_cols:
                     return
 
@@ -1115,7 +1158,8 @@ elif menu == "일별/시점별 보유 현황 분석":
                         past_eval = group_eval - group_profit
                         group_rate = (group_profit / past_eval * 100) if past_eval != 0 else 0.0
 
-                    group_share = (group_eval / total_eval * 100) if total_eval != 0 else 0
+                    # 현재 화면의 총 평가액 기준 100% 점유율 계산
+                    group_share = (group_eval / active_total_eval * 100) if active_total_eval != 0 else 0
 
                     indent = "└─ " * depth if depth > 0 else ""
                     label_display = f"{indent}{name}"
@@ -1129,22 +1173,22 @@ elif menu == "일별/시점별 보유 현황 분석":
                     })
 
                     if rem_cols:
-                        build_tree_summary(group, rem_cols, depth + 1)
+                        build_tree_summary_filtered(group, rem_cols, depth + 1)
 
-            if group_cols:
-                build_tree_summary(sub_df, group_cols)
+            if active_group_cols:
+                build_tree_summary_filtered(filtered_df, active_group_cols)
 
-            total_row_profit = sub_df["선택기준_평가손익(원)"].sum()
-            total_row_buy = sub_df["매입총액(원)"].sum()
+            total_row_profit = filtered_df["선택기준_평가손익(원)"].sum()
+            total_row_buy = filtered_df["매입총액(원)"].sum()
             if color_option == "총 누적 수익률 (%)":
                 total_row_rate = (total_row_profit / total_row_buy * 100) if total_row_buy != 0 else 0.0
             else:
-                past_total_eval = total_eval - total_row_profit
+                past_total_eval = active_total_eval - total_row_profit
                 total_row_rate = (total_row_profit / past_total_eval * 100) if past_total_eval != 0 else 0.0
 
             total_tree_row = {
-                "구분 항목": "🌐 전체 총합",
-                "평가액(원)": total_eval,
+                "구분 항목": view_root_label,
+                "평가액(원)": active_total_eval,
                 profit_col_label: total_row_profit,
                 rate_col_label: total_row_rate,
                 "점유율(%)": 100.0
@@ -1172,63 +1216,64 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.markdown("")
 
             # ---------------------------------------------------------
-            # TREEMAP 그래프 생성
+            # TREEMAP 그래프 생성 (선택한 드릴다운 범위 연동)
             # ---------------------------------------------------------
             ids, labels, parents, values = [], [], [], []
             custom_rates, custom_prices, custom_profits = [], [], []
 
             ids.append("Root")
-            labels.append("전체 포트폴리오")
+            labels.append(view_root_label)
             parents.append("")
-            values.append(total_eval)
-            custom_rates.append(total_rate if color_option == "총 누적 수익률 (%)" else ((total_profit / (total_eval - total_profit)) * 100 if (total_eval - total_profit) != 0 else 0))
+            values.append(active_total_eval)
+            custom_rates.append(total_row_rate)
             custom_prices.append("-")
-            custom_profits.append(sub_df["선택기준_평가손익(원)"].sum())
+            custom_profits.append(total_row_profit)
 
             built_nodes = set(["Root"])
 
-            for idx_row, row in sub_df.iterrows():
-                current_parent = "Root"
-                current_id_path = ""
-                
-                for depth, col in enumerate(group_cols):
-                    val_str = str(row[col])
-                    current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
+            if active_group_cols:
+                for idx_row, row in filtered_df.iterrows():
+                    current_parent = "Root"
+                    current_id_path = ""
                     
-                    if current_id_path not in built_nodes:
-                        built_nodes.add(current_id_path)
+                    for depth, col in enumerate(active_group_cols):
+                        val_str = str(row[col])
+                        current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
                         
-                        filter_mask = pd.Series(True, index=sub_df.index)
-                        for k in range(depth + 1):
-                            filter_mask &= (sub_df[group_cols[k]] == row[group_cols[k]])
-                        
-                        sub_grp = sub_df[filter_mask]
-                        
-                        grp_eval = sub_grp["평가액(원)"].sum()
-                        grp_buy = sub_grp["매입총액(원)"].sum()
-                        grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
-                        
-                        if color_option == "총 누적 수익률 (%)":
-                            grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
-                        else:
-                            grp_past_eval = grp_eval - grp_profit
-                            grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
+                        if current_id_path not in built_nodes:
+                            built_nodes.add(current_id_path)
+                            
+                            filter_mask = pd.Series(True, index=filtered_df.index)
+                            for k in range(depth + 1):
+                                filter_mask &= (filtered_df[active_group_cols[k]] == row[active_group_cols[k]])
+                            
+                            sub_grp = filtered_df[filter_mask]
+                            
+                            grp_eval = sub_grp["평가액(원)"].sum()
+                            grp_buy = sub_grp["매입총액(원)"].sum()
+                            grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
+                            
+                            if color_option == "총 누적 수익률 (%)":
+                                grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
+                            else:
+                                grp_past_eval = grp_eval - grp_profit
+                                grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
 
-                        if depth == len(group_cols) - 1:
-                            price_sym = "$" if row["currency"] == "USD" else "₩"
-                            disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
-                        else:
-                            disp_price = "-"
+                            if depth == len(active_group_cols) - 1:
+                                price_sym = "$" if row["currency"] == "USD" else "₩"
+                                disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                            else:
+                                disp_price = "-"
 
-                        ids.append(current_id_path)
-                        labels.append(val_str)
-                        parents.append(current_parent)
-                        values.append(grp_eval)
-                        custom_rates.append(grp_rate)
-                        custom_prices.append(disp_price)
-                        custom_profits.append(grp_profit)
+                            ids.append(current_id_path)
+                            labels.append(val_str)
+                            parents.append(current_parent)
+                            values.append(grp_eval)
+                            custom_rates.append(grp_rate)
+                            custom_prices.append(disp_price)
+                            custom_profits.append(grp_profit)
 
-                    current_parent = current_id_path
+                        current_parent = current_id_path
 
             c_rates_arr = [r for r in custom_rates if r is not None]
             max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
@@ -1274,7 +1319,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "• 현재가: %{customdata[1]}<br>"
                         f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
                         f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
-                        "• 전체 대비 점유율: %{percentRoot:.2%}<br>"
+                        "• 선택 화면 대비 점유율: %{percentRoot:.2%}<br>"
                         "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
                     ),
                     hoverlabel=dict(font_size=15),
@@ -1284,7 +1329,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             )
 
             fig_treemap.update_layout(
-                title="계층별 다단계 TREEMAP 자산 분포",
+                title=f"계층별 다단계 TREEMAP 자산 분포 ({view_root_label})",
                 margin=dict(t=30, l=10, r=10, b=10),
             )
 
@@ -1293,7 +1338,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
 
             hierarchy_summary = (
-                sub_df.groupby(group_cols)
+                filtered_df.groupby(group_cols)
                 .agg({
                     "매입총액(원)": "sum",
                     "평가액(원)": "sum",
@@ -1306,7 +1351,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 hierarchy_summary["평가손익(원)"] / hierarchy_summary["매입총액(원)"].replace(0, 1)
             ) * 100
             hierarchy_summary["점유율(%)"] = (
-                (hierarchy_summary["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+                (hierarchy_summary["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
             )
 
             display_df = hierarchy_summary.rename(columns=col_rename_map)
@@ -1355,7 +1400,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         names_col = "계층경로"
                     else:
                         target_col = cat_options[pie_group_mode]
-                        pie_chart_df = sub_df.groupby(target_col)["평가액(원)"].sum().reset_index()
+                        pie_chart_df = filtered_df.groupby(target_col)["평가액(원)"].sum().reset_index()
                         names_col = target_col
 
                     fig_pie_hierarchy = px.pie(
@@ -1375,7 +1420,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     st.plotly_chart(fig_pie_hierarchy, width="stretch")
 
                 with pie_tab2:
-                    item_summary = sub_df.groupby("item_name")["평가액(원)"].sum().reset_index()
+                    item_summary = filtered_df.groupby("item_name")["평가액(원)"].sum().reset_index()
                     fig_pie_item = px.pie(
                         item_summary,
                         values="평가액(원)",
@@ -1395,14 +1440,14 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.markdown("---")
 
             st.subheader("📋 선택 시점 상세 보유 목록")
-            sub_df["점유율(%)"] = (
-                (sub_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
+            filtered_df["점유율(%)"] = (
+                (filtered_df["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
             )
-            sub_df["수익률(%)"] = (
-                sub_df["평가손익(원)"] / sub_df["매입총액(원)"].replace(0, 1)
+            filtered_df["수익률(%)"] = (
+                filtered_df["평가손익(원)"] / filtered_df["매입총액(원)"].replace(0, 1)
             ) * 100
             st.dataframe(
-                sub_df[[
+                filtered_df[[
                     "whose",
                     "broker",
                     "account_num",
