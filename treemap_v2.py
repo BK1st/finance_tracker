@@ -114,7 +114,6 @@ def init_db():
     """)
     conn.commit()
     
-    # 기존 DB 테이블에 whose 컬럼이 없다면 자동 추가 (마이그레이션)
     cursor.execute("PRAGMA table_info(portfolio)")
     columns = [column[1] for column in cursor.fetchall()]
     if "whose" not in columns:
@@ -125,7 +124,6 @@ def init_db():
     count = cursor.fetchone()[0]
     conn.close()
 
-    # DB가 비어있고 백업 파일이 존재할 경우 자동 복구 진행
     if count == 0 and os.path.exists(BACKUP_FILE):
         try:
             with open(BACKUP_FILE, "r", encoding="utf-8") as f:
@@ -325,7 +323,7 @@ def update_all_prices_and_rate_batch(curr_rate):
 
 
 # ---------------------------------------------------------
-# [수정 기능] 매매(트레이딩) 전용 다이얼로그 (계층적 조건 선택 방식)
+# 매매(트레이딩) 전용 다이얼로그
 # ---------------------------------------------------------
 @st.dialog("📈 매매(트레이딩) 입력 - 신규 매수 / 추가 매수 / 매도")
 def open_trading_dialog():
@@ -375,7 +373,6 @@ def open_trading_dialog():
             st.warning("등록된 보유 포트폴리오 항목이 없습니다.")
             return
 
-        # 빈값/Null값 처리
         df["record_date"] = df["record_date"].fillna("미지정").replace("", "미지정")
         df["broker"] = df["broker"].fillna("미지정").replace("", "미지정")
         df["account_num"] = df["account_num"].fillna("미지정").replace("", "미지정")
@@ -384,21 +381,17 @@ def open_trading_dialog():
 
         st.markdown("#### 🎯 거래 대상 종목 선택 (기준날짜 ➔ 증권사 ➔ 계좌번호 ➔ 종목)")
 
-        # 1단계: 기준날짜 선택
         available_dates = sorted(df["record_date"].unique(), reverse=True)
         selected_date = st.selectbox("1️⃣ 기준날짜 선택", available_dates, key="tr_sel_date")
 
-        # 2단계: 해당 기준날짜 내 증권사 선택
         df_filtered_date = df[df["record_date"] == selected_date]
         available_brokers = sorted(df_filtered_date["broker"].unique())
         selected_broker = st.selectbox("2️⃣ 증권사 선택", available_brokers, key="tr_sel_broker")
 
-        # 3단계: 해당 증권사 내 계좌번호 선택
         df_filtered_broker = df_filtered_date[df_filtered_date["broker"] == selected_broker]
         available_accounts = sorted(df_filtered_broker["account_num"].unique())
         selected_account = st.selectbox("3️⃣ 계좌번호 선택", available_accounts, key="tr_sel_acc")
 
-        # 4단계: 해당 계좌 내 종목 선택
         df_filtered_account = df_filtered_broker[df_filtered_broker["account_num"] == selected_account].copy()
 
         df_filtered_account["item_label"] = df_filtered_account.apply(
@@ -408,7 +401,6 @@ def open_trading_dialog():
 
         selected_item_label = st.selectbox("4️⃣ 종목 선택", df_filtered_account["item_label"].tolist(), key="tr_sel_item")
 
-        # 선택된 최종 행 추출
         target_row = df_filtered_account[df_filtered_account["item_label"] == selected_item_label].iloc[0]
 
         target_id = int(target_row["id"])
@@ -438,7 +430,6 @@ def open_trading_dialog():
                     cursor = conn.cursor()
 
                     if "추가 매수" in trade_type:
-                        # 이동평균 매입단가 산출
                         new_qty = old_qty + trade_qty
                         new_buy_price = ((old_qty * old_buy_price) + (trade_qty * trade_price)) / new_qty
                         cursor.execute("""
@@ -448,7 +439,7 @@ def open_trading_dialog():
                         """, (new_qty, new_buy_price, t_date, target_id))
                         st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
 
-                    else:  # 매도
+                    else:
                         if trade_qty >= old_qty:
                             cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
                             st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다.")
@@ -467,7 +458,6 @@ def open_trading_dialog():
                     st.rerun()
 
 
-# 앱 시작 시 DB 생성 및 자동 복구 수행
 init_db()
 
 st.markdown(
@@ -543,15 +533,12 @@ if menu == "자산 입력 및 관리":
             "🖥️ 웹 화면 직접 수정/편집 (추천)",
             "신규 데이터 개별 추가",
             "엑셀 파일로 일괄 추가",
-            "🗑️ 데이터 삭제 관리",
+            "🗑️️ 데이터 삭제 관리",
         ],
         horizontal=True,
     )
 
-    # ---------------------------------------------------------
-    # 모드 1: 웹 화면 직접 수정/편집
-    # ---------------------------------------------------------
-    if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
+    if mode == "🖥️️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
         if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
@@ -649,9 +636,6 @@ if menu == "자산 입력 및 관리":
                 st.success("🎉 표 전체 변경사항이 성공적으로 저장되었습니다!")
                 st.rerun()
 
-    # ---------------------------------------------------------
-    # 모드 2: 신규 데이터 개별 추가
-    # ---------------------------------------------------------
     elif mode == "신규 데이터 개별 추가":
         currency = st.selectbox("통화 단위 선택", ["KRW (원화)", "USD (달러)"])
         is_usd = "USD" in currency
@@ -733,9 +717,6 @@ if menu == "자산 입력 및 관리":
                 st.success("저장되었습니다.")
                 st.rerun()
 
-    # ---------------------------------------------------------
-    # 모드 3: 엑셀 파일로 일괄 추가
-    # ---------------------------------------------------------
     elif mode == "엑셀 파일로 일괄 추가":
         st.subheader("📁 엑셀 / CSV 파일 업로드")
         uploaded_file = st.file_uploader("파일 선택", type=["xlsx", "csv"])
@@ -794,9 +775,6 @@ if menu == "자산 입력 및 관리":
             except Exception as e:
                 st.error(f"오류: {e}")
 
-    # ---------------------------------------------------------
-    # 모드 4: 데이터 삭제 관리
-    # ---------------------------------------------------------
     elif mode == "🗑️ 데이터 삭제 관리":
         if not df_raw.empty:
             st.subheader("🗑️ 데이터 삭제 관리")
@@ -1110,73 +1088,92 @@ elif menu == "일별/시점별 보유 현황 분석":
             profit_col_label = f"평가손익({color_option})" if color_option != "총 누적 수익률 (%)" else "평가손익(원)"
             rate_col_label = f"등락률({color_option})" if color_option != "총 누적 수익률 (%)" else "수익률(%)"
 
-            st.write(f"📌 **단계별 요약 현황 표 (각 단계별 합계/전체 총합 포함 | 선택 색상: {color_option})**")
-            
-            summary_group_by_label = st.selectbox(
-                "📊 요약 현황표 구분 기준 선택",
-                options=list(cat_options.keys()),
-                index=0,
-                key="summary_table_group_select"
-            )
-            selected_summary_col = cat_options[summary_group_by_label]
+            # ---------------------------------------------------------
+            # [수정 영역] 계층 피벗 구조 요약 현황 표 생성
+            # ---------------------------------------------------------
+            st.write(f"📌 **단계별 계층 요약 현황 표 (TREEMAP 분류 및 색상 연동: `{color_option}`)**")
 
-            summary_group_df = sub_df.groupby(selected_summary_col).agg({
-                "매입총액(원)": "sum",
-                "평가액(원)": "sum",
-                "선택기준_평가손익(원)": "sum",
-            }).reset_index()
+            tree_rows = []
 
-            total_summary_df = pd.DataFrame([{
-                selected_summary_col: "🌐 전체 총합",
-                "매입총액(원)": sub_df["매입총액(원)"].sum(),
-                "평가액(원)": sub_df["평가액(원)"].sum(),
-                "선택기준_평가손익(원)": sub_df["선택기준_평가손익(원)"].sum(),
-            }])
+            def build_tree_summary(df_sub, active_cols, depth=0):
+                if not active_cols:
+                    return
 
-            summary_group_df = pd.concat([summary_group_df, total_summary_df], ignore_index=True)
+                curr_col = active_cols[0]
+                rem_cols = active_cols[1:]
 
+                grouped = df_sub.groupby(curr_col)
+
+                for name, group in grouped:
+                    group_eval = group["평가액(원)"].sum()
+                    group_buy = group["매입총액(원)"].sum()
+                    group_profit = group["선택기준_평가손익(원)"].sum()
+
+                    if color_option == "총 누적 수익률 (%)":
+                        group_rate = (group_profit / group_buy * 100) if group_buy != 0 else 0.0
+                    else:
+                        past_eval = group_eval - group_profit
+                        group_rate = (group_profit / past_eval * 100) if past_eval != 0 else 0.0
+
+                    group_share = (group_eval / total_eval * 100) if total_eval != 0 else 0
+
+                    indent = "└─ " * depth if depth > 0 else ""
+                    label_display = f"{indent}{name}"
+
+                    tree_rows.append({
+                        "구분 항목": label_display,
+                        "평가액(원)": group_eval,
+                        profit_col_label: group_profit,
+                        rate_col_label: group_rate,
+                        "점유율(%)": group_share
+                    })
+
+                    if rem_cols:
+                        build_tree_summary(group, rem_cols, depth + 1)
+
+            if group_cols:
+                build_tree_summary(sub_df, group_cols)
+
+            total_row_profit = sub_df["선택기준_평가손익(원)"].sum()
+            total_row_buy = sub_df["매입총액(원)"].sum()
             if color_option == "총 누적 수익률 (%)":
-                summary_group_df["선택기준_수익률(%)"] = (
-                    summary_group_df["선택기준_평가손익(원)"] / summary_group_df["매입총액(원)"].replace(0, 1)
-                ) * 100
+                total_row_rate = (total_row_profit / total_row_buy * 100) if total_row_buy != 0 else 0.0
             else:
-                past_eval_s = summary_group_df["평가액(원)"] - summary_group_df["선택기준_평가손익(원)"]
-                summary_group_df["선택기준_수익률(%)"] = (
-                    summary_group_df["선택기준_평가손익(원)"] / past_eval_s.replace(0, 1)
-                ) * 100
+                past_total_eval = total_eval - total_row_profit
+                total_row_rate = (total_row_profit / past_total_eval * 100) if past_total_eval != 0 else 0.0
 
-            summary_group_df["점유율(%)"] = (
-                (summary_group_df["평가액(원)"] / total_eval * 100) if total_eval != 0 else 0
-            )
+            total_tree_row = {
+                "구분 항목": "🌐 전체 총합",
+                "평가액(원)": total_eval,
+                profit_col_label: total_row_profit,
+                rate_col_label: total_row_rate,
+                "점유율(%)": 100.0
+            }
 
-            summary_display_df = summary_group_df.rename(columns={
-                selected_summary_col: summary_group_by_label,
-                "선택기준_평가손익(원)": profit_col_label,
-                "선택기준_수익률(%)": rate_col_label,
-            })
-
-            summary_final_cols = [
-                summary_group_by_label,
-                "매입총액(원)",
-                "평가액(원)",
-                profit_col_label,
-                rate_col_label,
-                "점유율(%)",
-            ]
+            tree_summary_df = pd.DataFrame([total_tree_row] + tree_rows)
 
             st.dataframe(
-                summary_display_df[summary_final_cols]
+                tree_summary_df[[
+                    "구분 항목",
+                    "평가액(원)",
+                    profit_col_label,
+                    rate_col_label,
+                    "점유율(%)"
+                ]]
                 .style.format({
-                    "매입총액(원)": "₩{:,.0f}",
                     "평가액(원)": "₩{:,.0f}",
                     profit_col_label: "₩{:,.0f}",
                     rate_col_label: "{:+.2f}%",
                     "점유율(%)": "{:.2f}%"
                 }),
-                width="stretch"
+                width="stretch",
+                hide_index=True
             )
             st.markdown("")
 
+            # ---------------------------------------------------------
+            # TREEMAP 그래프 생성
+            # ---------------------------------------------------------
             ids, labels, parents, values = [], [], [], []
             custom_rates, custom_prices, custom_profits = [], [], []
 
