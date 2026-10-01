@@ -1,10 +1,10 @@
 # name=Trend_V2_11.py
 import os
 import sqlite3
+import sys
 from datetime import date, datetime, timedelta
 from io import BytesIO
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,12 +26,27 @@ import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
 
+# matplotlib 선택적 임포트 (미설치 시 예외 방지)
+try:
+  import matplotlib.pyplot as plt
+
+  HAS_MATPLOTLIB = True
+  plt.rcParams['font.family'] = (
+      'Malgun Gothic'
+      if os.name == 'nt'
+      else 'AppleGothic'
+      if sys.platform == 'darwin'
+      else 'DejaVu Sans'
+  )
+  plt.rcParams['axes.unicode_minus'] = False
+except ImportError:
+  HAS_MATPLOTLIB = False
+
 # -----------------------------------------------------------------------------
 # 폰트 설정 (한글 깨짐 방지 안전 처리)
 # -----------------------------------------------------------------------------
 FONT_NAME = 'Helvetica'
 try:
-  # 시스템에 등록된 맑은 고딕 또는 나눔고딕 시도
   pdfmetrics.registerFont(TTFont('Malgun', 'malgun.ttf'))
   FONT_NAME = 'Malgun'
 except:
@@ -40,16 +55,6 @@ except:
     FONT_NAME = 'NanumGothic'
   except:
     pass
-
-# Matplotlib 한글 폰트 설정
-plt.rcParams['font.family'] = (
-    'Malgun Gothic'
-    if os.name == 'nt'
-    else 'AppleGothic'
-    if sys.platform == 'darwin'
-    else 'DejaVu Sans'
-)
-plt.rcParams['axes.unicode_minus'] = False
 
 # -----------------------------------------------------------------------------
 # 1. DB 초기화 및 관리 함수
@@ -304,54 +309,61 @@ def render_resizable_plotly_chart(fig, key):
 
 
 # -----------------------------------------------------------------------------
-# 4. Matplotlib 기반 PDF용 차트 이미지 생성 함수 (크롬/Kaleido 불필요)
+# 4. PDF용 차트 이미지 생성 함수 (안전 모드 포함)
 # -----------------------------------------------------------------------------
-def create_matplotlib_chart_image(title_text, fig):
-  """Plotly Figure 데이터를 받아 Matplotlib 이미지 바이트로 변환합니다."""
-  try:
-    plt.figure(figsize=(8, 3.5), dpi=150)
+def create_chart_image(title_text, fig):
+  """Plotly Figure를 받아서 안전하게 이미지 바이트로 변환합니다."""
+  if HAS_MATPLOTLIB:
+    try:
+      plt.figure(figsize=(8, 3.5), dpi=150)
+      data_plotted = False
+      for data in fig.data:
+        if (
+            hasattr(data, 'x')
+            and hasattr(data, 'y')
+            and data.x is not None
+            and data.y is not None
+        ):
+          x_vals = list(data.x)
+          y_vals = list(data.y)
+          if len(x_vals) > 0 and len(y_vals) > 0:
+            label = getattr(data, 'name', 'Series')
+            if getattr(data, 'type', '') == 'bar':
+              plt.bar(x_vals, y_vals, label=label, alpha=0.8)
+            else:
+              plt.plot(x_vals, y_vals, marker='o', linewidth=2, label=label)
+            data_plotted = True
 
-    # Plotly 데이터 추출 시도
-    data_plotted = False
-    for data in fig.data:
-      if hasattr(data, 'x') and hasattr(data, 'y') and data.x is not None and data.y is not None:
-        x_vals = list(data.x)
-        y_vals = list(data.y)
-        if len(x_vals) > 0 and len(y_vals) > 0:
-          label = getattr(data, 'name', 'Series')
-          if data.type == 'bar':
-            plt.bar(x_vals, y_vals, label=label, alpha=0.8)
-          else:
-            plt.plot(x_vals, y_vals, marker='o', linewidth=2, label=label)
-          data_plotted = True
+      if not data_plotted:
+        plt.text(
+            0.5,
+            0.5,
+            'Data Not Available',
+            horizontalalignment='center',
+            verticalalignment='center',
+            transform=plt.gca().transAxes,
+        )
 
-    if not data_plotted:
-      plt.text(
-          0.5,
-          0.5,
-          '시각화 데이터 없음',
-          horizontalalignment='center',
-          verticalalignment='center',
-          transform=plt.gca().transAxes,
-      )
+      plt.title(title_text, fontsize=10, fontweight='bold', pad=10)
+      plt.xticks(rotation=30, fontsize=8)
+      plt.yticks(fontsize=8)
+      plt.grid(True, linestyle='--', alpha=0.5)
+      if len(fig.data) > 1:
+        plt.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
 
-    plt.title(title_text, fontsize=10, fontweight='bold', pad=10)
-    plt.xticks(rotation=30, fontsize=8)
-    plt.yticks(fontsize=8)
-    plt.grid(True, linestyle='--', alpha=0.5)
-    if len(fig.data) > 1:
-      plt.legend(fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
+      plt.tight_layout()
 
-    plt.tight_layout()
+      img_io = BytesIO()
+      plt.savefig(img_io, format='png', bbox_inches='tight')
+      plt.close()
+      img_io.seek(0)
+      return img_io
+    except Exception:
+      if 'plt' in locals():
+        plt.close()
 
-    img_io = BytesIO()
-    plt.savefig(img_io, format='png', bbox_inches='tight')
-    plt.close()
-    img_io.seek(0)
-    return img_io
-  except Exception as e:
-    plt.close()
-    raise e
+  # Matplotlib 미설치 시 fallback 처리
+  return None
 
 
 # -----------------------------------------------------------------------------
@@ -439,20 +451,24 @@ def generate_trend_pdf(summary_dfs_dict, figures_dict):
       story.append(Paragraph('데이터가 없습니다.', normal_style))
     story.append(Spacer(1, 10))
 
-  # 3. 차트 이미지 추가 (Matplotlib 전환 방식 적용)
+  # 3. 차트 이미지 추가
   story.append(Paragraph('<b>[분석 차트 시각화 자료]</b>', title_style))
   story.append(Spacer(1, 5))
 
   for title_text, fig in figures_dict.items():
     story.append(Paragraph(f'<b>{title_text}</b>', heading_style))
-    try:
-      img_io = create_matplotlib_chart_image(title_text, fig)
+    img_io = create_chart_image(title_text, fig)
+    if img_io is not None:
       rl_img = RLImage(img_io, width=480, height=210)
       story.append(rl_img)
       story.append(Spacer(1, 10))
-    except Exception as e:
+    else:
       story.append(
-          Paragraph(f'(차트 이미지 변환 실패: {e})', normal_style)
+          Paragraph(
+              '(차트 이미지 변환을 위해 requirements.txt에 matplotlib 추가가'
+              ' 필요합니다.)',
+              normal_style,
+          )
       )
       story.append(Spacer(1, 10))
 
@@ -1039,7 +1055,7 @@ if menu == '트렌드 리포트':
 
       pdf_col1, pdf_col2 = st.columns([3, 1])
       with pdf_col1:
-        st.subheader('🖥️️ 화면 디스플레이 설정 (실시간 반영)')
+        st.subheader('🖥 화면 디스플레이 설정 (실시간 반영)')
       with pdf_col2:
         if st.button('📄 전체 PDF 리포트 생성 및 다운로드'):
           with st.spinner(
