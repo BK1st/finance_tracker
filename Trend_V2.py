@@ -1120,8 +1120,8 @@ if menu == '트렌드 리포트':
         fig_period_p.update_layout(
             title=dict(
                 text=(
-                    f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (세로 누적'
-                    f' 막대){suf_g2}'
+                    f'🔹 [{prefix}] 선택 기간 주기별 평가손익 Trend (그룹형'
+                    f' 세로 막대){suf_g2}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1129,7 +1129,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
-            barmode='relative',
+            barmode='group',
             hovermode='closest',
             height=500,
             margin=margin_g2,
@@ -1677,7 +1677,7 @@ if menu == '트렌드 리포트':
             title=dict(
                 text=(
                     f'2. [전체합산] 구간 손익 금액 추이 (WHOSE 기준'
-                    f' 분리){suf_w2}'
+                    f' 분리, 그룹형 세로 막대){suf_w2}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -1685,7 +1685,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
-            barmode='stack',
+            barmode='group',
             hovermode='closest',
             height=500,
             margin=margin_w2,
