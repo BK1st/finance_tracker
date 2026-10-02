@@ -1534,6 +1534,24 @@ elif menu == "일별/시점별 보유 현황 분석":
             # [수정 연동] Treemap 화면 상의 100% 점유 기준 표 생성
             # ---------------------------------------------------------
             st.write("📌 **현재 화면 기준 계층 요약 현황 표 (화면 점유율: 100.00% 기준)**")
+            # 1. 정렬 컨트롤 위젯
+            col_s1, col_s2 = st.columns([2, 1])
+            with col_s1:
+                sort_by_col = st.selectbox(
+                    "📊 정렬 기준 항목 선택",
+                    options=["평가액(원)", profit_col_label, rate_col_label, "점유율(%)", "구분 항목"],
+                    index=0,
+                    key="tree_sort_by_col"
+                )
+            with col_s2:
+                sort_order = st.radio(
+                    "정렬 순서",
+                    options=["내림차순 ⬇️", "오름차순 ⬆️"],
+                    horizontal=True,
+                    key="tree_sort_order"
+                )
+
+            is_reverse = ("내림차순" in sort_order)
 
             def _tree_metrics(group_df):
                 group_eval = group_df["평가액(원)"].sum()
@@ -1568,6 +1586,27 @@ elif menu == "일별/시점별 보유 현황 분석":
                 return nodes
 
             nested_nodes = build_tree_nodes(filtered_df, active_group_cols) if active_group_cols else []
+
+# 2. 계층 재귀 정렬 실행
+def sort_tree_nodes(nodes, target_sort_col, reverse_flag):
+    key_map = {
+        "평가액(원)": lambda x: x["eval"],
+        profit_col_label: lambda x: x["profit"],
+        rate_col_label: lambda x: x["rate"],
+        "점유율(%)": lambda x: x["share"],
+        "구분 항목": lambda x: x["label"],
+    }
+    key_fn = key_map.get(target_sort_col, lambda x: x["eval"])
+    nodes.sort(key=key_fn, reverse=reverse_flag)
+    for node in nodes:
+        if node.get("children"):
+            sort_tree_nodes(node["children"], target_sort_col, reverse_flag)
+
+if nested_nodes:
+    sort_tree_nodes(nested_nodes, sort_by_col, is_reverse)    
+                      
+            
+    
 
             total_row_profit = filtered_df["선택기준_평가손익(원)"].sum()
             total_row_buy = filtered_df["매입총액(원)"].sum()
