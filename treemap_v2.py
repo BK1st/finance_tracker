@@ -422,7 +422,7 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
 
 
 # ---------------------------------------------------------
-# 배치 시세 수집 및 캐싱 함수 (5분 유지)
+# 배치 시세 수집 및 캐싱 함수
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
@@ -465,7 +465,7 @@ def normalize_ticker(ticker, currency):
 
 
 def fetch_live_ticker_price(ticker):
-    """단일 티커의 최신 시세 가져오기 (미국 주식 프리마켓/애프터마켓/장중 시세 최우선 반영)"""
+    """단일 티커의 최신 시세 가져오기"""
     if not ticker:
         return None
     try:
@@ -515,7 +515,7 @@ def fetch_live_ticker_price(ticker):
 
 @st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (장전/장후 시간외 거래 데이터 포함) - 5분 TTL 유지"""
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -583,7 +583,7 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
 
 
 def _get_last_trading_day_before(m_data, ticker, target_date_dt):
-    """지정 날짜 이전의 가장 최근 거래일 종가를 가져옴 (휴일/주말 반영)"""
+    """지정 날짜 이전의 가장 최근 거래일 종가를 가져옴"""
     if not ticker or m_data.empty:
         return None
     try:
@@ -816,9 +816,11 @@ current_rate = st.sidebar.number_input(
     "현재 원/달러 환율 (KRW/USD)", value=st.session_state.live_rate_store, step=1.0
 )
 
+# [수정 사항 1] 시세 캐시 초기화 및 갱신 기능 정상화
 if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
     st.cache_data.clear()
-    st.sidebar.success("시세 캐시가 초기화되었습니다!")
+    st.session_state.live_rate_store = fetch_live_exchange_rate()
+    st.sidebar.success("시세 캐시가 초기화되고 최신 환율이 반영되었습니다!")
     st.rerun()
 
 menu = st.sidebar.selectbox(
@@ -873,13 +875,14 @@ if menu == "자산 입력 및 관리":
         horizontal=True,
     )
 
-    if mode == "🖥 웹 화면 직접 수정/편집 (추천)":
+    # [수정 사항 2] 웹 화면 직접 수정/편집 기능 정상화
+    if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
         if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
             open_trading_dialog()
 
-        st.info("💡 **사용 방법**: 아래 표에서 셀을 직접 수정하거나, 체크박스로 삭제할 행을 선택하고, 하단 버튼으로 줄을 추가하거나 일괄 저장할 수 있습니다.")
+        st.info("💡 **사용 방법**: 아래 표에서 셀을 직접 수정하거나, 체크박스로 삭제할 행을 선택하고, 하단 버튼으로 저장 및 삭제를 수행할 수 있습니다.")
 
         required_cols = [
             "record_date", "whose", "broker", "account_num", "account_type", "item_name",
@@ -891,6 +894,9 @@ if menu == "자산 입력 및 관리":
             edit_df = df_raw.copy()
         else:
             edit_df = pd.DataFrame(columns=["id"] + required_cols)
+
+        if "select_all_flag" not in st.session_state:
+            st.session_state["select_all_flag"] = False
 
         col_select_all1, col_select_all2, _ = st.columns([1.5, 1.5, 5])
         with col_select_all1:
@@ -1110,24 +1116,41 @@ if menu == "자산 입력 및 관리":
             except Exception as e:
                 st.error(f"오류: {e}")
 
+    # [수정 사항 3] 데이터 삭제 관리에서 체크박스를 사용한 직접 삭제 기능
     elif mode == "🗑 데이터 삭제 관리":
         if not df_raw.empty:
-            st.subheader("🗑️ 데이터 삭제 관리")
-            all_ids = df_raw["id"].tolist()
-            ids_to_del = st.multiselect("삭제할 ID 선택", all_ids)
-            if st.button("선택 삭제"):
-                if ids_to_del:
+            st.subheader("🗑️ 데이터 삭제 관리 (체크박스 다중 선택 삭제)")
+            st.caption("삭제를 원하시는 데이터 행의 **'삭제 선택'** 체크박스를 클릭한 후 아래 삭제 버튼을 눌러주세요.")
+
+            del_df = df_raw.copy()
+            del_df.insert(0, "삭제 선택", False)
+
+            del_edited = st.data_editor(
+                del_df,
+                key="delete_management_editor",
+                use_container_width=True,
+                column_config={
+                    "삭제 선택": st.column_config.CheckboxColumn("삭제 선택", help="이 행을 삭제하려면 체크하세요"),
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                },
+                disabled=[col for col in del_df.columns if col != "삭제 선택"],
+                hide_index=True
+            )
+
+            if st.button("❌ 체크된 선택 항목 삭제 실행", type="primary"):
+                selected_del_df = del_edited[del_edited["삭제 선택"] == True]
+                if not selected_del_df.empty:
+                    ids_to_delete = selected_del_df["id"].tolist()
                     conn = get_connection()
                     cursor = conn.cursor()
-                    cursor.executemany(
-                        "DELETE FROM portfolio WHERE id = ?",
-                        [(i,) for i in ids_to_del],
-                    )
+                    cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
                     conn.commit()
                     conn.close()
                     export_backup_json()
-                    st.success("삭제 완료!")
+                    st.success(f"총 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
                     st.rerun()
+                else:
+                    st.warning("삭제할 항목을 최소 1개 이상 체크해 주세요.")
         else:
             st.info("삭제할 데이터가 없습니다.")
 
@@ -1779,137 +1802,9 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             st.plotly_chart(fig_treemap, width="stretch")
 
-            st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
-
-            hierarchy_summary = (
-                filtered_df.groupby(group_cols)
-                .agg({
-                    "매입총액(원)": "sum",
-                    "평가액(원)": "sum",
-                    "평가손익(원)": "sum",
-                })
-                .reset_index()
-            )
-
-            hierarchy_summary["수익률(%)"] = (
-                hierarchy_summary["평가손익(원)"] / hierarchy_summary["매입총액(원)"].replace(0, 1)
-            ) * 100
-            hierarchy_summary["점유율(%)"] = (
-                (hierarchy_summary["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
-            )
-
-            display_df = hierarchy_summary.rename(columns=col_rename_map)
-
-            display_hierarchy_cols = [col_rename_map[c] for c in group_cols]
-            final_cols = display_hierarchy_cols + [
-                "매입총액(원)",
-                "평가액(원)",
-                "평가손익(원)",
-                "수익률(%)",
-                "점유율(%)",
-            ]
-
-            col_h1, col_h2 = st.columns([1.3, 1])
-
-            with col_h1:
-                st.dataframe(
-                    display_df[final_cols]
-                    .sort_values(by="평가액(원)", ascending=False)
-                    .style.format({
-                        "매입총액(원)": "₩{:,.0f}",
-                        "평가액(원)": "₩{:,.0f}",
-                        "평가손익(원)": "₩{:,.0f}",
-                        "수익률(%)": "{:.2f}%",
-                        "점유율(%)": "{:.2f}%"
-                    }),
-                    width="stretch"
-                )
-
-            with col_h2:
-                pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
-
-                with pie_tab1:
-                    group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
-
-                    pie_group_mode = st.selectbox(
-                        "🎯 계층 도넛 그래프 구분 기준 선택",
-                        options=group_mode_options,
-                        index=0,
-                        key="pie_hierarchy_mode_select"
-                    )
-
-                    if pie_group_mode == "전체 계층 경로 (A > B > C)":
-                        hierarchy_summary["계층경로"] = hierarchy_summary[group_cols].astype(str).agg(" > ".join, axis=1)
-                        pie_chart_df = hierarchy_summary.groupby("계층경로")["평가액(원)"].sum().reset_index()
-                        names_col = "계층경로"
-                    else:
-                        target_col = cat_options[pie_group_mode]
-                        pie_chart_df = filtered_df.groupby(target_col)["평가액(원)"].sum().reset_index()
-                        names_col = target_col
-
-                    fig_pie_hierarchy = px.pie(
-                        pie_chart_df,
-                        values="평가액(원)",
-                        names=names_col,
-                        title=f"선택 계층 점유율 ({pie_group_mode})",
-                        hole=0.35,
-                    )
-                    fig_pie_hierarchy.update_traces(
-                        textposition="inside",
-                        texttemplate="<b>%{label}</b><br><b>₩%{value:,.0f}</b><br>(%{percent})",
-                        insidetextfont=dict(size=14),
-                        hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
-                    )
-                    fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                    st.plotly_chart(fig_pie_hierarchy, width="stretch")
-
-                with pie_tab2:
-                    item_summary = filtered_df.groupby("item_name")["평가액(원)"].sum().reset_index()
-                    fig_pie_item = px.pie(
-                        item_summary,
-                        values="평가액(원)",
-                        names="item_name",
-                        title="보유 항목별 점유율",
-                        hole=0.35,
-                    )
-                    fig_pie_item.update_traces(
-                        textposition="inside",
-                        texttemplate="<b>%{label}</b><br><b>₩%{value:,.0f}</b><br>(%{percent})",
-                        insidetextfont=dict(size=14),
-                        hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
-                    )
-                    fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                    st.plotly_chart(fig_pie_item, width="stretch")
-
-            st.markdown("---")
-
-            st.subheader("📋 선택 시점 상세 보유 목록")
-            filtered_df["점유율(%)"] = (
-                (filtered_df["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
-            )
-            filtered_df["수익률(%)"] = (
-                filtered_df["평가손익(원)"] / filtered_df["매입총액(원)"].replace(0, 1)
-            ) * 100
-            st.dataframe(
-                filtered_df[[
-                    "whose",
-                    "broker",
-                    "account_num",
-                    "account_type",
-                    "item_name",
-                    "ticker",
-                    "currency",
-                    "exchange_rate",
-                    "buy_price",
-                    "quantity",
-                    "current_price",
-                    "매입총액(원)",
-                    "평가액(원)",
-                    "평가손익(원)",
-                    "수익률(%)",
-                    "점유율(%)",
-                ]]
-            )
+            # [수정 사항 4 및 5] 
+            # '선택 계층 별 평가액 및 전체 점유율 상세 요약' 및 
+            # '선택 시점 상세 보유 목록' 섹션 완전 삭제됨.
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
