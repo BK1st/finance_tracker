@@ -1097,7 +1097,7 @@ if menu == "자산 입력 및 관리":
                 upload_df["exchange_rate"] = upload_df["exchange_rate"].fillna(1.0)
                 upload_df["whose"] = upload_df["whose"].fillna("본인")
 
-                st.dataframe(upload_df[required_cols], width="stretch")
+                st.dataframe(upload_df[required_cols], use_container_width=True)
 
                 if st.button("DB에 일괄 저장하기"):
                     conn = get_connection()
@@ -1133,7 +1133,7 @@ if menu == "자산 입력 및 관리":
             st.info("삭제할 데이터가 없습니다.")
 
     st.markdown("---")
-    st.dataframe(df_raw, width="stretch")
+    st.dataframe(df_raw, use_container_width=True)
 
 # ---------------------------------------------------------
 # 메뉴 2: 일별/시점별 보유 현황 분석
@@ -1490,7 +1490,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
             
-            # --- [수정] 표 상단 라벨 간소화 ---
+            # --- 표 상단 라벨 간소화 ---
             if "1) 일간" in color_option:
                 profit_col_label = "평가손익 (일간)"
                 rate_col_label = "등락율 (일간)"
@@ -1744,7 +1744,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             else:
                 dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
-            # --- [수정] showscale=False 로 오른쪽 게이지 삭제 ---
+            # --- showscale=False 로 오른쪽 게이지 삭제 ---
             fig_treemap = go.Figure(
                 go.Treemap(
                     ids=ids,
@@ -1788,13 +1788,13 @@ elif menu == "일별/시점별 보유 현황 분석":
                 )
             )
 
-            # --- [수정] Treemap 위 제목 삭제 ---
+            # --- Treemap 위 제목 삭제 ---
             fig_treemap.update_layout(
                 title="",
                 margin=dict(t=10, l=10, r=10, b=10),
             )
 
-            st.plotly_chart(fig_treemap, width="stretch")
+            st.plotly_chart(fig_treemap, use_container_width=True)
 
             st.write("📋 **선택 계층(상위 및 하위 그룹)별 평가액 및 전체 점유율 상세 요약**")
 
@@ -1839,7 +1839,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "수익률(%)": "{:.2f}%",
                         "점유율(%)": "{:.2f}%"
                     }),
-                    width="stretch"
+                    use_container_width=True
                 )
 
             with col_h2:
@@ -1878,7 +1878,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
                     )
                     fig_pie_hierarchy.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                    st.plotly_chart(fig_pie_hierarchy, width="stretch")
+                    st.plotly_chart(fig_pie_hierarchy, use_container_width=True)
 
                 with pie_tab2:
                     item_summary = filtered_df.groupby("item_name")["평가액(원)"].sum().reset_index()
@@ -1896,7 +1896,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>점유율: %{percent}<extra></extra>"
                     )
                     fig_pie_item.update_layout(margin=dict(t=30, l=10, r=10, b=10), showlegend=False)
-                    st.plotly_chart(fig_pie_item, width="stretch")
+                    st.plotly_chart(fig_pie_item, use_container_width=True)
 
             st.markdown("---")
 
@@ -1925,7 +1925,8 @@ elif menu == "일별/시점별 보유 현황 분석":
                     "평가손익(원)",
                     "수익률(%)",
                     "점유율(%)",
-                ]]
+                ]],
+                use_container_width=True
             )
 
 # ---------------------------------------------------------
@@ -1973,7 +1974,7 @@ elif menu == "기간별 성과 및 추이 분석":
         group_col = group_options[selected_group_label]
 
         st.markdown("---")
-        st.subheader("🗓️ 시세 반영 비교 날짜 범위를 생성 및 선택하세요")
+        st.subheader("🗓️️ 시세 반영 비교 날짜 범위를 생성 및 선택하세요")
 
         if "custom_dates" not in st.session_state:
             st.session_state.custom_dates = selected_port_dates.copy() if selected_port_dates else [datetime.now().strftime("%Y-%m-%d")]
@@ -2168,190 +2169,76 @@ elif menu == "기간별 성과 및 추이 분석":
                 if not auto_scale:
                     step_val = (s_max - s_min) / 100 if s_max > s_min else 1.0
 
-                    if "y_range_slider" not in st.session_state or st.session_state.get("last_s_min") != s_min or st.session_state.get("last_s_max") != s_max:
-                        st.session_state.y_range_slider = (min_val, max_val)
-                        st.session_state.last_s_min = s_min
-                        st.session_state.last_s_max = s_max
+                    if "y_range_slider" not in st.session_state:
+                        st.session_state.y_range_slider = (s_min, s_max)
 
                     y_range = st.slider(
-                        "Y축 평가액 표시 범위 (원)",
+                        "Y축 최소 / 최대 범위 선택",
                         min_value=s_min,
                         max_value=s_max,
-                        key="y_range_slider",
+                        value=st.session_state.y_range_slider,
                         step=step_val,
-                        format="₩%'.0f"
+                        format="₩%d",
+                        key="y_range_slider"
                     )
-                    fig_trend.update_yaxes(range=[y_range[0], y_range[1]])
+                    fig_trend.update_layout(yaxis=dict(range=[y_range[0], y_range[1]]))
 
-            fig_trend.update_layout(height=550)
-            st.plotly_chart(fig_trend, width="stretch")
+            st.plotly_chart(fig_trend, use_container_width=True)
 
-            pivot_df = summary_trend.pivot(
-                index="구분", columns="시세반영일", values="평가액(원)"
+            st.markdown("---")
+            st.subheader("📋 TREND 데이터 피벗 요약 표")
+            
+            pivot_trend = summary_trend.pivot(
+                index="시세반영일", columns="구분", values="평가액(원)"
             ).fillna(0)
             
-            st.write(f"📋 **[{selected_group_label}] 지정 날짜별 시세 반영 평가액 비교표**")
-            st.dataframe(pivot_df.style.format("₩{:,.0f}"), width="stretch")
+            pivot_trend["합계 (총 평가액)"] = pivot_trend.sum(axis=1)
 
-        st.markdown("---")
-
-        st.subheader("📊 전체 DB 히스토리 총 자산 추이")
-        df_hist = df.copy()
-        df_hist["record_date"] = pd.to_datetime(df_hist["record_date"])
-        df_hist["rate_multiplier"] = df_hist.apply(
-            lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
-            axis=1,
-        )
-        df_hist["매입총액(원)"] = (
-            df_hist["buy_price"]
-            * df_hist["quantity"]
-            * df_hist["rate_multiplier"]
-        )
-        df_hist["평가액(원)"] = (
-            df_hist["current_price"]
-            * df_hist["quantity"]
-            * df_hist["rate_multiplier"]
-        )
-        df_hist["평가손익(원)"] = (
-            df_hist["평가액(원)"] - df_hist["매입총액(원)"]
-        )
-
-        daily_summary = (
-            df_hist.groupby("record_date")[
-                ["매입총액(원)", "평가액(원)", "평가손익(원)"]
-            ]
-            .sum()
-            .reset_index()
-        )
-        daily_summary["수익률(%)"] = (
-            daily_summary["평가손익(원)"]
-            / daily_summary["매입총액(원)"].replace(0, 1)
-        ) * 100
-
-        period = st.radio(
-            "보기 단위 선택", ["일별", "주별", "월별", "년별"], horizontal=True
-        )
-        if period == "일별":
-            chart_df = daily_summary.set_index("record_date")
-        elif period == "주별":
-            chart_df = (
-                daily_summary.resample("W-MON", on="record_date")
-                .last()
-                .dropna()
+            st.dataframe(
+                pivot_trend.style.format("₩{:,.0f}"),
+                use_container_width=True
             )
-        elif period == "월별":
-            chart_df = (
-                daily_summary.resample("ME", on="record_date").last().dropna()
-            )
-        elif period == "년별":
-            chart_df = (
-                daily_summary.resample("YE", on="record_date").last().dropna()
-            )
-
-        chart_df = chart_df.reset_index()
-
-        fig_eval = px.line(
-            chart_df,
-            x="record_date",
-            y="평가액(원)",
-            markers=True,
-            title=f"{period} 기록 기반 총 자산 평가액 추이",
-        )
-        st.plotly_chart(fig_eval, width="stretch")
 
 # ---------------------------------------------------------
-# 메뉴 4: 데이터 백업 및 복구
+# 메뉴 4: 💾 데이터 백업 및 복구
 # ---------------------------------------------------------
 elif menu == "💾 데이터 백업 및 복구":
-    st.header("💾 데이터 백업 및 완전 복구")
-    st.info("클라우드 서버 재부팅이나 비활성화 후에도 데이터를 안전하게 보존하고 백업할 수 있습니다.")
+    st.header("💾 데이터 백업 및 복구 관리")
+    st.info("💡 DB 데이터를 JSON 백업 파일로 내보내거나 백업 파일에서 복원합니다.")
 
-    tab_bk1, tab_bk2 = st.tabs(["📥 내보내기 (백업 다운로드)", "📤 불러오기 (백업 파일 복원)"])
+    c1, c2 = st.columns(2)
 
-    with tab_bk1:
-        st.subheader("📥 현재 저장된 자산 데이터 백업 파일 다운로드")
-        conn = get_connection()
-        df_all = pd.read_sql("SELECT * FROM portfolio", conn)
-        conn.close()
-
-        if df_all.empty:
-            st.warning("백업할 자산 데이터가 없습니다.")
+    with c1:
+        st.subheader("📤 데이터 내보내기 (JSON 다운로드)")
+        json_data = export_backup_json()
+        if json_data:
+            st.download_button(
+                label="📥 포트폴리오 백업 파일 다운로드 (.json)",
+                data=json_data,
+                file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%m_%H%M%S')}.json",
+                mime="application/json",
+            )
         else:
-            json_data = export_backup_json()
-            
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                st.download_button(
-                    label="💾 JSON 백업 파일 다운로드",
-                    data=json_data or "",
-                    file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-            
-            with col_b2:
-                excel_df = df_all.drop(columns=["id"], errors="ignore")
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                    excel_df.to_excel(writer, index=False, sheet_name="Portfolio")
-                
-                st.download_button(
-                    label="📊 Excel 백업 파일 다운로드",
-                    data=buffer.getvalue(),
-                    file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+            st.warning("백업할 데이터가 없습니다.")
 
-    with tab_bk2:
-        st.subheader("📤 백업 파일 업로드 및 데이터 복원")
-        st.write("저장해둔 JSON 백업 파일 또는 Excel 파일을 업로드하면 데이터베이스로 즉시 복원됩니다.")
-        
+    with c2:
+        st.subheader("📥 데이터 복원하기 (JSON 업로드)")
         uploaded_backup = st.file_uploader(
-            "백업 파일 선택 (.json 또는 .xlsx)",
-            type=["json", "xlsx", "csv"],
-            key="backup_uploader"
+            "백업 파일(.json)을 업로드하세요", type=["json"]
         )
-
         restore_mode = st.radio(
             "복원 방식 선택",
-            [" 기존 데이터 전체 덮어쓰기 (기존 데이터 삭제 후 복원)", "➕ 기존 데이터에 추가하기"],
-            index=0
+            ["기존 데이터 덮어쓰기 (초기화 후 복원)", "기존 데이터에 추가하기"],
+            horizontal=True,
         )
 
         if uploaded_backup is not None:
-            if st.button("🚀 백업 데이터 복원 실행"):
-                try:
-                    replace_flag = "덮어쓰기" in restore_mode
-                    if uploaded_backup.name.endswith(".json"):
-                        content = uploaded_backup.read()
-                        restored_cnt = import_backup_json(content, replace=replace_flag)
-                    else:
-                        u_df = pd.read_csv(uploaded_backup) if uploaded_backup.name.endswith(".csv") else pd.read_excel(uploaded_backup)
-                        required_cols = [
-                            "record_date", "whose", "broker", "account_num", "account_type", "item_name",
-                            "ticker", "category1", "category2", "category3", "category4",
-                            "buy_price", "quantity", "current_price", "currency", "exchange_rate"
-                        ]
-                        if "whose" not in u_df.columns:
-                            u_df["whose"] = "본인"
-
-                        for col in required_cols:
-                            if col not in u_df.columns:
-                                u_df[col] = None
-                        
-                        conn = get_connection()
-                        cursor = conn.cursor()
-                        if replace_flag:
-                            cursor.execute("DELETE FROM portfolio")
-                        
-                        u_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
-                        conn.commit()
-                        conn.close()
-                        export_backup_json()
-                        restored_cnt = len(u_df)
-
-                    st.success(f"🎉 성공적으로 {restored_cnt}개 항목이 복원되었습니다!")
+            if st.button("🚀 데이터 복원 실행"):
+                replace_flag = "덮어쓰기" in restore_mode
+                bytes_data = uploaded_backup.read()
+                count = import_backup_json(bytes_data, replace=replace_flag)
+                if count > 0:
+                    st.success(f"🎉 {count}개 항목이 성공적으로 복원되었습니다!")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"복원 중 오류 발생: {e}")
+                else:
+                    st.error("데이터 복원에 실패하였습니다. 파일 형식을 확인하세요.")
