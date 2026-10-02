@@ -360,60 +360,66 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    with st.form('trend_control_form'):
-      st.subheader('⚙️ 분석 조건 설정')
+    st.subheader('⚙️ 분석 조건 설정')
 
-      selected_whose = st.multiselect(
-          '👤 WHOSE 선택 (우선순위)',
-          options=all_whose_options,
-          default=st.session_state.get(
-              'trend_sel_whose', all_whose_options
-          ),
-          help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
+    if 'trend_sel_whose' not in st.session_state:
+      st.session_state['trend_sel_whose'] = all_whose_options
+
+    selected_whose = st.multiselect(
+        '👤 WHOSE 선택 (우선순위)',
+        options=all_whose_options,
+        key='trend_sel_whose',
+        help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
+    )
+
+    filtered_acc_info = acc_info_df[
+        acc_info_df['whose'].isin(selected_whose)
+    ]
+
+    acc_options = []
+    for _, row in filtered_acc_info.iterrows():
+      acc_num = str(row['account_num'])
+      alias = alias_map.get(acc_num, '')
+      display_alias = (
+          alias
+          if alias
+          else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
       )
+      acc_type_str = (
+          row['account_type']
+          if ('account_type' in row and pd.notna(row['account_type']))
+          else '미지정'
+      )
+      broker_str = (
+          row['broker']
+          if ('broker' in row and pd.notna(row['broker']))
+          else '증권사미지정'
+      )
+      label = f'{broker_str} | {display_alias} [{acc_type_str}]'
+      acc_options.append(label)
 
-      filtered_acc_info = acc_info_df[
-          acc_info_df['whose'].isin(selected_whose)
+    whose_sig = tuple(selected_whose)
+    if st.session_state.get('_trend_whose_sig') != whose_sig:
+      st.session_state['trend_sel_accs'] = acc_options
+      st.session_state['_trend_whose_sig'] = whose_sig
+    else:
+      valid_accs = [
+          lbl
+          for lbl in st.session_state.get('trend_sel_accs', acc_options)
+          if lbl in acc_options
       ]
+      st.session_state['trend_sel_accs'] = valid_accs if valid_accs else acc_options
 
-      acc_options = []
-      for _, row in filtered_acc_info.iterrows():
-        acc_num = str(row['account_num'])
-        alias = alias_map.get(acc_num, '')
-        display_alias = (
-            alias
-            if alias
-            else f'미지정별칭({acc_num[-4:] if len(acc_num)>=4 else acc_num})'
-        )
-        acc_type_str = (
-            row['account_type']
-            if ('account_type' in row and pd.notna(row['account_type']))
-            else '미지정'
-        )
-        broker_str = (
-            row['broker']
-            if ('broker' in row and pd.notna(row['broker']))
-            else '증권사미지정'
-        )
-        label = f'{broker_str} | {display_alias} [{acc_type_str}]'
-        acc_options.append(label)
+    selected_acc_labels = st.multiselect(
+        '조회할 계좌 선택 (WHOSE 연동)',
+        options=acc_options,
+        key='trend_sel_accs',
+    )
 
+    with st.form('trend_control_form'):
       f_col1, f_col2 = st.columns([3, 3])
 
       with f_col1:
-        default_accs = [
-            lbl
-            for lbl in st.session_state.get('trend_sel_accs', acc_options)
-            if lbl in acc_options
-        ]
-        if not default_accs:
-          default_accs = acc_options
-
-        selected_acc_labels = st.multiselect(
-            '조회할 계좌 선택 (WHOSE 연동)',
-            options=acc_options,
-            default=default_accs,
-        )
         view_types = st.multiselect(
             '표시할 트렌드 관점 선택',
             options=all_view_types,
@@ -456,8 +462,6 @@ if menu == '트렌드 리포트':
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
-      st.session_state['trend_sel_whose'] = selected_whose
-      st.session_state['trend_sel_accs'] = selected_acc_labels
       st.session_state['trend_view_types'] = view_types
       st.session_state['trend_sel_bm'] = selected_bm
       st.session_state['trend_freq_str'] = option_freq
