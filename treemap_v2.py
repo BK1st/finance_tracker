@@ -466,26 +466,51 @@ def normalize_ticker(ticker, currency):
 
 
 def fetch_live_ticker_price(ticker):
-    """단일 티커의 최신 시세 가져오기"""
+    """단일 티커의 최신 시세 가져오기 (미국 주식 프리마켓/애프터마켓/장중 시세 포함)"""
     if not ticker:
         return None
     try:
         tk = yf.Ticker(ticker)
         fast_info = tk.fast_info
         
+        # 1. fast_info 및 info에서 프리마켓, 애프터마켓, 정규장 시세 수집
+        pre_price = fast_info.get("preMarketPrice")
         post_price = fast_info.get("postMarketPrice")
+        last_price = fast_info.get("lastPrice")
+        
+        info = {}
+        try:
+            info = tk.info
+        except Exception:
+            pass
+
+        pre_price = pre_price or info.get("preMarketPrice")
+        post_price = post_price or info.get("postMarketPrice")
+        last_price = last_price or info.get("currentPrice") or info.get("regularMarketPrice")
+        market_state = str(info.get("marketState", "")).upper()
+
+        # 2. 현재 시장 상태(marketState)에 따라 최우선 시세 적용
+        if market_state == "PRE" and pre_price and not pd.isna(pre_price):
+            return round(float(pre_price), 2)
+        elif market_state in ["POST", "POSTPOST"] and post_price and not pd.isna(post_price):
+            return round(float(post_price), 2)
+        elif market_state == "REGULAR" and last_price and not pd.isna(last_price):
+            return round(float(last_price), 2)
+
+        # 3. marketState 식별이 안 될 경우 가장 최근 거래 가격 순차 선택
         if post_price and not pd.isna(post_price):
             return round(float(post_price), 2)
-            
-        last_price = fast_info.get("lastPrice")
+        if pre_price and not pd.isna(pre_price):
+            return round(float(pre_price), 2)
         if last_price and not pd.isna(last_price):
             return round(float(last_price), 2)
-            
-        prev_close = fast_info.get("previousClose")
+
+        prev_close = fast_info.get("previousClose") or info.get("previousClose")
         if prev_close and not pd.isna(prev_close):
             return round(float(prev_close), 2)
 
-        hist = tk.history(period="5d")
+        # 4. 히스토리 데이터 조회 시에도 시간외 거래 포함(prepost=True)
+        hist = tk.history(period="1d", prepost=True)
         if not hist.empty:
             return round(float(hist["Close"].iloc[-1]), 2)
     except Exception:
@@ -495,7 +520,7 @@ def fetch_live_ticker_price(ticker):
 
 @st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (장전/장후 시간외 거래 데이터 포함)"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -509,6 +534,7 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
             group_by="ticker",
             auto_adjust=True,
             progress=False,
+            prepost=True,  # 장전(Pre-Market) 및 장후(Post-Market) 데이터 포함
         )
         return data
     except Exception:
