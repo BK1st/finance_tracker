@@ -332,7 +332,7 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
             f'data-parent="{parent_id}" data-has-children="{str(has_children).lower()}" '
             f'title="{html.escape(title)}">'
             f'<td class="label-cell" style="padding-left:{indent_px}px;">'
-            f'<span class="caret" data-id="{row["id"]}">{caret}</span> {label}td>'
+            f'<span class="caret" data-id="{row["id"]}">{caret}</span> {label}</td>'
             f'<td class="num">{eval_txt}</td>'
             f'<td class="num">{profit_txt}</td>'
             f'<td class="num">{rate_txt}</td>'
@@ -1490,14 +1490,25 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             col_rename_map = {cat_options[k]: k for k in cat_options if cat_options[k] in group_cols}
             
-            # 선택된 색상 옵션 단축 명칭 추출 (요청 반영)
-            if color_option == "총 누적 수익률 (%)":
+            # --- [수정] 표 상단 라벨 간소화 ---
+            if "1) 일간" in color_option:
+                profit_col_label = "평가손익 (일간)"
+                rate_col_label = "등락율 (일간)"
+            elif "2) 주간" in color_option:
+                profit_col_label = "평가손익 (주간)"
+                rate_col_label = "등락율 (주간)"
+            elif "3) 월간" in color_option:
+                profit_col_label = "평가손익 (월간)"
+                rate_col_label = "등락율 (월간)"
+            elif "4) 연간" in color_option:
+                profit_col_label = "평가손익 (연간)"
+                rate_col_label = "등락율 (연간)"
+            elif "5) 특정" in color_option:
+                profit_col_label = "평가손익 (지정일)"
+                rate_col_label = "등락율 (지정일)"
+            else:
                 profit_col_label = "평가손익(원)"
                 rate_col_label = "수익률(%)"
-            else:
-                period_tag = color_option.split(")")[1].split(":")[0].strip() if ")" in color_option else color_option
-                profit_col_label = f"평가손익 {period_tag}"
-                rate_col_label = f"등락률 {period_tag}"
 
             # ---------------------------------------------------------
             # Treemap 드릴다운 상태 연동 동적 경로 옵션 수집 및 선택
@@ -1733,6 +1744,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             else:
                 dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
+            # --- [수정] showscale=False 로 오른쪽 게이지 삭제 ---
             fig_treemap = go.Figure(
                 go.Treemap(
                     ids=ids,
@@ -1750,7 +1762,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         cmid=0,
                         cmin=dynamic_range[0],
                         cmax=dynamic_range[1],
-                        showscale=False,  # 요청 반영: 오른쪽 게이지 바 숨김
+                        showscale=False,
                     ),
                     customdata=list(zip(custom_rates, custom_prices, custom_profits)),
                     texttemplate=(
@@ -1766,19 +1778,20 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "• 평가금액: ₩%{value:,.0f}<br>"
                         "• 현재가: %{customdata[1]}<br>"
                         f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
-                        f"• {color_option}: %{{customdata[0]:+.2f}}%<br>"
+                        f"• {rate_col_label}: %{{customdata[0]:+.2f}}%<br>"
                         "• 선택 화면 대비 점유율: %{percentRoot:.2%}<br>"
                         "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
                     ),
+                    hoverlabel=dict(font_size=15),
                     textfont=dict(color="white"),
                     insidetextfont=dict(color="white"),
                 )
             )
 
+            # --- [수정] Treemap 위 제목 삭제 ---
             fig_treemap.update_layout(
-                title=f"계층별 다단계 TREEMAP 자산 분포 ({view_root_label})",
-                margin=dict(t=30, l=10, r=10, b=10),
-                hoverlabel=dict(visible=False),  # 요청 반영: 상단 우측 hover 설명 박스 제거
+                title="",
+                margin=dict(t=10, l=10, r=10, b=10),
             )
 
             st.plotly_chart(fig_treemap, width="stretch")
