@@ -1587,23 +1587,23 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             nested_nodes = build_tree_nodes(filtered_df, active_group_cols) if active_group_cols else []
 
-# 2. 계층 재귀 정렬 실행
-def sort_tree_nodes(nodes, target_sort_col, reverse_flag):
-    key_map = {
-        "평가액(원)": lambda x: x["eval"],
-        profit_col_label: lambda x: x["profit"],
-        rate_col_label: lambda x: x["rate"],
-        "점유율(%)": lambda x: x["share"],
-        "구분 항목": lambda x: x["label"],
-    }
-    key_fn = key_map.get(target_sort_col, lambda x: x["eval"])
-    nodes.sort(key=key_fn, reverse=reverse_flag)
-    for node in nodes:
-        if node.get("children"):
-            sort_tree_nodes(node["children"], target_sort_col, reverse_flag)
+            # 2. 계층 재귀 정렬 실행
+            def sort_tree_nodes(nodes, target_sort_col, reverse_flag):
+                key_map = {
+                    "평가액(원)": lambda x: x["eval"],
+                    profit_col_label: lambda x: x["profit"],
+                    rate_col_label: lambda x: x["rate"],
+                    "점유율(%)": lambda x: x["share"],
+                    "구분 항목": lambda x: x["label"],
+                }
+                key_fn = key_map.get(target_sort_col, lambda x: x["eval"])
+                nodes.sort(key=key_fn, reverse=reverse_flag)
+                for node in nodes:
+                    if node.get("children"):
+                        sort_tree_nodes(node["children"], target_sort_col, reverse_flag)
 
-if nested_nodes:
-    sort_tree_nodes(nested_nodes, sort_by_col, is_reverse)    
+            if nested_nodes:
+                sort_tree_nodes(nested_nodes, sort_by_col, is_reverse)    
                       
             
     
