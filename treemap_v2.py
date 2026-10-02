@@ -422,7 +422,7 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
 
 
 # ---------------------------------------------------------
-# 배치 시세 수집 및 캐싱 함수
+# 배치 시세 수집 및 캐싱 함수 (5분 유지)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_exchange_rate():
@@ -515,7 +515,7 @@ def fetch_live_ticker_price(ticker):
 
 @st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (장전/장후 시간외 거래 데이터 포함)"""
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (장전/장후 시간외 거래 데이터 포함) - 5분 TTL 유지"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -1111,7 +1111,7 @@ if menu == "자산 입력 및 관리":
             except Exception as e:
                 st.error(f"오류: {e}")
 
-    elif mode == "🗑️️ 데이터 삭제 관리":
+    elif mode == "🗑 데이터 삭제 관리":
         if not df_raw.empty:
             st.subheader("🗑️ 데이터 삭제 관리")
             all_ids = df_raw["id"].tolist()
@@ -1224,30 +1224,22 @@ elif menu == "일별/시점별 보유 현황 분석":
             )
             tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
 
-            # 최신 가격(Premarket / Aftermarket 반영) 최우선 업데이트
-            if not use_historical_price:
-                with st.spinner("최신 가격(Premarket/Aftermarket 반영) 수집 중..."):
-                    for idx, row in sub_df.iterrows():
-                        f_tk = row["formatted_ticker"]
-                        if f_tk:
-                            lp = fetch_live_ticker_price(f_tk)
-                            if lp is not None:
-                                sub_df.at[idx, "current_price"] = lp
-            else:
-                if target_eval_date:
-                    with st.spinner(f"[{target_eval_date}] 배치 시세 데이터를 조회 중..."):
-                        target_dt = pd.to_datetime(target_eval_date)
-                        start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-                        end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
-                        
-                        m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
+            # 과거 시세 조회 체크박스를 선택한 경우에만 시세 배치 수집,
+            # 그렇지 않으면 조건 변경 시 실시간 요청 없이 기존 저장된 current_price를 사용
+            if use_historical_price and target_eval_date:
+                with st.spinner(f"[{target_eval_date}] 배치 시세 데이터를 조회 중..."):
+                    target_dt = pd.to_datetime(target_eval_date)
+                    start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+                    end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
+                    
+                    m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
 
-                        for idx, row in sub_df.iterrows():
-                            h_price = get_price_from_batch_data(
-                                m_data, row["formatted_ticker"], target_eval_date
-                            )
-                            if h_price is not None:
-                                sub_df.at[idx, "current_price"] = h_price
+                    for idx, row in sub_df.iterrows():
+                        h_price = get_price_from_batch_data(
+                            m_data, row["formatted_ticker"], target_eval_date
+                        )
+                        if h_price is not None:
+                            sub_df.at[idx, "current_price"] = h_price
 
             sub_df["rate_multiplier"] = sub_df.apply(
                 lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
@@ -1331,7 +1323,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             col_c1, col_c2 = st.columns([2, 1])
             with col_c1:
                 color_option = st.selectbox(
-                    "🗺️ 트리맵 색상 기준 선택",
+                    "🗺️️ 트리맵 색상 기준 선택",
                     TREEMAP_COLOR_OPTIONS,
                     key="treemap_color_option",
                 )
@@ -1442,16 +1434,13 @@ elif menu == "일별/시점별 보유 현황 분석":
                     target_base_dt = today - timedelta(days=1)
                 elif "2) 주간" in color_option:
                     start_fetch_dt = (today - timedelta(days=20)).strftime("%Y-%m-%d")
-                    # 전주 금요일 / 전주 종가 기준 (7일 전)
                     target_base_dt = today - timedelta(days=7)
                 elif "3) 월간" in color_option:
                     start_fetch_dt = (today - timedelta(days=50)).strftime("%Y-%m-%d")
-                    # 전월 말일 기준
                     first_day_of_this_month = today.replace(day=1)
                     target_base_dt = first_day_of_this_month - timedelta(days=1)
                 elif "4) 연간" in color_option:
                     start_fetch_dt = (today - timedelta(days=385)).strftime("%Y-%m-%d")
-                    # 전년 말일 기준 (12월 31일)
                     target_base_dt = datetime(today.year - 1, 12, 31)
                 elif "5) 특정" in color_option and custom_base_date:
                     start_fetch_dt = (custom_base_date - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -1462,7 +1451,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                 end_fetch_dt = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
-                with st.spinner(f"[{color_option}] 최신 시세 및 기준 종가 배치 계산 중..."):
+                with st.spinner(f"[{color_option}] 기준 종가 배치 계산 중..."):
                     m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt)
 
                     for _, row in sub_df.iterrows():
@@ -1478,7 +1467,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                             period_profits.append(profit_amt)
                             continue
 
-                        # 해당 기준일 이전의 가장 최근 거래일 종가 추출
                         base_price = _get_last_trading_day_before(m_data, f_ticker, target_base_dt)
 
                         if base_price and float(base_price) > 0:
