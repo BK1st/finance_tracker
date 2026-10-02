@@ -1,4 +1,4 @@
-# name=Trend_V2_11.py
+# name=Trend_V2_12.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -858,6 +858,20 @@ if menu == '트렌드 리포트':
       # -------------------------------------------------------------------------
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
+
+        # Category 4별 및 보유항목별 분석 시 계좌 필터 추가
+        if group_col in ['category4', 'item_name']:
+          all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
+          selected_accounts_filter = st.multiselect(
+              f'📌 [{prefix}] 계좌 필터 선택 (전체 선택 시 전체 조회)',
+              options=all_accs,
+              default=all_accs,
+              key=f'acc_filter_{prefix}',
+              help='특정 계좌를 선택하면 해당 계좌에 대한 정보만 필터링되어 보여집니다.'
+          )
+          if selected_accounts_filter:
+            raw_df = raw_df[raw_df['account_num'].isin(selected_accounts_filter)]
+          st.write('---')
 
         def get_grp_agg(use_ex_fx):
           df_curr = raw_df.copy()
@@ -2150,7 +2164,7 @@ elif menu == '원금 및 입출금 관리':
         del_id = st.number_input(
             '삭제할 내역 ID 입력', min_value=1, step=1, value=1
         )
-        if st.button('🗑️ 선택한 내역 삭제'):
+        if st.button('🗑️️ 선택한 내역 삭제'):
           conn = get_connection()
           c = conn.cursor()
           c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
