@@ -88,7 +88,7 @@ def import_backup_json(json_content, replace=True):
 
 
 def init_db():
-    """DB 초기화 및 whose 컬럼 마이그레이션 적용"""
+    """DB 초기화 및 whose 컬럼 및 treemap_settings 테이블 마이그레이션 적용"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -110,6 +110,19 @@ def init_db():
             current_price REAL,
             currency TEXT DEFAULT 'KRW',
             exchange_rate REAL DEFAULT 1.0
+        )
+    """)
+    
+    # 트리맵 설정 저장용 테이블 생성
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS treemap_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            setting_name TEXT UNIQUE,
+            level1 TEXT,
+            level2 TEXT,
+            level3 TEXT,
+            level4 TEXT,
+            color_option TEXT
         )
     """)
     conn.commit()
@@ -231,11 +244,9 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
     if not ticker:
         return None
 
-    # 수정 코드
     today_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
     target_dt = pd.to_datetime(target_date_str)
 
-    # 지정한 날짜가 오늘이거나 미래인 경우에만 실시간 시세 사용
     if target_dt >= today_dt:
         live_p = fetch_live_ticker_price(ticker)
         if live_p is not None:
@@ -541,7 +552,7 @@ if menu == "자산 입력 및 관리":
     )
 
     if mode == "🖥 웹 화면 직접 수정/편집 (추천)":
-        st.subheader("🖥️️ 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
+        st.subheader("🖥 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
         if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
             open_trading_dialog()
@@ -923,7 +934,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             st.markdown("---")
 
-            st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
+            st.subheader("🗺️️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
             cat_options = {
                 "소유자(WHOSE)": "whose",
                 "구분": "account_type",
@@ -935,31 +946,116 @@ elif menu == "일별/시점별 보유 현황 분석":
                 "분류3": "category3",
                 "분류4": "category4",
             }
+            cat_keys_list = list(cat_options.keys())
+
+            # DB에서 저장된 세팅 목록 조회
+            conn_set = get_connection()
+            settings_df = pd.read_sql("SELECT setting_name FROM treemap_settings", conn_set)
+            conn_set.close()
+            saved_setting_names = settings_df["setting_name"].tolist() if not settings_df.empty else []
+
+            # 세팅 불러오기/저장 영역 UI
+            with st.expander("⚙️ 트리맵 설정 조건 저장 및 불러오기", expanded=False):
+                col_st1, col_st2 = st.columns(2)
+                with col_st1:
+                    st.markdown("##### 📥 저장된 설정 불러오기")
+                    if saved_setting_names:
+                        chosen_setting = st.selectbox("불러올 설정 선택", ["선택하세요"] + saved_setting_names, key="load_tm_setting_box")
+                        col_load_btn, col_del_btn = st.columns(2)
+                        with col_load_btn:
+                            if st.button("설정 적용하기"):
+                                if chosen_setting != "선택하세요":
+                                    conn_s = get_connection()
+                                    cur_s = conn_s.cursor()
+                                    cur_s.execute("SELECT level1, level2, level3, level4, color_option FROM treemap_settings WHERE setting_name = ?", (chosen_setting,))
+                                    s_data = cur_s.fetchone()
+                                    conn_s.close()
+                                    if s_data:
+                                        st.session_state["tm_l1"] = s_data[0]
+                                        st.session_state["tm_l2"] = s_data[1]
+                                        st.session_state["tm_l3"] = s_data[2]
+                                        st.session_state["tm_l4"] = s_data[3]
+                                        st.session_state["tm_color"] = s_data[4]
+                                        st.success(f"'{chosen_setting}' 설정이 적용되었습니다!")
+                                        st.rerun()
+                        with col_del_btn:
+                            if st.button("선택 설정 삭제"):
+                                if chosen_setting != "선택하세요":
+                                    conn_s = get_connection()
+                                    cur_s = conn_s.cursor()
+                                    cur_s.execute("DELETE FROM treemap_settings WHERE setting_name = ?", (chosen_setting,))
+                                    conn_s.commit()
+                                    conn_s.close()
+                                    st.success(f"'{chosen_setting}' 설정이 삭제되었습니다.")
+                                    st.rerun()
+                    else:
+                        st.info("저장된 트리맵 설정 조건이 없습니다.")
+
+                with col_st2:
+                    st.markdown("##### 💾 현재 트리맵 설정 조건 저장")
+                    new_setting_name = st.text_input("새로운 설정 이름 입력", placeholder="예: 기본 분석 세팅, 대분류 중심 보기 등")
+                    if st.button("현재 조건 저장하기"):
+                        if not new_setting_name.strip():
+                            st.warning("설정 이름을 입력해 주세요.")
+                        else:
+                            # 현재 선택된 UI 값 가져오기
+                            curr_l1_val = st.session_state.get("sel_l1", cat_keys_list[1])
+                            curr_l2_val = st.session_state.get("sel_l2", "없음")
+                            curr_l3_val = st.session_state.get("sel_l3", cat_keys_list[3])
+                            curr_l4_val = st.session_state.get("sel_l4", cat_keys_list[4])
+                            curr_color_val = st.session_state.get("sel_color", "일간 등락률 (1일)")
+
+                            conn_s = get_connection()
+                            cur_s = conn_s.cursor()
+                            cur_s.execute("""
+                                INSERT OR REPLACE INTO treemap_settings (setting_name, level1, level2, level3, level4, color_option)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (new_setting_name.strip(), curr_l1_val, curr_l2_val, curr_l3_val, curr_l4_val, curr_color_val))
+                            conn_s.commit()
+                            conn_s.close()
+                            st.success(f"🎉 '{new_setting_name.strip()}' 설정이 성공적으로 저장되었습니다!")
+                            st.rerun()
+
+            # 세션 스테이트 기본값 세팅
+            if "tm_l1" not in st.session_state: st.session_state.tm_l1 = cat_keys_list[1]
+            if "tm_l2" not in st.session_state: st.session_state.tm_l2 = "없음"
+            if "tm_l3" not in st.session_state: st.session_state.tm_l3 = cat_keys_list[3]
+            if "tm_l4" not in st.session_state: st.session_state.tm_l4 = cat_keys_list[4]
+            if "tm_color" not in st.session_state: st.session_state.tm_color = "일간 등락률 (1일)"
+
+            def get_index_safe(lst, val):
+                try:
+                    return lst.index(val)
+                except ValueError:
+                    return 0
 
             col_t1, col_t2, col_t3, col_t4 = st.columns(4)
             with col_t1:
-                l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=1)
+                l1 = st.selectbox("1단계 (최상위)", cat_keys_list, index=get_index_safe(cat_keys_list, st.session_state.tm_l1), key="sel_l1")
             with col_t2:
-                l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
+                l2 = st.selectbox("2단계", ["없음"] + cat_keys_list, index=get_index_safe(["없음"] + cat_keys_list, st.session_state.tm_l2), key="sel_l2")
             with col_t3:
-                l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
+                l3 = st.selectbox("3단계", ["없음"] + cat_keys_list, index=get_index_safe(["없음"] + cat_keys_list, st.session_state.tm_l3), key="sel_l3")
             with col_t4:
-                l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=4)
+                l4 = st.selectbox("4단계 (최하위)", ["없음"] + cat_keys_list, index=get_index_safe(["없음"] + cat_keys_list, st.session_state.tm_l4), key="sel_l4")
+
+            color_options_list = [
+                "총 누적 수익률 (%)",
+                "일간 등락률 (1일)",
+                "주간 등락률 (1주일)",
+                "월간 등락률 (1개월)",
+                "월초 대비 등락률 (Month to Date)",
+                "연초 대비 등락률 (YTD)",
+                "특정 날짜 지정 등락률",
+            ]
 
             col_c1, col_c2 = st.columns([2, 1])
             with col_c1:
                 color_option = st.selectbox(
                     "🗺️ 트리맵 색상 기준 선택",
-                    [
-                        "총 누적 수익률 (%)",
-                        "일간 등락률 (1일)",
-                        "주간 등락률 (1주일)",
-                        "월간 등락률 (1개월)",
-                        "월초 대비 등락률 (Month to Date)",
-                        "연초 대비 등락률 (YTD)",
-                        "특정 날짜 지정 등락률",
-                    ],
-                    index=1
+                    color_options_list,
+                    index=get_index_safe(color_options_list, st.session_state.tm_color),
+                    key="sel_color"
                 )
 
             custom_base_date = None
@@ -1116,7 +1212,6 @@ elif menu == "일별/시점별 보유 현황 분석":
             with col_drill2:
                 st.caption("💡 특정 하위 분류를 선택하면 해당 분류의 총액을 100% 점유율로 자동 계산하여 상단 표와 Treemap이 완벽하게 연동됩니다.")
 
-            # 선택한 드릴다운 경로에 따른 데이터 프레임 필터링
             if selected_drill_path == "🌐 전체 (Root - 100% 점유)":
                 filtered_df = sub_df.copy()
                 view_root_label = "🌐 전체 총합"
@@ -1134,7 +1229,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             active_total_eval = filtered_df["평가액(원)"].sum()
 
             # ---------------------------------------------------------
-            # [수정 연동] Treemap 화면 상의 100% 점유 기준 표 생성
+            # Treemap 화면 상의 100% 점유 기준 표 생성
             # ---------------------------------------------------------
             st.write(f"📌 **현재 화면 기준 계층 요약 현황 표 (화면 점유율: 100.00% 기준)**")
 
@@ -1160,7 +1255,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                         past_eval = group_eval - group_profit
                         group_rate = (group_profit / past_eval * 100) if past_eval != 0 else 0.0
 
-                    # 현재 화면의 총 평가액 기준 100% 점유율 계산
                     group_share = (group_eval / active_total_eval * 100) if active_total_eval != 0 else 0
 
                     indent = "└─ " * depth if depth > 0 else ""
@@ -1218,7 +1312,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.markdown("")
 
             # ---------------------------------------------------------
-            # TREEMAP 그래프 생성 (선택한 드릴다운 범위 연동)
+            # TREEMAP 그래프 생성
             # ---------------------------------------------------------
             ids, labels, parents, values = [], [], [], []
             custom_rates, custom_prices, custom_profits = [], [], []
@@ -1387,7 +1481,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 pie_tab1, pie_tab2 = st.tabs(["🥧 계층/분류 기준별 점유율", "🍩 보유 항목(ITEM)별 점유율"])
 
                 with pie_tab1:
-                    group_mode_options = ["전체 계층 경로 (A > B > C)"] + list(cat_options.keys())
+                    group_mode_options = ["전체 계층 경로 (A > B > C)"] + cat_keys_list
 
                     pie_group_mode = st.selectbox(
                         "🎯 계층 도넛 그래프 구분 기준 선택",
@@ -1443,7 +1537,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             st.subheader("📋 선택 시점 상세 보유 목록")
             filtered_df["점유율(%)"] = (
-                (filtered_df["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
+                (filtered_df["평가액(원)" / active_total_eval * 100) if active_total_eval != 0 else 0
             )
             filtered_df["수익률(%)"] = (
                 filtered_df["평가손익(원)"] / filtered_df["매입총액(원)"].replace(0, 1)
