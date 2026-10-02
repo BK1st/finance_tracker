@@ -1537,7 +1537,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             st.subheader("📋 선택 시점 상세 보유 목록")
             filtered_df["점유율(%)"] = (
-                (filtered_df["평가액(원)" / active_total_eval * 100) if active_total_eval != 0 else 0
+                (filtered_df["평가액(원)"] / active_total_eval * 100) if active_total_eval != 0 else 0
             )
             filtered_df["수익률(%)"] = (
                 filtered_df["평가손익(원)"] / filtered_df["매입총액(원)"].replace(0, 1)
