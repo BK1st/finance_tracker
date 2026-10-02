@@ -1,13 +1,15 @@
+import html
 import io
 import json
 import os
 import sqlite3
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 # ---------------------------------------------------------
@@ -24,6 +26,29 @@ st.set_page_config(
 # ---------------------------------------------------------
 DB_FILE = "stock_data.db"
 BACKUP_FILE = "portfolio_backup.json"
+TREEMAP_PRESET_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), ".data", "treemap_presets"
+)
+TREEMAP_CAT_OPTIONS = {
+    "소유자(WHOSE)": "whose",
+    "구분": "account_type",
+    "금융사": "broker",
+    "보유항목(ITEM)": "item_name",
+    "계좌번호": "account_num",
+    "분류1": "category1",
+    "분류2": "category2",
+    "분류3": "category3",
+    "분류4": "category4",
+}
+TREEMAP_COLOR_OPTIONS = [
+    "총 누적 수익률 (%)",
+    "일간 등락률 (1일)",
+    "주간 등락률 (1주일)",
+    "월간 등락률 (1개월)",
+    "월초 대비 등락률 (Month to Date)",
+    "연초 대비 등락률 (YTD)",
+    "특정 날짜 지정 등락률",
+]
 
 
 def get_connection():
@@ -131,6 +156,270 @@ def init_db():
             import_backup_json(content, replace=False)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------
+# Treemap 분석 조건 저장/불러오기
+# ---------------------------------------------------------
+def _ensure_treemap_preset_dir():
+    os.makedirs(TREEMAP_PRESET_DIR, exist_ok=True)
+
+
+def _safe_preset_filename(name):
+    cleaned = "".join(
+        ch for ch in str(name).strip() if ch.isalnum() or ch in " _-().[]"
+    ).strip()
+    return cleaned[:80]
+
+
+def list_treemap_presets():
+    _ensure_treemap_preset_dir()
+    names = []
+    for fname in sorted(os.listdir(TREEMAP_PRESET_DIR)):
+        if fname.endswith(".json"):
+            names.append(fname[:-5])
+    return names
+
+
+def save_treemap_preset(name, payload):
+    safe = _safe_preset_filename(name)
+    if not safe:
+        return None
+    _ensure_treemap_preset_dir()
+    path = os.path.join(TREEMAP_PRESET_DIR, f"{safe}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return safe
+
+
+def load_treemap_preset(name):
+    safe = _safe_preset_filename(name)
+    path = os.path.join(TREEMAP_PRESET_DIR, f"{safe}.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def delete_treemap_preset(name):
+    safe = _safe_preset_filename(name)
+    path = os.path.join(TREEMAP_PRESET_DIR, f"{safe}.json")
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False
+
+
+def _to_date_str(val):
+    if val is None or val == "":
+        return None
+    if isinstance(val, datetime):
+        return val.strftime("%Y-%m-%d")
+    if isinstance(val, date):
+        return val.strftime("%Y-%m-%d")
+    return str(val)[:10]
+
+
+def _parse_iso_date(val):
+    text = _to_date_str(val)
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def apply_treemap_preset(payload, available_whose_list, whose_date_map):
+    """위젯 생성 전에 session_state에 조건을 반영한다."""
+    cat_keys = list(TREEMAP_CAT_OPTIONS.keys())
+    l234 = ["없음"] + cat_keys
+
+    whose = [
+        w
+        for w in payload.get("whose", available_whose_list)
+        if w in available_whose_list
+    ]
+    st.session_state["treemap_sel_whose"] = whose if whose else list(available_whose_list)
+
+    owner_dates = payload.get("owner_dates", {}) or {}
+    for w, d in owner_dates.items():
+        options = whose_date_map.get(w, [])
+        if d in options:
+            st.session_state[f"select_date_{w}"] = d
+
+    st.session_state["treemap_use_hist"] = bool(payload.get("use_historical_price", False))
+    hist_date = _parse_iso_date(payload.get("target_eval_date"))
+    if hist_date:
+        st.session_state["treemap_hist_date"] = hist_date
+
+    l1 = payload.get("l1")
+    l2 = payload.get("l2")
+    l3 = payload.get("l3")
+    l4 = payload.get("l4")
+    if l1 in cat_keys:
+        st.session_state["treemap_l1"] = l1
+    if l2 in l234:
+        st.session_state["treemap_l2"] = l2
+    if l3 in l234:
+        st.session_state["treemap_l3"] = l3
+    if l4 in l234:
+        st.session_state["treemap_l4"] = l4
+
+    color_option = payload.get("color_option")
+    if color_option in TREEMAP_COLOR_OPTIONS:
+        st.session_state["treemap_color_option"] = color_option
+    custom_base = _parse_iso_date(payload.get("custom_base_date"))
+    if custom_base:
+        st.session_state["treemap_custom_base_date"] = custom_base
+
+    drill = payload.get("drilldown")
+    if drill:
+        st.session_state["treemap_drilldown_selector"] = drill
+
+
+def collect_treemap_preset_payload(
+    selected_whose_list,
+    owner_selected_dates,
+    use_historical_price,
+    target_eval_date,
+    l1,
+    l2,
+    l3,
+    l4,
+    color_option,
+    custom_base_date,
+    drilldown,
+):
+    return {
+        "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "whose": list(selected_whose_list),
+        "owner_dates": {w: owner_selected_dates.get(w) for w in selected_whose_list},
+        "use_historical_price": bool(use_historical_price),
+        "target_eval_date": _to_date_str(target_eval_date) if use_historical_price else None,
+        "l1": l1,
+        "l2": l2,
+        "l3": l3,
+        "l4": l4,
+        "color_option": color_option,
+        "custom_base_date": _to_date_str(custom_base_date),
+        "drilldown": drilldown,
+    }
+
+
+def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
+    """상위 행 더블클릭(또는 ▶ 클릭) 시 하위 행을 펼치는 계층 표."""
+    header_html = "".join(
+        f"<th>{html.escape(col)}</th>"
+        for col in ["구분 항목", "평가액(원)", profit_col_label, rate_col_label, "점유율(%)"]
+    )
+    body_parts = []
+    for row in rows:
+        depth = int(row["depth"])
+        has_children = bool(row["has_children"])
+        hidden_class = " tree-hidden" if depth >= 1 else ""
+        parent_cls = " tree-parent" if has_children else ""
+        caret = "▶" if has_children else ""
+        indent_px = 8 + max(depth, 0) * 18
+        label = html.escape(str(row["label"]))
+        eval_txt = html.escape(f"₩{row['eval']:,.0f}")
+        profit_txt = html.escape(f"₩{row['profit']:,.0f}")
+        rate_txt = html.escape(f"{row['rate']:+.2f}%")
+        share_txt = html.escape(f"{row['share']:.2f}%")
+        parent_id = "" if row["parent_id"] is None else str(row["parent_id"])
+        title = "더블클릭하면 하위 항목이 펼쳐집니다." if has_children else ""
+        body_parts.append(
+            f'<tr class="{parent_cls}{hidden_class}" data-id="{row["id"]}" '
+            f'data-parent="{parent_id}" data-has-children="{str(has_children).lower()}" '
+            f'title="{html.escape(title)}">'
+            f'<td class="label-cell" style="padding-left:{indent_px}px;">'
+            f'<span class="caret" data-id="{row["id"]}">{caret}</span> {label}</td>'
+            f'<td class="num">{eval_txt}</td>'
+            f'<td class="num">{profit_txt}</td>'
+            f'<td class="num">{rate_txt}</td>'
+            f'<td class="num">{share_txt}</td>'
+            f"</tr>"
+        )
+
+    visible_count = sum(1 for r in rows if int(r["depth"]) < 1)
+    height = min(760, 90 + 36 * max(visible_count + 2, 6))
+
+    html_doc = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  body {{ margin: 0; font-family: "Segoe UI", sans-serif; color: #1f1f1f; }}
+  .hint {{ font-size: 12px; color: #666; margin: 0 0 8px 0; }}
+  table.tree-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  table.tree-table th {{
+    background: #f0f2f6; text-align: right; padding: 8px 10px;
+    border-bottom: 1px solid #d0d5dd; white-space: nowrap;
+  }}
+  table.tree-table th:first-child {{ text-align: left; }}
+  table.tree-table td {{
+    padding: 7px 10px; border-bottom: 1px solid #ececec; white-space: nowrap;
+  }}
+  table.tree-table td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  table.tree-table tr.tree-parent {{ cursor: pointer; }}
+  table.tree-table tr.tree-parent:hover {{ background: #eef4ff; }}
+  table.tree-table tr.tree-hidden {{ display: none; }}
+  .caret {{
+    display: inline-block; width: 14px; color: #3366cc; font-size: 11px;
+    user-select: none;
+  }}
+</style>
+</head>
+<body>
+  <p class="hint">상위 항목을 더블클릭하거나 ▶ 를 누르면 하위 세부 항목이 펼쳐집니다.</p>
+  <table class="tree-table">
+    <thead><tr>{header_html}</tr></thead>
+    <tbody>
+      {''.join(body_parts)}
+    </tbody>
+  </table>
+  <script>
+    function childrenOf(id) {{
+      return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
+    }}
+    function hideDescendants(id) {{
+      childrenOf(id).forEach(function(child) {{
+        child.classList.add('tree-hidden');
+        var caret = child.querySelector('.caret');
+        if (caret && child.dataset.hasChildren === 'true') caret.textContent = '▶';
+        hideDescendants(child.dataset.id);
+      }});
+    }}
+    function toggleRow(id) {{
+      var kids = childrenOf(id);
+      if (!kids.length) return;
+      var expand = kids[0].classList.contains('tree-hidden');
+      var row = document.querySelector('tr[data-id="' + id + '"]');
+      var caret = row ? row.querySelector('.caret') : null;
+      if (expand) {{
+        kids.forEach(function(child) {{ child.classList.remove('tree-hidden'); }});
+        if (caret) caret.textContent = '▼';
+      }} else {{
+        hideDescendants(id);
+        if (caret) caret.textContent = '▶';
+      }}
+    }}
+    document.querySelectorAll('tr.tree-parent').forEach(function(row) {{
+      row.addEventListener('dblclick', function() {{ toggleRow(row.dataset.id); }});
+    }});
+    document.querySelectorAll('.caret').forEach(function(el) {{
+      if (!el.textContent) return;
+      el.addEventListener('click', function(ev) {{
+        ev.stopPropagation();
+        toggleRow(el.dataset.id);
+      }});
+    }});
+  </script>
+</body>
+</html>
+"""
+    components.html(html_doc, height=height, scrolling=True)
 
 
 # ---------------------------------------------------------
@@ -815,6 +1104,25 @@ elif menu == "일별/시점별 보유 현황 분석":
     else:
         df["whose"] = df["whose"].fillna("본인").replace("", "본인")
         available_whose_list = sorted(df["whose"].unique())
+        whose_date_map = {
+            w: sorted(df[df["whose"] == w]["record_date"].unique(), reverse=True)
+            for w in available_whose_list
+        }
+
+        pending_preset = st.session_state.pop("_treemap_preset_pending", None)
+        if pending_preset:
+            apply_treemap_preset(pending_preset, available_whose_list, whose_date_map)
+
+        if "treemap_sel_whose" not in st.session_state:
+            st.session_state["treemap_sel_whose"] = available_whose_list
+        valid_whose = [
+            w
+            for w in st.session_state.get("treemap_sel_whose", available_whose_list)
+            if w in available_whose_list
+        ]
+        st.session_state["treemap_sel_whose"] = (
+            valid_whose if valid_whose else list(available_whose_list)
+        )
 
         col_filter1, col_filter2, col_filter3 = st.columns([2, 2, 2])
 
@@ -822,7 +1130,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             selected_whose_list = st.multiselect(
                 "1. 소유자(WHOSE) 선택 (복수 선택 가능)",
                 options=available_whose_list,
-                default=available_whose_list
+                key="treemap_sel_whose",
             )
 
         if not selected_whose_list:
@@ -832,8 +1140,10 @@ elif menu == "일별/시점별 보유 현황 분석":
             with col_filter2:
                 st.write("2. 소유자별 입력 데이터 날짜 선택")
                 for w in selected_whose_list:
-                    w_dates = sorted(df[df["whose"] == w]["record_date"].unique(), reverse=True)
+                    w_dates = whose_date_map.get(w, [])
                     if w_dates:
+                        if st.session_state.get(f"select_date_{w}") not in w_dates:
+                            st.session_state[f"select_date_{w}"] = w_dates[0]
                         owner_selected_dates[w] = st.selectbox(
                             f"[{w}] 기준 날짜",
                             options=w_dates,
@@ -842,11 +1152,14 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             with col_filter3:
                 use_historical_price = st.checkbox(
-                    "🗓️ 특정 날짜 기준 과거 시세로 조회하기"
+                    "🗓️ 특정 날짜 기준 과거 시세로 조회하기",
+                    key="treemap_use_hist",
                 )
                 if use_historical_price:
                     target_eval_date = st.date_input(
-                        "조회 기준 시세 날짜", datetime.now()
+                        "조회 기준 시세 날짜",
+                        datetime.now(),
+                        key="treemap_hist_date",
                     ).strftime("%Y-%m-%d")
                 else:
                     target_eval_date = None
@@ -924,42 +1237,48 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.markdown("---")
 
             st.subheader("🗺️ 포트폴리오 TREEMAP 분석 (최대 4단계 계층 선택)")
-            cat_options = {
-                "소유자(WHOSE)": "whose",
-                "구분": "account_type",
-                "금융사": "broker",
-                "보유항목(ITEM)": "item_name",
-                "계좌번호": "account_num",
-                "분류1": "category1",
-                "분류2": "category2",
-                "분류3": "category3",
-                "분류4": "category4",
-            }
+            cat_options = TREEMAP_CAT_OPTIONS
+            cat_keys = list(cat_options.keys())
+            l234_options = ["없음"] + cat_keys
+
+            if "treemap_l1" not in st.session_state:
+                st.session_state["treemap_l1"] = cat_keys[1]
+            if "treemap_l2" not in st.session_state:
+                st.session_state["treemap_l2"] = l234_options[1]
+            if "treemap_l3" not in st.session_state:
+                st.session_state["treemap_l3"] = l234_options[3]
+            if "treemap_l4" not in st.session_state:
+                st.session_state["treemap_l4"] = l234_options[4]
+            if "treemap_color_option" not in st.session_state:
+                st.session_state["treemap_color_option"] = TREEMAP_COLOR_OPTIONS[1]
+
+            if st.session_state.get("treemap_l1") not in cat_keys:
+                st.session_state["treemap_l1"] = cat_keys[1]
+            if st.session_state.get("treemap_l2") not in l234_options:
+                st.session_state["treemap_l2"] = l234_options[1]
+            if st.session_state.get("treemap_l3") not in l234_options:
+                st.session_state["treemap_l3"] = l234_options[3]
+            if st.session_state.get("treemap_l4") not in l234_options:
+                st.session_state["treemap_l4"] = l234_options[4]
+            if st.session_state.get("treemap_color_option") not in TREEMAP_COLOR_OPTIONS:
+                st.session_state["treemap_color_option"] = TREEMAP_COLOR_OPTIONS[1]
 
             col_t1, col_t2, col_t3, col_t4 = st.columns(4)
             with col_t1:
-                l1 = st.selectbox("1단계 (최상위)", list(cat_options.keys()), index=1)
+                l1 = st.selectbox("1단계 (최상위)", cat_keys, key="treemap_l1")
             with col_t2:
-                l2 = st.selectbox("2단계", ["없음"] + list(cat_options.keys()), index=1)
+                l2 = st.selectbox("2단계", l234_options, key="treemap_l2")
             with col_t3:
-                l3 = st.selectbox("3단계", ["없음"] + list(cat_options.keys()), index=3)
+                l3 = st.selectbox("3단계", l234_options, key="treemap_l3")
             with col_t4:
-                l4 = st.selectbox("4단계 (최하위)", ["없음"] + list(cat_options.keys()), index=4)
+                l4 = st.selectbox("4단계 (최하위)", l234_options, key="treemap_l4")
 
             col_c1, col_c2 = st.columns([2, 1])
             with col_c1:
                 color_option = st.selectbox(
                     "🗺️ 트리맵 색상 기준 선택",
-                    [
-                        "총 누적 수익률 (%)",
-                        "일간 등락률 (1일)",
-                        "주간 등락률 (1주일)",
-                        "월간 등락률 (1개월)",
-                        "월초 대비 등락률 (Month to Date)",
-                        "연초 대비 등락률 (YTD)",
-                        "특정 날짜 지정 등락률",
-                    ],
-                    index=1
+                    TREEMAP_COLOR_OPTIONS,
+                    key="treemap_color_option",
                 )
 
             custom_base_date = None
@@ -969,7 +1288,83 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "기준 날짜 선택",
                         value=datetime.now() - timedelta(days=30),
                         max_value=datetime.now(),
+                        key="treemap_custom_base_date",
                     )
+
+            preset_names = list_treemap_presets()
+            st.markdown("##### 💾 분석 조건 저장 / 불러오기")
+            p_col1, p_col2, p_col3, p_col4 = st.columns([2.2, 1, 2.2, 1.6])
+            with p_col1:
+                save_name = st.text_input(
+                    "저장할 조건 이름",
+                    placeholder="예: BJ_월간_계좌계층",
+                    key="treemap_preset_save_name",
+                )
+            with p_col2:
+                st.write("")
+                st.write("")
+                do_save = st.button("조건 저장", key="treemap_preset_save_btn")
+            with p_col3:
+                load_name = st.selectbox(
+                    "저장된 조건 불러오기",
+                    options=["(선택)"] + preset_names,
+                    key="treemap_preset_load_name",
+                )
+            with p_col4:
+                st.write("")
+                st.write("")
+                load_c, del_c = st.columns(2)
+                with load_c:
+                    do_load = st.button("불러오기", key="treemap_preset_load_btn")
+                with del_c:
+                    do_delete = st.button("삭제", key="treemap_preset_del_btn")
+
+            if do_save:
+                if not str(save_name).strip():
+                    st.warning("저장할 조건 이름을 입력해 주세요.")
+                else:
+                    payload = collect_treemap_preset_payload(
+                        selected_whose_list,
+                        owner_selected_dates,
+                        use_historical_price,
+                        target_eval_date,
+                        l1,
+                        l2,
+                        l3,
+                        l4,
+                        color_option,
+                        custom_base_date,
+                        st.session_state.get(
+                            "treemap_drilldown_selector", "🌐 전체 (Root - 100% 점유)"
+                        ),
+                    )
+                    saved = save_treemap_preset(save_name, payload)
+                    if saved:
+                        st.success(f"분석 조건을 저장했습니다: {saved}")
+                        st.rerun()
+                    else:
+                        st.error("조건 이름에 사용할 수 없는 문자가 있습니다.")
+
+            if do_load:
+                if load_name == "(선택)":
+                    st.warning("불러올 조건을 선택해 주세요.")
+                else:
+                    loaded = load_treemap_preset(load_name)
+                    if not loaded:
+                        st.error("조건 파일을 찾지 못했습니다.")
+                    else:
+                        st.session_state["_treemap_preset_pending"] = loaded
+                        st.success(f"조건을 불러옵니다: {load_name}")
+                        st.rerun()
+
+            if do_delete:
+                if load_name == "(선택)":
+                    st.warning("삭제할 조건을 선택해 주세요.")
+                elif delete_treemap_preset(load_name):
+                    st.success(f"조건을 삭제했습니다: {load_name}")
+                    st.rerun()
+                else:
+                    st.error("조건 파일을 찾지 못했습니다.")
 
             today = datetime.now()
             change_rates = []
@@ -1105,12 +1500,14 @@ elif menu == "일별/시점별 보유 현황 분석":
                         path_set.add(curr_p)
                 path_options.extend(sorted(list(path_set)))
 
+            if st.session_state.get("treemap_drilldown_selector") not in path_options:
+                st.session_state["treemap_drilldown_selector"] = path_options[0]
+
             col_drill1, col_drill2 = st.columns([2.5, 1.5])
             with col_drill1:
                 selected_drill_path = st.selectbox(
                     "🔍 TREEMAP 계층 드릴다운 / 하위 분류 화면 선택 (상단 표 100% 점유 연동)",
                     options=path_options,
-                    index=0,
                     key="treemap_drilldown_selector"
                 )
             with col_drill2:
@@ -1136,49 +1533,41 @@ elif menu == "일별/시점별 보유 현황 분석":
             # ---------------------------------------------------------
             # [수정 연동] Treemap 화면 상의 100% 점유 기준 표 생성
             # ---------------------------------------------------------
-            st.write(f"📌 **현재 화면 기준 계층 요약 현황 표 (화면 점유율: 100.00% 기준)**")
+            st.write("📌 **현재 화면 기준 계층 요약 현황 표 (화면 점유율: 100.00% 기준)**")
 
-            tree_rows = []
+            def _tree_metrics(group_df):
+                group_eval = group_df["평가액(원)"].sum()
+                group_buy = group_df["매입총액(원)"].sum()
+                group_profit = group_df["선택기준_평가손익(원)"].sum()
+                if color_option == "총 누적 수익률 (%)":
+                    group_rate = (group_profit / group_buy * 100) if group_buy != 0 else 0.0
+                else:
+                    past_eval = group_eval - group_profit
+                    group_rate = (group_profit / past_eval * 100) if past_eval != 0 else 0.0
+                group_share = (
+                    (group_eval / active_total_eval * 100) if active_total_eval != 0 else 0
+                )
+                return group_eval, group_profit, group_rate, group_share
 
-            def build_tree_summary_filtered(df_sub, active_cols, depth=0):
+            def build_tree_nodes(df_sub, active_cols):
                 if not active_cols:
-                    return
-
+                    return []
                 curr_col = active_cols[0]
                 rem_cols = active_cols[1:]
-
-                grouped = df_sub.groupby(curr_col)
-
-                for name, group in grouped:
-                    group_eval = group["평가액(원)"].sum()
-                    group_buy = group["매입총액(원)"].sum()
-                    group_profit = group["선택기준_평가손익(원)"].sum()
-
-                    if color_option == "총 누적 수익률 (%)":
-                        group_rate = (group_profit / group_buy * 100) if group_buy != 0 else 0.0
-                    else:
-                        past_eval = group_eval - group_profit
-                        group_rate = (group_profit / past_eval * 100) if past_eval != 0 else 0.0
-
-                    # 현재 화면의 총 평가액 기준 100% 점유율 계산
-                    group_share = (group_eval / active_total_eval * 100) if active_total_eval != 0 else 0
-
-                    indent = "└─ " * depth if depth > 0 else ""
-                    label_display = f"{indent}{name}"
-
-                    tree_rows.append({
-                        "구분 항목": label_display,
-                        "평가액(원)": group_eval,
-                        profit_col_label: group_profit,
-                        rate_col_label: group_rate,
-                        "점유율(%)": group_share
+                nodes = []
+                for name, group in df_sub.groupby(curr_col):
+                    group_eval, group_profit, group_rate, group_share = _tree_metrics(group)
+                    nodes.append({
+                        "label": str(name),
+                        "eval": group_eval,
+                        "profit": group_profit,
+                        "rate": group_rate,
+                        "share": group_share,
+                        "children": build_tree_nodes(group, rem_cols) if rem_cols else [],
                     })
+                return nodes
 
-                    if rem_cols:
-                        build_tree_summary_filtered(group, rem_cols, depth + 1)
-
-            if active_group_cols:
-                build_tree_summary_filtered(filtered_df, active_group_cols)
+            nested_nodes = build_tree_nodes(filtered_df, active_group_cols) if active_group_cols else []
 
             total_row_profit = filtered_df["선택기준_평가손익(원)"].sum()
             total_row_buy = filtered_df["매입총액(원)"].sum()
@@ -1188,33 +1577,41 @@ elif menu == "일별/시점별 보유 현황 분석":
                 past_total_eval = active_total_eval - total_row_profit
                 total_row_rate = (total_row_profit / past_total_eval * 100) if past_total_eval != 0 else 0.0
 
-            total_tree_row = {
-                "구분 항목": view_root_label,
-                "평가액(원)": active_total_eval,
-                profit_col_label: total_row_profit,
-                rate_col_label: total_row_rate,
-                "점유율(%)": 100.0
-            }
+            flat_rows = []
+            next_id = [1]
+            flat_rows.append({
+                "id": 0,
+                "parent_id": None,
+                "depth": -1,
+                "has_children": bool(nested_nodes),
+                "label": view_root_label,
+                "eval": active_total_eval,
+                "profit": total_row_profit,
+                "rate": total_row_rate,
+                "share": 100.0,
+            })
 
-            tree_summary_df = pd.DataFrame([total_tree_row] + tree_rows)
+            def flatten_nodes(nodes, parent_id, depth):
+                for node in nodes:
+                    row_id = next_id[0]
+                    next_id[0] += 1
+                    kids = node.get("children") or []
+                    flat_rows.append({
+                        "id": row_id,
+                        "parent_id": parent_id,
+                        "depth": depth,
+                        "has_children": bool(kids),
+                        "label": node["label"],
+                        "eval": node["eval"],
+                        "profit": node["profit"],
+                        "rate": node["rate"],
+                        "share": node["share"],
+                    })
+                    if kids:
+                        flatten_nodes(kids, row_id, depth + 1)
 
-            st.dataframe(
-                tree_summary_df[[
-                    "구분 항목",
-                    "평가액(원)",
-                    profit_col_label,
-                    rate_col_label,
-                    "점유율(%)"
-                ]]
-                .style.format({
-                    "평가액(원)": "₩{:,.0f}",
-                    profit_col_label: "₩{:,.0f}",
-                    rate_col_label: "{:+.2f}%",
-                    "점유율(%)": "{:.2f}%"
-                }),
-                width="stretch",
-                hide_index=True
-            )
+            flatten_nodes(nested_nodes, 0, 0)
+            render_expandable_tree_table(flat_rows, profit_col_label, rate_col_label)
             st.markdown("")
 
             # ---------------------------------------------------------
