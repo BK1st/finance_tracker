@@ -1,4 +1,4 @@
-# name=Trend_V2_12.py
+# name=Trend_V2_13.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -22,7 +22,6 @@ def init_db():
   conn = sqlite3.connect(DB_FILE)
   c = conn.cursor()
 
-  # 첨부된 portfolio의 모든 열을 수용할 수 있도록 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +47,6 @@ def init_db():
         )
     ''')
 
-  # 스키마 자동 마이그레이션 (기존 DB가 존재할 경우 컬럼 추가)
   c.execute('PRAGMA table_info(portfolio)')
   existing_cols = [col[1] for col in c.fetchall()]
 
@@ -360,7 +358,7 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    st.subheader('⚙️ 분석 조건 설정')
+    st.subheader('⚙️️ 분석 조건 설정')
 
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
@@ -588,6 +586,7 @@ if menu == '트렌드 리포트':
         )
 
         item_prev_prices = {}
+        item_prev_fx = {}
         item_cum_pl = {}
         item_cum_pl_ex = {}
 
@@ -676,15 +675,23 @@ if menu == '트렌드 리포트':
                 price = base_price
 
             prev_p = item_prev_prices.get(key, price)
+            prev_fx = item_prev_fx.get(key, usd_krw)
             price_diff = price - prev_p if prev_p is not None else 0
+            fx_diff = usd_krw - prev_fx if prev_fx is not None else 0
 
-            period_pl = price_diff * qty * usd_krw if curr == 'USD' else price_diff * qty * 1.0
+            # 환차손(환율 변동 효과) 및 가격 변동을 올바르게 반영하는 주기별 손익 계산
+            if curr == 'USD':
+              period_pl = qty * (price_diff * usd_krw + prev_p * fx_diff)
+            else:
+              period_pl = price_diff * qty * 1.0
+
             period_pl_ex = price_diff * qty * usd_krw_first if curr == 'USD' else price_diff * qty * 1.0
 
             cum_pl = item_cum_pl.get(key, 0.0) + period_pl
             cum_pl_ex = item_cum_pl_ex.get(key, 0.0) + period_pl_ex
 
             item_prev_prices[key] = price
+            item_prev_fx[key] = usd_krw
             item_cum_pl[key] = cum_pl
             item_cum_pl_ex[key] = cum_pl_ex
 
@@ -859,7 +866,6 @@ if menu == '트렌드 리포트':
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
 
-        # Category 4별 및 보유항목별 분석 시 계좌 필터 추가
         if group_col in ['category4', 'item_name']:
           all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
           selected_accounts_filter = st.multiselect(
@@ -2164,7 +2170,7 @@ elif menu == '원금 및 입출금 관리':
         del_id = st.number_input(
             '삭제할 내역 ID 입력', min_value=1, step=1, value=1
         )
-        if st.button('🗑️️ 선택한 내역 삭제'):
+        if st.button('🗑 선택한 내역 삭제'):
           conn = get_connection()
           c = conn.cursor()
           c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
