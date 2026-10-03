@@ -1,3 +1,4 @@
+# name=Trend_V2_12.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -21,7 +22,7 @@ def init_db():
   conn = sqlite3.connect(DB_FILE)
   c = conn.cursor()
 
-  # portfolio 테이블 생성
+  # 첨부된 portfolio의 모든 열을 수용할 수 있도록 스키마 확장
   c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +48,7 @@ def init_db():
         )
     ''')
 
-  # 스키마 마이그레이션
+  # 스키마 자동 마이그레이션 (기존 DB가 존재할 경우 컬럼 추가)
   c.execute('PRAGMA table_info(portfolio)')
   existing_cols = [col[1] for col in c.fetchall()]
 
@@ -149,24 +150,6 @@ def get_latest_price_single(ticker_symbol):
   return None
 
 
-def get_scalar_price(df, date_str, col_name):
-  """DataFrame에서 특정 날짜와 컬럼의 가격을 단일 float 스칼라로 안전하게 가져오는 함수"""
-  if df.empty or col_name not in df.columns:
-    return None
-  dt = pd.to_datetime(date_str)
-  if dt in df.index:
-    val = df.loc[dt, col_name]
-  else:
-    val = df[col_name].asof(dt)
-
-  if isinstance(val, pd.Series):
-    val = val.dropna().iloc[-1] if not val.dropna().empty else None
-
-  if pd.isna(val) or val is None or val <= 0:
-    return None
-  return float(val)
-
-
 @st.cache_data(ttl=900)
 def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
   all_tickers = list(all_tickers_tuple)
@@ -193,11 +176,9 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    # 이전 영업일 종가 유지
-    data = data.ffill().bfill()
+    data = data.bfill().ffill()
 
-    now = datetime.now()
-    today_str = now.strftime('%Y-%m-%d')
+    today_str = datetime.now().strftime('%Y-%m-%d')
     today_dt = pd.to_datetime(today_str)
 
     latest_row = {}
@@ -207,13 +188,13 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
         latest_row[tk_sym] = lp
 
     if latest_row:
-      if today_dt not in data.index:
+      if today_dt in data.index:
+        for k, v in latest_row.items():
+          data.loc[today_dt, k] = v
+      else:
         new_row_df = pd.DataFrame(latest_row, index=[today_dt])
         data = pd.concat([data, new_row_df])
         data = data.sort_index().ffill()
-      else:
-        for k, v in latest_row.items():
-          data.loc[today_dt, k] = v
 
     return data
   except Exception as e:
@@ -379,7 +360,7 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    st.subheader('⚙ 분석 조건 설정')
+    st.subheader('⚙️ 분석 조건 설정')
 
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
@@ -521,13 +502,9 @@ if menu == '트렌드 리포트':
       else:
         target_dates = full_date_range[full_date_range.is_year_end]
 
-      end_dt = pd.to_datetime(end_date)
-      if option_freq == '일간 (주말 제외)' and end_dt.dayofweek >= 5:
-        target_dates = pd.DatetimeIndex(sorted(list(set(target_dates))))
-      else:
-        target_dates = pd.DatetimeIndex(
-            sorted(list(set(target_dates).union({end_dt})))
-        )
+      target_dates = pd.DatetimeIndex(
+          sorted(list(set(target_dates).union({pd.to_datetime(end_date)})))
+      )
 
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
@@ -545,9 +522,25 @@ if menu == '트렌드 리포트':
         )
 
       first_t_str = target_dates[0].strftime('%Y-%m-%d')
-      usd_krw_first = get_scalar_price(market_data, first_t_str, 'KRW=X')
-      if usd_krw_first is None or usd_krw_first <= 0:
-        usd_krw_first = 1350.0
+      usd_krw_first = None
+      if 'KRW=X' in market_data.columns and not market_data.empty:
+        if pd.to_datetime(first_t_str) in market_data.index:
+          usd_krw_first = market_data.loc[pd.to_datetime(first_t_str), 'KRW=X']
+        else:
+          usd_krw_first = market_data['KRW=X'].asof(pd.to_datetime(first_t_str))
+
+      if (
+          pd.isna(usd_krw_first)
+          or usd_krw_first is None
+          or usd_krw_first <= 0
+      ):
+        if (
+            'KRW=X' in market_data.columns
+            and not market_data['KRW=X'].dropna().empty
+        ):
+          usd_krw_first = float(market_data['KRW=X'].dropna().iloc[0])
+        else:
+          usd_krw_first = 1350.0
 
       base_records = []
       for acc in selected_accounts:
@@ -594,8 +587,9 @@ if menu == '트렌드 리포트':
             else 0
         )
 
-        item_prev_eval = {}
-        item_prev_eval_ex = {}
+        item_prev_prices = {}
+        item_cum_pl = {}
+        item_cum_pl_ex = {}
 
         account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc]
         all_account_items = account_pf_all[['item_name', 'ticker', 'category4', 'currency']].drop_duplicates().to_dict('records')
@@ -603,9 +597,21 @@ if menu == '트렌드 리포트':
         for t_date in target_dates:
           t_str = t_date.strftime('%Y-%m-%d')
 
-          usd_krw = get_scalar_price(market_data, t_str, 'KRW=X')
-          if usd_krw is None or usd_krw <= 0:
-            usd_krw = 1350.0
+          usd_krw = None
+          if 'KRW=X' in market_data.columns and not market_data.empty:
+            if pd.to_datetime(t_str) in market_data.index:
+              usd_krw = market_data.loc[pd.to_datetime(t_str), 'KRW=X']
+            else:
+              usd_krw = market_data['KRW=X'].asof(pd.to_datetime(t_str))
+
+          if pd.isna(usd_krw) or usd_krw is None or usd_krw <= 0:
+            if (
+                'KRW=X' in market_data.columns
+                and not market_data['KRW=X'].dropna().empty
+            ):
+              usd_krw = float(market_data['KRW=X'].dropna().iloc[-1])
+            else:
+              usd_krw = 1350.0
 
           if not cf_df.empty:
             acc_cf = cf_df[
@@ -648,38 +654,44 @@ if menu == '트렌드 리포트':
               row = current_pf_dict[key]
               qty = row.get('quantity', 0) if pd.notna(row.get('quantity')) else 0
               base_price = row.get('current_price', 0) if pd.notna(row.get('current_price')) else 0
-              purchase_p = row.get('purchase_price', 0) if pd.notna(row.get('purchase_price')) else 0
               if pd.notna(row.get('category4')) and str(row.get('category4')).strip() != '':
                 cat4 = row.get('category4')
             else:
               qty = 0
               base_price = 0
-              purchase_p = 0
 
             fmt_tk = format_ticker(tk)
-            price = None
-            if fmt_tk is not None and not pd.isna(fmt_tk):
-              price = get_scalar_price(market_data, t_str, fmt_tk)
+            price = 0
+            if fmt_tk is None or pd.isna(fmt_tk):
+              price = base_price if base_price > 0 else 0
+            else:
+              if fmt_tk in market_data.columns and not market_data.empty:
+                if pd.to_datetime(t_str) in market_data.index:
+                  price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
+                else:
+                  price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
+                if (pd.isna(price) or price == 0) and not market_data[fmt_tk].dropna().empty:
+                  price = float(market_data[fmt_tk].dropna().iloc[0])
+              if pd.isna(price) or price == 0:
+                price = base_price
 
-            if price is None or price <= 0:
-              price = base_price if base_price > 0 else 0.0
+            prev_p = item_prev_prices.get(key, price)
+            price_diff = price - prev_p if prev_p is not None else 0
 
-            # 정확한 평가액 산출
+            period_pl = price_diff * qty * usd_krw if curr == 'USD' else price_diff * qty * 1.0
+            period_pl_ex = price_diff * qty * usd_krw_first if curr == 'USD' else price_diff * qty * 1.0
+
+            cum_pl = item_cum_pl.get(key, 0.0) + period_pl
+            cum_pl_ex = item_cum_pl_ex.get(key, 0.0) + period_pl_ex
+
+            item_prev_prices[key] = price
+            item_cum_pl[key] = cum_pl
+            item_cum_pl_ex[key] = cum_pl_ex
+
             item_eval = qty * price * usd_krw if curr == 'USD' else qty * price
             item_eval_ex = qty * price * usd_krw_first if curr == 'USD' else qty * price
 
-            purchase_eval = qty * purchase_p * usd_krw if curr == 'USD' else qty * purchase_p
-            purchase_eval_ex = qty * purchase_p * usd_krw_first if curr == 'USD' else qty * purchase_p
-
-            cum_pl = item_eval - purchase_eval
-            cum_pl_ex = item_eval_ex - purchase_eval_ex
-
-            prev_eval = item_prev_eval.get(key, item_eval)
-            period_pl = item_eval - prev_eval
-            item_return = ((item_eval - prev_eval) / prev_eval * 100) if (prev_eval and prev_eval > 0) else 0.0
-
-            item_prev_eval[key] = item_eval
-            item_prev_eval_ex[key] = item_eval_ex
+            item_return = ((price - prev_p) / prev_p * 100) if (prev_p and prev_p > 0) else 0.0
 
             total_acc_eval += item_eval
             total_acc_eval_ex_fx += item_eval_ex
@@ -728,19 +740,25 @@ if menu == '트렌드 리포트':
           dates_str = []
           for t_date in target_dates:
             t_str = t_date.strftime('%Y-%m-%d')
-            p = get_scalar_price(market_data, t_str, tk)
-            if p is None or p <= 0:
-              if not market_data[tk].dropna().empty:
-                p = float(market_data[tk].dropna().iloc[0])
-              else:
-                p = 0.0
+            if pd.to_datetime(t_str) in market_data.index:
+              p = market_data.loc[pd.to_datetime(t_str), tk]
+            else:
+              p = market_data[tk].asof(pd.to_datetime(t_str))
+
+            if (
+                (pd.isna(p) or p == 0)
+                and tk in market_data.columns
+                and not market_data[tk].dropna().empty
+            ):
+              p = float(market_data[tk].dropna().iloc[0])
+
             prices.append(p)
             dates_str.append(t_str)
 
           bm_df = (
               pd.DataFrame({'Date_str': dates_str, 'Close': prices})
-              .ffill()
               .bfill()
+              .ffill()
           )
           init_p = bm_df['Close'].iloc[0] if len(bm_df) > 0 else 0
 
@@ -841,6 +859,7 @@ if menu == '트렌드 리포트':
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
 
+        # Category 4별 및 보유항목별 분석 시 계좌 필터 추가
         if group_col in ['category4', 'item_name']:
           all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
           selected_accounts_filter = st.multiselect(
@@ -2145,7 +2164,7 @@ elif menu == '원금 및 입출금 관리':
         del_id = st.number_input(
             '삭제할 내역 ID 입력', min_value=1, step=1, value=1
         )
-        if st.button('🗑 선택한 내역 삭제'):
+        if st.button('🗑️️ 선택한 내역 삭제'):
           conn = get_connection()
           c = conn.cursor()
           c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
@@ -2226,7 +2245,7 @@ elif menu == '데이터 백업 및 복구':
   )
 
   if uploaded_db is not None:
-    if st.button('⚠ 기존 데이터를 덮어쓰고 복구하기'):
+    if st.button('⚠️ 기존 데이터를 덮어쓰고 복구하기'):
       try:
         with open(DB_FILE, 'wb') as f:
           f.write(uploaded_db.getbuffer())
