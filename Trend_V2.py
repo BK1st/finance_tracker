@@ -1,4 +1,4 @@
-# name=Trend_V2_13.py
+# name=Trend_V2_14.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -358,7 +358,7 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    st.subheader('⚙️️ 분석 조건 설정')
+    st.subheader('⚙ 분석 조건 설정')
 
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
@@ -679,7 +679,6 @@ if menu == '트렌드 리포트':
             price_diff = price - prev_p if prev_p is not None else 0
             fx_diff = usd_krw - prev_fx if prev_fx is not None else 0
 
-            # 환차손(환율 변동 효과) 및 가격 변동을 올바르게 반영하는 주기별 손익 계산
             if curr == 'USD':
               period_pl = qty * (price_diff * usd_krw + prev_p * fx_diff)
             else:
@@ -933,8 +932,11 @@ if menu == '트렌드 리포트':
                 .reset_index()
             )
             grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)['총평가금액'].diff()
-            first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform('first')
-            grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+            
+            # 요구사항 반영: 계좌별, 증권사별, 계좌유형별인 경우 선택기간 누적 평가 손익 = 최종 조회 시점의 평가금액 - 최초 조회 시점의 평가금액
+            first_eval_val = grp_agg.groupby(group_col)['총평가금액'].transform('first')
+            grp_agg['선택구간 누적손익'] = grp_agg['총평가금액'] - first_eval_val
+
             grp_agg['prev_eval'] = grp_agg.groupby(group_col)['총평가금액'].shift(1)
             grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
             grp_agg['period_cash_flow'] = grp_agg['원금'] - grp_agg['prev_principal']
@@ -956,8 +958,6 @@ if menu == '트렌드 리포트':
             grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
             grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
           else:
-            first_p_loss = grp_agg.groupby(group_col)['평가손익'].transform('first')
-            grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
             grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
             grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
             grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
@@ -1472,10 +1472,10 @@ if menu == '트렌드 리포트':
           grp_agg['주기별 평가손익'] = grp_agg.groupby('whose')[
               '총평가금액'
           ].diff()
-          first_p_loss = grp_agg.groupby('whose')['평가손익'].transform(
-              'first'
-          )
-          grp_agg['선택구간 누적손익'] = grp_agg['평가손익'] - first_p_loss
+          
+          # 전체 합산(WHOSE별) 뷰에서도 최종 조회 시점 평가금액 - 최초 조회 시점 평가금액 적용
+          first_eval_val = grp_agg.groupby('whose')['총평가금액'].transform('first')
+          grp_agg['선택구간 누적손익'] = grp_agg['총평가금액'] - first_eval_val
 
           grp_agg['수익률'] = np.where(
               grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
@@ -1973,7 +1973,7 @@ if menu == '트렌드 리포트':
 # 메뉴 2: 계좌 별칭 관리
 # -----------------------------------------------------------------------------
 elif menu == '계좌 별칭 관리':
-  st.header('🏷️ 계좌 별칭 관리')
+  st.header('🏷️️ 계좌 별칭 관리')
   conn = get_connection()
   pf_df = pd.read_sql('SELECT DISTINCT broker, account_num, account_type FROM portfolio', conn)
   conn.close()
