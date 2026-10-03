@@ -194,7 +194,7 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    # 미래 시세가 과거로 대입되는 것을 막기 위해 bfill() 제거하고 ffill()만 적용
+    # 이전 영업일 종가 유지
     data = data.ffill()
 
     now = datetime.now()
@@ -208,18 +208,15 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
         latest_row[tk_sym] = lp
 
     if latest_row:
-      # 주말일 경우 직전 영업일(금요일 등) 자리에 최신 종가 보정
-      target_dt = today_dt
-      if data.index.max() < today_dt:
-        target_dt = data.index.max()
-
-      if target_dt in data.index:
-        for k, v in latest_row.items():
-          data.loc[target_dt, k] = v
-      else:
-        new_row_df = pd.DataFrame(latest_row, index=[target_dt])
+      # 과거 확정 영업일(data.index.max())을 절대로 덮어쓰지 않고,
+      # 오늘 날짜(today_dt)가 없는 경우에만 새로 추가
+      if today_dt not in data.index:
+        new_row_df = pd.DataFrame(latest_row, index=[today_dt])
         data = pd.concat([data, new_row_df])
         data = data.sort_index().ffill()
+      else:
+        for k, v in latest_row.items():
+          data.loc[today_dt, k] = v
 
     return data
   except Exception as e:
@@ -385,7 +382,7 @@ if menu == '트렌드 리포트':
         '보유항목별',
     ]
 
-    st.subheader('⚙️️ 분석 조건 설정')
+    st.subheader('⚙ 분석 조건 설정')
 
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
@@ -527,7 +524,6 @@ if menu == '트렌드 리포트':
       else:
         target_dates = full_date_range[full_date_range.is_year_end]
 
-      # 주말 제외 설정 시 토요일/일요일 end_date가 강제로 붙어 오차 발생하는 현상 예방
       end_dt = pd.to_datetime(end_date)
       if option_freq == '일간 (주말 제외)' and end_dt.dayofweek >= 5:
         target_dates = pd.DatetimeIndex(sorted(list(set(target_dates))))
@@ -2233,7 +2229,7 @@ elif menu == '데이터 백업 및 복구':
   )
 
   if uploaded_db is not None:
-    if st.button('⚠️ 기존 데이터를 덮어쓰고 복구하기'):
+    if st.button('⚠️️ 기존 데이터를 덮어쓰고 복구하기'):
       try:
         with open(DB_FILE, 'wb') as f:
           f.write(uploaded_db.getbuffer())
