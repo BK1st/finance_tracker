@@ -1,4 +1,3 @@
-# name=Trend_V2_13.py
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -195,7 +194,7 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
       data = data.to_frame(name=all_tickers[0])
 
     # 이전 영업일 종가 유지
-    data = data.ffill()
+    data = data.ffill().bfill()
 
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
@@ -208,8 +207,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
         latest_row[tk_sym] = lp
 
     if latest_row:
-      # 과거 확정 영업일(data.index.max())을 절대로 덮어쓰지 않고,
-      # 오늘 날짜(today_dt)가 없는 경우에만 새로 추가
       if today_dt not in data.index:
         new_row_df = pd.DataFrame(latest_row, index=[today_dt])
         data = pd.concat([data, new_row_df])
@@ -597,9 +594,8 @@ if menu == '트렌드 리포트':
             else 0
         )
 
-        item_prev_prices = {}
-        item_cum_pl = {}
-        item_cum_pl_ex = {}
+        item_prev_eval = {}
+        item_prev_eval_ex = {}
 
         account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc]
         all_account_items = account_pf_all[['item_name', 'ticker', 'category4', 'currency']].drop_duplicates().to_dict('records')
@@ -652,11 +648,13 @@ if menu == '트렌드 리포트':
               row = current_pf_dict[key]
               qty = row.get('quantity', 0) if pd.notna(row.get('quantity')) else 0
               base_price = row.get('current_price', 0) if pd.notna(row.get('current_price')) else 0
+              purchase_p = row.get('purchase_price', 0) if pd.notna(row.get('purchase_price')) else 0
               if pd.notna(row.get('category4')) and str(row.get('category4')).strip() != '':
                 cat4 = row.get('category4')
             else:
               qty = 0
               base_price = 0
+              purchase_p = 0
 
             fmt_tk = format_ticker(tk)
             price = None
@@ -666,23 +664,22 @@ if menu == '트렌드 리포트':
             if price is None or price <= 0:
               price = base_price if base_price > 0 else 0.0
 
-            prev_p = item_prev_prices.get(key, price)
-            price_diff = price - prev_p if prev_p is not None else 0.0
-
-            period_pl = price_diff * qty * usd_krw if curr == 'USD' else price_diff * qty * 1.0
-            period_pl_ex = price_diff * qty * usd_krw_first if curr == 'USD' else price_diff * qty * 1.0
-
-            cum_pl = item_cum_pl.get(key, 0.0) + period_pl
-            cum_pl_ex = item_cum_pl_ex.get(key, 0.0) + period_pl_ex
-
-            item_prev_prices[key] = price
-            item_cum_pl[key] = cum_pl
-            item_cum_pl_ex[key] = cum_pl_ex
-
+            # 정확한 평가액 산출
             item_eval = qty * price * usd_krw if curr == 'USD' else qty * price
             item_eval_ex = qty * price * usd_krw_first if curr == 'USD' else qty * price
 
-            item_return = ((price - prev_p) / prev_p * 100) if (prev_p and prev_p > 0) else 0.0
+            purchase_eval = qty * purchase_p * usd_krw if curr == 'USD' else qty * purchase_p
+            purchase_eval_ex = qty * purchase_p * usd_krw_first if curr == 'USD' else qty * purchase_p
+
+            cum_pl = item_eval - purchase_eval
+            cum_pl_ex = item_eval_ex - purchase_eval_ex
+
+            prev_eval = item_prev_eval.get(key, item_eval)
+            period_pl = item_eval - prev_eval
+            item_return = ((item_eval - prev_eval) / prev_eval * 100) if (prev_eval and prev_eval > 0) else 0.0
+
+            item_prev_eval[key] = item_eval
+            item_prev_eval_ex[key] = item_eval_ex
 
             total_acc_eval += item_eval
             total_acc_eval_ex_fx += item_eval_ex
@@ -2229,7 +2226,7 @@ elif menu == '데이터 백업 및 복구':
   )
 
   if uploaded_db is not None:
-    if st.button('⚠️️ 기존 데이터를 덮어쓰고 복구하기'):
+    if st.button('⚠ 기존 데이터를 덮어쓰고 복구하기'):
       try:
         with open(DB_FILE, 'wb') as f:
           f.write(uploaded_db.getbuffer())
