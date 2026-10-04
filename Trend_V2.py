@@ -889,14 +889,13 @@ if menu == '트렌드 리포트':
             df_curr = df_curr[~df_curr['item_name'].str.contains('현금', na=False)]
 
           if group_col == 'item_name':
-            # 핵심 수정: 여러 계좌에 보유 중인 동일 종목의 평가손익이 누락되지 않도록 'sum'으로 합산
             grp_agg = (
                 df_curr.groupby(['Date', group_col])[
                     ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
                 ]
                 .agg({
                     '원금': 'sum',
-                    '평가손익': 'sum',  # 기존 'last'에서 'sum'으로 수정!
+                    '평가손익': 'sum',
                     '총평가금액': 'sum',
                     '주기별 평가손익': 'sum',
                     '주기별 수익률': 'mean'
@@ -934,7 +933,6 @@ if menu == '트렌드 리포트':
             )
             grp_agg['주기별 평가손익'] = grp_agg.groupby(group_col)['총평가금액'].diff()
             
-            # 계좌별, 증권사별, 계좌유형별인 경우 선택기간 누적 평가 손익 = 최종 조회 시점의 평가금액 - 최초 조회 시점의 평가금액
             first_eval_val = grp_agg.groupby(group_col)['총평가금액'].transform('first')
             grp_agg['선택구간 누적손익'] = grp_agg['총평가금액'] - first_eval_val
 
@@ -1375,76 +1373,88 @@ if menu == '트렌드 리포트':
 
         if group_col in ['account_num', 'account_type']:
           st.write('---')
-          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트')
+          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트 (총 3개 개별 분석)')
           
-          c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
-          with c_sub1:
-            all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
-            selected_filter_items = st.multiselect(
-                f'특정 {prefix} 선택 (중복 가능)',
-                options=all_filter_items,
-                default=all_filter_items,
-                key=f'sub_filter_{prefix}'
-            )
-          with c_sub2:
-            target_group_opt = st.radio(
-                '분류 기준 선택',
-                options=['category4별', '보유 항목별'],
-                horizontal=True,
-                key=f'sub_group_opt_{prefix}'
-            )
-          with c_sub3:
-            pos_sub_stack = st.selectbox(
-                '📌 범례(Legend) 배치',
-                options=leg_pos_options,
-                index=default_idx,
-                key=f'pos_sub_stack_{prefix}'
-            )
-
-          target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
-
-          if selected_filter_items:
-            sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
-            sub_agg = sub_raw.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
-            
-            sub_agg['dt_temp'] = pd.to_datetime(sub_agg['Date'])
-            sub_agg = sub_agg.sort_values('dt_temp').reset_index(drop=True)
-            sub_agg['Chart_Date'] = sub_agg['dt_temp'].dt.strftime('%Y-%m-%d')
-            date_order = sorted(sub_agg['Chart_Date'].unique().tolist())
-
-            fig_sub_stack = go.Figure()
-            cat_list = sub_agg[target_col].unique().tolist()
-            for cat in cat_list:
-              c_df = sub_agg[sub_agg[target_col] == cat]
-              fig_sub_stack.add_trace(
-                  go.Bar(
-                      x=c_df['Chart_Date'],
-                      y=c_df['총평가금액'],
-                      name=str(cat),
-                      hovertemplate='%{y:,.0f} 원'
-                  )
+          all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
+          
+          # -------------------------------------------------------------------
+          # 헬퍼 함수: 개별 누적 막대 차트 생성 및 렌더링
+          # -------------------------------------------------------------------
+          def render_stacked_bar_chart(chart_idx):
+            st.markdown(f'##### 📌 누적 차트 #{chart_idx}')
+            c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
+            with c_sub1:
+              selected_filter_items = st.multiselect(
+                  f'특정 {prefix} 선택 (#{chart_idx})',
+                  options=all_filter_items,
+                  default=all_filter_items,
+                  key=f'sub_filter_{prefix}_{chart_idx}'
+              )
+            with c_sub2:
+              target_group_opt = st.radio(
+                  f'분류 기준 선택 (#{chart_idx})',
+                  options=['category4별', '보유 항목별'],
+                  horizontal=True,
+                  key=f'sub_group_opt_{prefix}_{chart_idx}'
+              )
+            with c_sub3:
+              pos_sub_stack = st.selectbox(
+                  f'📌 범례 배치 (#{chart_idx})',
+                  options=leg_pos_options,
+                  index=default_idx,
+                  key=f'pos_sub_stack_{prefix}_{chart_idx}'
               )
 
-            leg_cfg_sub, show_sub, margin_sub = build_legend_config(pos_sub_stack)
-            fig_sub_stack.update_layout(
-                title=dict(
-                    text=f'🔹 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
-                    y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
-                ),
-                barmode='stack',
-                hovermode='closest',
-                height=500,
-                margin=margin_sub,
-                showlegend=show_sub,
-                legend=leg_cfg_sub
-            )
-            fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
-            apply_y_axis_config(fig_sub_stack, is_money=True)
-            fig_sub_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+            target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
 
-            render_resizable_plotly_chart(fig_sub_stack, key=f'fig_sub_stack_{prefix}')
-          else:
-            st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
+            if selected_filter_items:
+              sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
+              sub_agg = sub_raw.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
+              
+              sub_agg['dt_temp'] = pd.to_datetime(sub_agg['Date'])
+              sub_agg = sub_agg.sort_values('dt_temp').reset_index(drop=True)
+              sub_agg['Chart_Date'] = sub_agg['dt_temp'].dt.strftime('%Y-%m-%d')
+              date_order = sorted(sub_agg['Chart_Date'].unique().tolist())
+
+              fig_sub_stack = go.Figure()
+              cat_list = sub_agg[target_col].unique().tolist()
+              for cat in cat_list:
+                c_df = sub_agg[sub_agg[target_col] == cat]
+                fig_sub_stack.add_trace(
+                    go.Bar(
+                        x=c_df['Chart_Date'],
+                        y=c_df['총평가금액'],
+                        name=str(cat),
+                        hovertemplate='%{y:,.0f} 원'
+                    )
+                )
+
+              leg_cfg_sub, show_sub, margin_sub = build_legend_config(pos_sub_stack)
+              fig_sub_stack.update_layout(
+                  title=dict(
+                      text=f'🔹 #{chart_idx} 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
+                      y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
+                  ),
+                  barmode='stack',
+                  hovermode='closest',
+                  height=500,
+                  margin=margin_sub,
+                  showlegend=show_sub,
+                  legend=leg_cfg_sub
+              )
+              fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
+              apply_y_axis_config(fig_sub_stack, is_money=True)
+              fig_sub_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
+
+              render_resizable_plotly_chart(fig_sub_stack, key=f'fig_sub_stack_{prefix}_{chart_idx}')
+            else:
+              st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
+
+          # 누적 차트 3개를 순서대로 독립 배치
+          for idx in range(1, 4):
+            render_stacked_bar_chart(idx)
+            if idx < 3:
+              st.write('---')
 
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
@@ -1474,7 +1484,6 @@ if menu == '트렌드 리포트':
               '총평가금액'
           ].diff()
           
-          # 전체 합산(WHOSE별) 뷰에서도 최종 조회 시점 평가금액 - 최초 조회 시점 평가금액 적용
           first_eval_val = grp_agg.groupby('whose')['총평가금액'].transform('first')
           grp_agg['선택구간 누적손익'] = grp_agg['총평가금액'] - first_eval_val
 
