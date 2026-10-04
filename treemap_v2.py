@@ -55,7 +55,7 @@ def get_connection():
 
 
 def export_backup_json():
-    """DB 내의 데이터를 JSON 백업 파일로 자동 저장 (whose 포함)"""
+    """DB 내의 데이터 및 분석 조건(Treemap 프리셋)을 하나의 JSON 백업 파일로 저장"""
     try:
         conn = get_connection()
         df = pd.read_sql("""
@@ -66,8 +66,29 @@ def export_backup_json():
         """, conn)
         conn.close()
         
-        records = df.to_dict(orient="records")
-        json_bytes = json.dumps(records, ensure_ascii=False, indent=2)
+        portfolio_records = df.to_dict(orient="records")
+        
+        # 분석 조건(프리셋) 정보 함께 읽기
+        presets_data = {}
+        _ensure_treemap_preset_dir()
+        if os.path.exists(TREEMAP_PRESET_DIR):
+            for fname in os.listdir(TREEMAP_PRESET_DIR):
+                if fname.endswith(".json"):
+                    preset_name = fname[:-5]
+                    fpath = os.path.join(TREEMAP_PRESET_DIR, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as pf:
+                            presets_data[preset_name] = json.load(pf)
+                    except Exception:
+                        pass
+
+        # 통합 백업 페이로드 생성
+        backup_payload = {
+            "portfolio": portfolio_records,
+            "treemap_presets": presets_data
+        }
+        
+        json_bytes = json.dumps(backup_payload, ensure_ascii=False, indent=2)
         with open(BACKUP_FILE, "w", encoding="utf-8") as f:
             f.write(json_bytes)
         return json_bytes
@@ -76,14 +97,25 @@ def export_backup_json():
 
 
 def import_backup_json(json_content, replace=True):
-    """JSON 백업 데이터를 DB로 복원 (whose 포함)"""
+    """JSON 백업 데이터를 DB 및 분석 조건(Treemap 프리셋) 파일로 복원"""
     try:
         if isinstance(json_content, bytes):
             json_content = json_content.decode("utf-8")
         data = json.loads(json_content)
         if not data:
             return 0
-        df = pd.DataFrame(data)
+        
+        # 하위 호환성 처리 (기존의 리스트 형태 백업 파일인 경우)
+        if isinstance(data, list):
+            portfolio_data = data
+            presets_data = {}
+        elif isinstance(data, dict):
+            portfolio_data = data.get("portfolio", [])
+            presets_data = data.get("treemap_presets", {})
+        else:
+            return 0
+
+        df = pd.DataFrame(portfolio_data)
         required_cols = [
             "record_date", "whose", "broker", "account_num", "account_type", "item_name",
             "ticker", "category1", "category2", "category3", "category4",
@@ -104,6 +136,12 @@ def import_backup_json(json_content, replace=True):
         df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
         conn.commit()
         conn.close()
+
+        # 분석 조건(프리셋) 복원
+        if presets_data:
+            _ensure_treemap_preset_dir()
+            for p_name, p_payload in presets_data.items():
+                save_treemap_preset(p_name, p_payload)
         
         export_backup_json()
         return len(df)
@@ -816,7 +854,6 @@ current_rate = st.sidebar.number_input(
     "현재 원/달러 환율 (KRW/USD)", value=st.session_state.live_rate_store, step=1.0
 )
 
-# [수정 사항 1] 시세 캐시 초기화 및 갱신 기능 정상화
 if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
     st.cache_data.clear()
     st.session_state.live_rate_store = fetch_live_exchange_rate()
@@ -875,7 +912,6 @@ if menu == "자산 입력 및 관리":
         horizontal=True,
     )
 
-    # [수정 사항 2] 웹 화면 직접 수정/편집 기능 정상화
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
@@ -1116,7 +1152,6 @@ if menu == "자산 입력 및 관리":
             except Exception as e:
                 st.error(f"오류: {e}")
 
-    # [수정 사항 3] 데이터 삭제 관리에서 체크박스를 사용한 직접 삭제 기능
     elif mode == "🗑 데이터 삭제 관리":
         if not df_raw.empty:
             st.subheader("🗑️ 데이터 삭제 관리 (체크박스 다중 선택 삭제)")
@@ -1407,6 +1442,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     )
                     saved = save_treemap_preset(save_name, payload)
                     if saved:
+                        export_backup_json()
                         st.success(f"분석 조건을 저장했습니다: {saved}")
                         st.rerun()
                     else:
@@ -1428,6 +1464,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 if load_name == "(선택)":
                     st.warning("삭제할 조건을 선택해 주세요.")
                 elif delete_treemap_preset(load_name):
+                    export_backup_json()
                     st.success(f"조건을 삭제했습니다: {load_name}")
                     st.rerun()
                 else:
@@ -1802,10 +1839,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             st.plotly_chart(fig_treemap, width="stretch")
 
-            # [수정 사항 4 및 5] 
-            # '선택 계층 별 평가액 및 전체 점유율 상세 요약' 및 
-            # '선택 시점 상세 보유 목록' 섹션 완전 삭제됨.
-
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
 # ---------------------------------------------------------
@@ -1813,6 +1846,7 @@ elif menu == "💾 데이터 백업 및 복구":
     st.header("💾 백업 및 데이터 관리")
     
     st.subheader("📤 데이터 내보내기 (JSON 파일 백업)")
+    st.caption("💡 DB 데이터뿐만 아니라 저장된 분석 조건(Treemap 프리셋)도 함께 백업 파일에 통합 포함됩니다.")
     json_data = export_backup_json()
     if json_data:
         st.download_button(
@@ -1824,6 +1858,7 @@ elif menu == "💾 데이터 백업 및 복구":
     
     st.markdown("---")
     st.subheader("📥 데이터 불러오기 (JSON 파일 복원)")
+    st.caption("💡 업로드 시 포트폴리오 데이터와 함께 저장된 분석 조건도 자동으로 복원됩니다.")
     uploaded_json = st.file_uploader("백업 JSON 파일 업로드", type=["json"])
     
     col_restore1, col_restore2 = st.columns(2)
@@ -1835,7 +1870,7 @@ elif menu == "💾 데이터 백업 및 복구":
             content = uploaded_json.read()
             count = import_backup_json(content, replace=replace_mode)
             if count > 0:
-                st.success(f"성공적으로 {count}개 항목을 복원했습니다!")
+                st.success(f"성공적으로 {count}개 항목 및 분석 조건을 복원했습니다!")
                 st.rerun()
             else:
                 st.error("데이터 복원에 실패했습니다. 파일 형식을 확인해주세요.")
