@@ -51,20 +51,19 @@ TREEMAP_COLOR_OPTIONS = [
 
 
 def get_connection():
-    return sqlite3.connect(DB_FILE)
+    return sqlite3.connect(DB_FILE, timeout=10.0)
 
 
 def export_backup_json():
     """DB 내의 데이터 및 분석 조건(Treemap 프리셋)을 하나의 JSON 백업 파일로 저장"""
+    conn = get_connection()
     try:
-        conn = get_connection()
         df = pd.read_sql("""
             SELECT record_date, whose, broker, account_num, account_type, item_name, ticker,
                    category1, category2, category3, category4, buy_price, quantity,
                    current_price, currency, exchange_rate
             FROM portfolio
         """, conn)
-        conn.close()
         
         portfolio_records = df.to_dict(orient="records")
         
@@ -94,10 +93,13 @@ def export_backup_json():
         return json_bytes
     except Exception:
         return None
+    finally:
+        conn.close()
 
 
 def import_backup_json(json_content, replace=True):
     """JSON 백업 데이터를 DB 및 분석 조건(Treemap 프리셋) 파일로 복원"""
+    conn = get_connection()
     try:
         if isinstance(json_content, bytes):
             json_content = json_content.decode("utf-8")
@@ -125,17 +127,18 @@ def import_backup_json(json_content, replace=True):
             if col not in df.columns:
                 df[col] = None
         df["currency"] = df["currency"].fillna("KRW")
-        df["exchange_rate"] = df["exchange_rate"].fillna(1.0)
+        df["exchange_rate"] = pd.to_numeric(df["exchange_rate"], errors="coerce").fillna(1.0)
         df["whose"] = df["whose"].fillna("본인")
+        df["buy_price"] = pd.to_numeric(df["buy_price"], errors="coerce").fillna(0.0)
+        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0)
+        df["current_price"] = pd.to_numeric(df["current_price"], errors="coerce").fillna(0.0)
         
-        conn = get_connection()
         cursor = conn.cursor()
         if replace:
             cursor.execute("DELETE FROM portfolio")
         
         df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
         conn.commit()
-        conn.close()
 
         # 분석 조건(프리셋) 복원
         if presets_data:
@@ -146,45 +149,51 @@ def import_backup_json(json_content, replace=True):
         export_backup_json()
         return len(df)
     except Exception:
+        conn.rollback()
         return 0
+    finally:
+        conn.close()
 
 
 def init_db():
     """DB 초기화 및 whose 컬럼 마이그레이션 적용"""
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            record_date TEXT,
-            whose TEXT DEFAULT '본인',
-            broker TEXT,
-            account_num TEXT,
-            account_type TEXT,
-            item_name TEXT,
-            ticker TEXT,
-            category1 TEXT,
-            category2 TEXT,
-            category3 TEXT,
-            category4 TEXT,
-            buy_price REAL,
-            quantity REAL,
-            current_price REAL,
-            currency TEXT DEFAULT 'KRW',
-            exchange_rate REAL DEFAULT 1.0
-        )
-    """)
-    conn.commit()
-    
-    cursor.execute("PRAGMA table_info(portfolio)")
-    columns = [column[1] for column in cursor.fetchall()]
-    if "whose" not in columns:
-        cursor.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT DEFAULT '본인'")
+    count = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_date TEXT,
+                whose TEXT DEFAULT '본인',
+                broker TEXT,
+                account_num TEXT,
+                account_type TEXT,
+                item_name TEXT,
+                ticker TEXT,
+                category1 TEXT,
+                category2 TEXT,
+                category3 TEXT,
+                category4 TEXT,
+                buy_price REAL,
+                quantity REAL,
+                current_price REAL,
+                currency TEXT DEFAULT 'KRW',
+                exchange_rate REAL DEFAULT 1.0
+            )
+        """)
         conn.commit()
+        
+        cursor.execute("PRAGMA table_info(portfolio)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "whose" not in columns:
+            cursor.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT DEFAULT '본인'")
+            conn.commit()
 
-    cursor.execute("SELECT COUNT(*) FROM portfolio")
-    count = cursor.fetchone()[0]
-    conn.close()
+        cursor.execute("SELECT COUNT(*) FROM portfolio")
+        count = cursor.fetchone()[0]
+    finally:
+        conn.close()
 
     if count == 0 and os.path.exists(BACKUP_FILE):
         try:
@@ -503,49 +512,71 @@ def normalize_ticker(ticker, currency):
 
 
 def fetch_live_ticker_price(ticker):
-    """단일 티커의 최신 시세 가져오기"""
+    """단일 티커의 최신 시세 가져오기 (정규장뿐만 아니라 Pre-market 및 Post-market 시장 시세 완벽 반영)"""
     if not ticker:
         return None
     try:
-        tk = yf.Ticker(ticker)
+        t_str = str(ticker).strip().upper()
+        tk = yf.Ticker(t_str)
+
+        # 1. 국내 주식(.KS, .KQ)은 프리/애프터마켓이 없으므로 fast_info로 즉시 반환
+        if t_str.endswith(".KS") or t_str.endswith(".KQ"):
+            fast_info = tk.fast_info
+            for key in ["lastPrice", "regularMarketPrice", "previousClose"]:
+                val = fast_info.get(key)
+                if val is not None and not pd.isna(val) and float(val) > 0:
+                    return round(float(val), 2)
+            hist = tk.history(period="1d")
+            if not hist.empty and not pd.isna(hist["Close"].iloc[-1]):
+                return round(float(hist["Close"].iloc[-1]), 2)
+            return None
+
+        # 2. 미국 주식 등 해외 주식: Pre-market / Regular / Post-market 정밀 판별
         fast_info = tk.fast_info
-        
         pre_price = fast_info.get("preMarketPrice")
         post_price = fast_info.get("postMarketPrice")
-        last_price = fast_info.get("lastPrice")
-        
+        last_price = fast_info.get("lastPrice") or fast_info.get("regularMarketPrice")
+
         info = {}
         try:
-            info = tk.info
+            info = tk.info or {}
         except Exception:
             pass
 
         pre_price = pre_price or info.get("preMarketPrice")
         post_price = post_price or info.get("postMarketPrice")
-        last_price = last_price or info.get("currentPrice") or info.get("regularMarketPrice")
+        reg_price = last_price or info.get("currentPrice") or info.get("regularMarketPrice")
         market_state = str(info.get("marketState", "")).upper()
 
-        if market_state == "PRE" and pre_price and not pd.isna(pre_price):
+        # (1) 프리마켓 시간대인 경우: Pre-market 가격 최우선
+        if market_state in ["PRE", "PREPRE"] and pre_price and not pd.isna(pre_price) and float(pre_price) > 0:
             return round(float(pre_price), 2)
-        elif market_state in ["POST", "POSTPOST"] and post_price and not pd.isna(post_price):
+
+        # (2) 애프터마켓 시간대인 경우: Post-market 가격 최우선
+        if market_state in ["POST", "POSTPOST"] and post_price and not pd.isna(post_price) and float(post_price) > 0:
             return round(float(post_price), 2)
-        elif market_state == "REGULAR" and last_price and not pd.isna(last_price):
-            return round(float(last_price), 2)
 
-        if post_price and not pd.isna(post_price):
+        # (3) 장마감(CLOSED) 상태: 당일 애프터마켓 거래가가 남아있으면 정규장 종가보다 최신이므로 우선 채택
+        if market_state == "CLOSED" and post_price and not pd.isna(post_price) and float(post_price) > 0:
             return round(float(post_price), 2)
-        if pre_price and not pd.isna(pre_price):
-            return round(float(pre_price), 2)
-        if last_price and not pd.isna(last_price):
-            return round(float(last_price), 2)
 
-        prev_close = fast_info.get("previousClose") or info.get("previousClose")
-        if prev_close and not pd.isna(prev_close):
-            return round(float(prev_close), 2)
+        # (4) 정규장(REGULAR) 시간대: 실시간 정규 체결가 우선
+        if market_state == "REGULAR" and reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
+            return round(float(reg_price), 2)
 
-        hist = tk.history(period="1d", prepost=True)
-        if not hist.empty:
-            return round(float(hist["Close"].iloc[-1]), 2)
+        # (5) 시장 상태 구분이 모호한 경우: 1분봉(prepost=True)으로 가장 최근 체결 틱 확인 (장전/정규/장후 통틀어 최신)
+        try:
+            hist_1m = tk.history(period="1d", interval="1m", prepost=True)
+            if not hist_1m.empty and not pd.isna(hist_1m["Close"].iloc[-1]):
+                return round(float(hist_1m["Close"].iloc[-1]), 2)
+        except Exception:
+            pass
+
+        # (6) Fallback: 유효한 가격 순차 탐색
+        for p in [post_price, pre_price, reg_price, fast_info.get("previousClose"), info.get("previousClose")]:
+            if p is not None and not pd.isna(p) and float(p) > 0:
+                return round(float(p), 2)
+
     except Exception:
         pass
     return None
@@ -574,22 +605,10 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str):
         return pd.DataFrame()
 
 
-def get_price_from_batch_data(market_data, ticker, target_date_str):
-    """배치 수집된 데이터프레임에서 특정 티커 및 날짜의 종가 추출"""
-    if not ticker:
+def _extract_ticker_series(market_data, ticker):
+    """배치 데이터프레임에서 특정 티커의 Close 시리즈를 안전하게 추출 (MultiIndex/SingleIndex 일관 처리)"""
+    if market_data is None or market_data.empty or not ticker:
         return None
-
-    today_dt = pd.to_datetime(datetime.now().strftime("%Y-%m-%d"))
-    target_dt = pd.to_datetime(target_date_str)
-
-    if target_dt >= today_dt:
-        live_p = fetch_live_ticker_price(ticker)
-        if live_p is not None:
-            return live_p
-
-    if market_data.empty:
-        return fetch_live_ticker_price(ticker)
-
     try:
         df_ticker = market_data
         if isinstance(market_data.columns, pd.MultiIndex):
@@ -598,102 +617,118 @@ def get_price_from_batch_data(market_data, ticker, target_date_str):
             elif ticker in market_data.columns.levels[1]:
                 df_ticker = market_data.xs(ticker, axis=1, level=1)
             else:
-                return fetch_live_ticker_price(ticker)
-
-        if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
-            df_ticker.index = df_ticker.index.tz_localize(None)
-
-        if "Close" in df_ticker.columns:
-            series = df_ticker["Close"]
-        else:
-            series = df_ticker
-
-        if series.empty:
-            return fetch_live_ticker_price(ticker)
-
-        valid_series = series[series.index <= target_dt].dropna()
-        if not valid_series.empty:
-            return round(float(valid_series.iloc[-1]), 2)
-    except Exception:
-        pass
-
-    return fetch_live_ticker_price(ticker)
-
-
-def _get_last_trading_day_before(m_data, ticker, target_date_dt):
-    """지정 날짜 이전의 가장 최근 거래일 종가를 가져옴"""
-    if not ticker or m_data.empty:
-        return None
-    try:
-        df_ticker = m_data
-        if isinstance(m_data.columns, pd.MultiIndex):
-            if ticker in m_data.columns.levels[0]:
-                df_ticker = m_data[ticker]
-            elif ticker in m_data.columns.levels[1]:
-                df_ticker = m_data.xs(ticker, axis=1, level=1)
-            else:
                 return None
         
         if hasattr(df_ticker.index, "tz") and df_ticker.index.tz is not None:
             df_ticker.index = df_ticker.index.tz_localize(None)
 
-        series = df_ticker["Close"] if "Close" in df_ticker.columns else df_ticker
-        valid_series = series[series.index <= target_date_dt].dropna()
-        if not valid_series.empty:
-            return float(valid_series.iloc[-1])
+        if "Close" in df_ticker.columns:
+            series = df_ticker["Close"]
+        elif isinstance(df_ticker, pd.Series):
+            series = df_ticker
+        else:
+            return None
+        return series.dropna()
+    except Exception:
+        return None
+
+
+def get_price_from_batch_data(market_data, ticker, target_date_str=None):
+    """배치 수집된 데이터프레임에서 우선 종가를 찾고, 없을 때만 개별 실시간 시세 조회"""
+    if not ticker:
+        return None
+
+    series = _extract_ticker_series(market_data, ticker)
+    if series is not None and not series.empty:
+        if target_date_str:
+            target_dt = pd.to_datetime(target_date_str)
+            valid = series[series.index <= target_dt]
+            if not valid.empty:
+                return round(float(valid.iloc[-1]), 2)
+        else:
+            return round(float(series.iloc[-1]), 2)
+
+    # 배치 데이터에 없거나 날짜 데이터가 비어 있는 경우에만 개별 실시간 시세 조회 fallback
+    return fetch_live_ticker_price(ticker)
+
+
+def _get_last_trading_day_before(m_data, ticker, target_date_dt):
+    """지정 날짜 이전의 가장 최근 거래일 종가를 가져옴"""
+    series = _extract_ticker_series(m_data, ticker)
+    if series is None or series.empty:
+        return None
+    try:
+        target_ts = pd.to_datetime(target_date_dt)
+        valid = series[series.index <= target_ts]
+        if not valid.empty:
+            return float(valid.iloc[-1])
     except Exception:
         pass
     return None
 
 
 def update_all_prices_and_rate_batch(curr_rate):
-    """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트"""
+    """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트 (티커별 단 1회 조회 최적화)"""
     conn = get_connection()
-    df = pd.read_sql("SELECT id, ticker, currency FROM portfolio", conn)
-    
-    if df.empty:
+    try:
+        df = pd.read_sql("SELECT id, ticker, currency FROM portfolio", conn)
+        if df.empty:
+            return 0
+
+        df["formatted_ticker"] = df.apply(
+            lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
+        )
+        valid_tickers = tuple(df["formatted_ticker"].dropna().unique().tolist())
+
+        today = datetime.now()
+        start_date_str = (today - timedelta(days=10)).strftime("%Y-%m-%d")
+        end_date_str = (today + timedelta(days=2)).strftime("%Y-%m-%d")
+
+        market_data = fetch_batch_market_data(valid_tickers, start_date_str, end_date_str)
+
+        # 티커별 최신 시세를 사전 계산하여 메모리 캐싱 (미국 주식은 프리/애프터마켓 실시간가 우선 반영)
+        price_cache = {}
+        for f_ticker in valid_tickers:
+            is_kr = f_ticker.endswith(".KS") or f_ticker.endswith(".KQ")
+            if not is_kr:
+                # 미국/해외 주식: 프리마켓/정규장/애프터마켓 실시간 시세 우선 수집
+                live_p = fetch_live_ticker_price(f_ticker)
+                if live_p is not None:
+                    price_cache[f_ticker] = live_p
+                else:
+                    price_cache[f_ticker] = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"))
+            else:
+                # 국내 주식: 일봉 배치 데이터 우선 (빠름)
+                batch_p = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"))
+                price_cache[f_ticker] = batch_p if batch_p is not None else fetch_live_ticker_price(f_ticker)
+
+        cursor = conn.cursor()
+        updated_count = 0
+        
+        for _, row in df.iterrows():
+            p_id = row["id"]
+            curr = row["currency"]
+            f_ticker = row["formatted_ticker"]
+            ex_rate = curr_rate if curr == "USD" else 1.0
+            new_price = price_cache.get(f_ticker)
+
+            if new_price is not None:
+                cursor.execute(
+                    "UPDATE portfolio SET current_price = ?, exchange_rate = ? WHERE id = ?",
+                    (new_price, ex_rate, p_id),
+                )
+                updated_count += 1
+            else:
+                cursor.execute(
+                    "UPDATE portfolio SET exchange_rate = ? WHERE id = ?",
+                    (ex_rate, p_id),
+                )
+
+        conn.commit()
+        export_backup_json()
+        return updated_count
+    finally:
         conn.close()
-        return 0
-
-    df["formatted_ticker"] = df.apply(
-        lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
-    )
-    valid_tickers = tuple(df["formatted_ticker"].dropna().unique().tolist())
-
-    today = datetime.now()
-    start_date_str = (today - timedelta(days=10)).strftime("%Y-%m-%d")
-    end_date_str = (today + timedelta(days=2)).strftime("%Y-%m-%d")
-
-    market_data = fetch_batch_market_data(valid_tickers, start_date_str, end_date_str)
-
-    cursor = conn.cursor()
-    updated_count = 0
-    
-    for _, row in df.iterrows():
-        p_id = row["id"]
-        curr = row["currency"]
-        f_ticker = row["formatted_ticker"]
-        ex_rate = curr_rate if curr == "USD" else 1.0
-
-        new_price = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"))
-
-        if new_price is not None:
-            cursor.execute(
-                "UPDATE portfolio SET current_price = ?, exchange_rate = ? WHERE id = ?",
-                (new_price, ex_rate, p_id),
-            )
-            updated_count += 1
-        else:
-            cursor.execute(
-                "UPDATE portfolio SET exchange_rate = ? WHERE id = ?",
-                (ex_rate, p_id),
-            )
-
-    conn.commit()
-    conn.close()
-    
-    export_backup_json()
-    return updated_count
 
 
 # ---------------------------------------------------------
@@ -702,8 +737,10 @@ def update_all_prices_and_rate_batch(curr_rate):
 @st.dialog("📈 매매(트레이딩) 입력 - 신규 매수 / 추가 매수 / 매도")
 def open_trading_dialog():
     conn = get_connection()
-    df = pd.read_sql("SELECT * FROM portfolio", conn)
-    conn.close()
+    try:
+        df = pd.read_sql("SELECT * FROM portfolio", conn)
+    finally:
+        conn.close()
 
     trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
 
@@ -730,17 +767,19 @@ def open_trading_dialog():
                     st.error("보유항목명, 단가, 수량을 정확히 입력해 주세요.")
                 else:
                     conn = get_connection()
-                    cursor = conn.cursor()
-                    ex_r = st.session_state.get("live_rate_store", 1350.0) if t_curr == "USD" else 1.0
-                    cursor.execute("""
-                        INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, buy_price, quantity, current_price, currency, exchange_rate)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (t_date, t_whose, t_broker, t_acc_num, t_acc_type, t_item, t_ticker, t_price, t_qty, t_price, t_curr, ex_r))
-                    conn.commit()
-                    conn.close()
-                    export_backup_json()
-                    st.success(f"🎉 '{t_item}' 신규 매수가 성공적으로 반영되었습니다!")
-                    st.rerun()
+                    try:
+                        cursor = conn.cursor()
+                        ex_r = st.session_state.get("live_rate_store", 1350.0) if t_curr == "USD" else 1.0
+                        cursor.execute("""
+                            INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, buy_price, quantity, current_price, currency, exchange_rate)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (t_date, t_whose, t_broker, t_acc_num, t_acc_type, t_item, t_ticker, t_price, t_qty, t_price, t_curr, ex_r))
+                        conn.commit()
+                        export_backup_json()
+                        st.success(f"🎉 '{t_item}' 신규 매수가 성공적으로 반영되었습니다!")
+                        st.rerun()
+                    finally:
+                        conn.close()
 
     else:
         if df.empty:
@@ -799,37 +838,43 @@ def open_trading_dialog():
             if submitted:
                 if trade_price <= 0 or trade_qty <= 0:
                     st.error("단가와 수량을 0보다 크게 입력해 주세요.")
+                elif "기존 종목 매도" in trade_type and trade_qty > old_qty:
+                    st.error(f"매도 수량({trade_qty:,.2f})이 현재 보유 수량({old_qty:,.2f})보다 많을 수 없습니다.")
                 else:
                     conn = get_connection()
-                    cursor = conn.cursor()
+                    try:
+                        cursor = conn.cursor()
 
-                    if "추가 매수" in trade_type:
-                        new_qty = old_qty + trade_qty
-                        new_buy_price = ((old_qty * old_buy_price) + (trade_qty * trade_price)) / new_qty
-                        cursor.execute("""
-                            UPDATE portfolio 
-                            SET quantity = ?, buy_price = ?, record_date = ? 
-                            WHERE id = ?
-                        """, (new_qty, new_buy_price, t_date, target_id))
-                        st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
-
-                    else:
-                        if trade_qty >= old_qty:
-                            cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
-                            st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다.")
-                        else:
-                            new_qty = old_qty - trade_qty
+                        if "추가 매수" in trade_type:
+                            new_qty = old_qty + trade_qty
+                            new_buy_price = ((old_qty * old_buy_price) + (trade_qty * trade_price)) / new_qty
                             cursor.execute("""
                                 UPDATE portfolio 
-                                SET quantity = ?, record_date = ? 
+                                SET quantity = ?, buy_price = ?, record_date = ? 
                                 WHERE id = ?
-                            """, (new_qty, t_date, target_id))
-                            st.success(f"🎉 '{item_name}' 부분 매도가 완료되었습니다! (잔여 수량: {new_qty:,.2f})")
+                            """, (new_qty, new_buy_price, t_date, target_id))
+                            st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
 
-                    conn.commit()
-                    conn.close()
-                    export_backup_json()
-                    st.rerun()
+                        else:
+                            if trade_qty == old_qty:
+                                cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
+                                realized_profit = (trade_price - old_buy_price) * old_qty
+                                st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다. (실현손익: {realized_profit:+,.0f})")
+                            else:
+                                new_qty = old_qty - trade_qty
+                                cursor.execute("""
+                                    UPDATE portfolio 
+                                    SET quantity = ?, record_date = ? 
+                                    WHERE id = ?
+                                """, (new_qty, t_date, target_id))
+                                realized_profit = (trade_price - old_buy_price) * trade_qty
+                                st.success(f"🎉 '{item_name}' 부분 매도가 완료되었습니다! (잔여 수량: {new_qty:,.2f}, 실현손익: {realized_profit:+,.0f})")
+
+                        conn.commit()
+                        export_backup_json()
+                        st.rerun()
+                    finally:
+                        conn.close()
 
 
 init_db()
@@ -875,10 +920,12 @@ menu = st.sidebar.selectbox(
 if menu == "자산 입력 및 관리":
     st.header("📝 자산 데이터 입력 & 수정")
     conn = get_connection()
-    df_raw = pd.read_sql(
-        "SELECT * FROM portfolio ORDER BY record_date DESC, id DESC", conn
-    )
-    conn.close()
+    try:
+        df_raw = pd.read_sql(
+            "SELECT * FROM portfolio ORDER BY record_date DESC, id DESC", conn
+        )
+    finally:
+        conn.close()
 
     st.subheader("🔄 일괄 업데이트 설정")
     rate_option = st.radio(
@@ -971,14 +1018,16 @@ if menu == "자산 입력 및 관리":
                     ids_to_delete = selected_to_delete["id"].dropna().tolist()
                     if ids_to_delete:
                         conn = get_connection()
-                        cursor = conn.cursor()
-                        cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
-                        conn.commit()
-                        conn.close()
-                        export_backup_json()
-                        st.session_state["select_all_flag"] = False
-                        st.success(f"선택한 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
-                        st.rerun()
+                        try:
+                            cursor = conn.cursor()
+                            cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
+                            conn.commit()
+                            export_backup_json()
+                            st.session_state["select_all_flag"] = False
+                            st.success(f"선택한 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
+                            st.rerun()
+                        finally:
+                            conn.close()
                     else:
                         st.warning("새로 입력되어 ID가 없는 행은 저장 시 반영되지 않습니다.")
                 else:
@@ -986,13 +1035,12 @@ if menu == "자산 입력 및 관리":
 
         with col_ed2:
             if st.button("💾 표 수정 및 변경사항 DB에 일괄 저장"):
-                conn = get_connection()
-                cursor = conn.cursor()
-
-                cursor.execute("DELETE FROM portfolio")
-                
                 save_df = edited_data.drop(columns=["선택(삭제)", "id"], errors="ignore")
                 
+                # 빈 행 및 유령 행 필터링 (보유항목명이 없는 행은 저장하지 않음)
+                if "item_name" in save_df.columns:
+                    save_df = save_df[save_df["item_name"].notna() & (save_df["item_name"].astype(str).str.strip() != "")]
+
                 for col in required_cols:
                     if col not in save_df.columns:
                         save_df[col] = None
@@ -1000,18 +1048,26 @@ if menu == "자산 입력 및 관리":
                 save_df["record_date"] = save_df["record_date"].fillna(datetime.now().strftime("%Y-%m-%d"))
                 save_df["whose"] = save_df["whose"].fillna("본인")
                 save_df["currency"] = save_df["currency"].fillna("KRW")
-                save_df["exchange_rate"] = save_df["exchange_rate"].fillna(1.0)
+                save_df["exchange_rate"] = pd.to_numeric(save_df["exchange_rate"], errors="coerce").fillna(1.0)
                 save_df["buy_price"] = pd.to_numeric(save_df["buy_price"], errors="coerce").fillna(0.0)
                 save_df["quantity"] = pd.to_numeric(save_df["quantity"], errors="coerce").fillna(0.0)
                 save_df["current_price"] = pd.to_numeric(save_df["current_price"], errors="coerce").fillna(0.0)
 
-                save_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
-                conn.commit()
-                conn.close()
-                export_backup_json()
-                st.session_state["select_all_flag"] = False
-                st.success("🎉 표 전체 변경사항이 성공적으로 저장되었습니다!")
-                st.rerun()
+                conn = get_connection()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM portfolio")
+                    save_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+                    conn.commit()
+                    export_backup_json()
+                    st.session_state["select_all_flag"] = False
+                    st.success("🎉 표 전체 변경사항이 성공적으로 저장되었습니다!")
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"저장 중 오류가 발생하여 롤백되었습니다: {e}")
+                finally:
+                    conn.close()
 
     elif mode == "신규 데이터 개별 추가":
         currency = st.selectbox("통화 단위 선택", ["KRW (원화)", "USD (달러)"])
@@ -1053,46 +1109,43 @@ if menu == "자산 입력 및 관리":
                 final_rate = ex_rate if is_usd else 1.0
                 if current_price == 0.0 and ticker:
                     f_ticker = normalize_ticker(ticker, curr_code)
-                    today_dt = datetime.now()
-                    today_str = today_dt.strftime("%Y-%m-%d")
-                    start_str = (today_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-                    end_str = (today_dt + timedelta(days=2)).strftime("%Y-%m-%d")
-                    m_data = fetch_batch_market_data((f_ticker,), start_str, end_str)
-                    fetched = get_price_from_batch_data(m_data, f_ticker, today_str)
+                    fetched = fetch_live_ticker_price(f_ticker)
                     if fetched:
                         current_price = fetched
 
                 conn = get_connection()
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, category1, category2, category3, category4, buy_price, quantity, current_price, currency, exchange_rate)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        record_date,
-                        whose,
-                        broker,
-                        account_num,
-                        account_type,
-                        item_name,
-                        ticker,
-                        category1,
-                        category2,
-                        category3,
-                        category4,
-                        buy_price,
-                        quantity,
-                        current_price,
-                        curr_code,
-                        final_rate,
-                    ),
-                )
-                conn.commit()
-                conn.close()
-                export_backup_json()
-                st.success("저장되었습니다.")
-                st.rerun()
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        """
+                        INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, category1, category2, category3, category4, buy_price, quantity, current_price, currency, exchange_rate)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            record_date,
+                            whose,
+                            broker,
+                            account_num,
+                            account_type,
+                            item_name,
+                            ticker,
+                            category1,
+                            category2,
+                            category3,
+                            category4,
+                            buy_price,
+                            quantity,
+                            current_price,
+                            curr_code,
+                            final_rate,
+                        ),
+                    )
+                    conn.commit()
+                    export_backup_json()
+                    st.success("저장되었습니다.")
+                    st.rerun()
+                finally:
+                    conn.close()
 
     elif mode == "엑셀 파일로 일괄 추가":
         st.subheader("📁 엑셀 / CSV 파일 업로드")
@@ -1135,20 +1188,29 @@ if menu == "자산 입력 및 관리":
                     upload_df["record_date"]
                 ).dt.strftime("%Y-%m-%d")
                 upload_df["currency"] = upload_df["currency"].fillna("KRW")
-                upload_df["exchange_rate"] = upload_df["exchange_rate"].fillna(1.0)
+                upload_df["exchange_rate"] = pd.to_numeric(upload_df["exchange_rate"], errors="coerce").fillna(1.0)
                 upload_df["whose"] = upload_df["whose"].fillna("본인")
+                upload_df["buy_price"] = pd.to_numeric(upload_df["buy_price"], errors="coerce").fillna(0.0)
+                upload_df["quantity"] = pd.to_numeric(upload_df["quantity"], errors="coerce").fillna(0.0)
+                upload_df["current_price"] = pd.to_numeric(upload_df["current_price"], errors="coerce").fillna(0.0)
+
+                # 빈 행 필터링
+                upload_df = upload_df[upload_df["item_name"].notna() & (upload_df["item_name"].astype(str).str.strip() != "")]
 
                 st.dataframe(upload_df[required_cols], width="stretch")
 
                 if st.button("DB에 일괄 저장하기"):
                     conn = get_connection()
-                    upload_df[required_cols].to_sql(
-                        "portfolio", conn, if_exists="append", index=False
-                    )
-                    conn.close()
-                    export_backup_json()
-                    st.success("WHOSE 포함 일괄 저장 완료!")
-                    st.rerun()
+                    try:
+                        upload_df[required_cols].to_sql(
+                            "portfolio", conn, if_exists="append", index=False
+                        )
+                        conn.commit()
+                        export_backup_json()
+                        st.success("WHOSE 포함 일괄 저장 완료!")
+                        st.rerun()
+                    finally:
+                        conn.close()
             except Exception as e:
                 st.error(f"오류: {e}")
 
@@ -1177,13 +1239,15 @@ if menu == "자산 입력 및 관리":
                 if not selected_del_df.empty:
                     ids_to_delete = selected_del_df["id"].tolist()
                     conn = get_connection()
-                    cursor = conn.cursor()
-                    cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
-                    conn.commit()
-                    conn.close()
-                    export_backup_json()
-                    st.success(f"총 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
-                    st.rerun()
+                    try:
+                        cursor = conn.cursor()
+                        cursor.executemany("DELETE FROM portfolio WHERE id = ?", [(i,) for i in ids_to_delete])
+                        conn.commit()
+                        export_backup_json()
+                        st.success(f"총 {len(ids_to_delete)}개 항목이 성공적으로 삭제되었습니다!")
+                        st.rerun()
+                    finally:
+                        conn.close()
                 else:
                     st.warning("삭제할 항목을 최소 1개 이상 체크해 주세요.")
         else:
@@ -1198,8 +1262,10 @@ if menu == "자산 입력 및 관리":
 elif menu == "일별/시점별 보유 현황 분석":
     st.header("🔍 시점별 자산 보유 현황")
     conn = get_connection()
-    df = pd.read_sql("SELECT * FROM portfolio", conn)
-    conn.close()
+    try:
+        df = pd.read_sql("SELECT * FROM portfolio", conn)
+    finally:
+        conn.close()
 
     if df.empty:
         st.info("데이터가 없습니다.")
@@ -1289,12 +1355,15 @@ elif menu == "일별/시점별 보유 현황 분석":
                     
                     m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str)
 
+                    # 티커별 가격 맵을 생성하여 O(N) 순회 최적화
+                    hist_price_map = {}
+                    for tk in tickers:
+                        hist_price_map[tk] = get_price_from_batch_data(m_data, tk, target_eval_date)
+
                     for idx, row in sub_df.iterrows():
-                        h_price = get_price_from_batch_data(
-                            m_data, row["formatted_ticker"], target_eval_date
-                        )
-                        if h_price is not None:
-                            sub_df.at[idx, "current_price"] = h_price
+                        tk = row["formatted_ticker"]
+                        if tk in hist_price_map and hist_price_map[tk] is not None:
+                            sub_df.at[idx, "current_price"] = hist_price_map[tk]
 
             sub_df["rate_multiplier"] = sub_df.apply(
                 lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
@@ -1510,6 +1579,12 @@ elif menu == "일별/시점별 보유 현황 분석":
                 with st.spinner(f"[{color_option}] 기준 종가 배치 계산 중..."):
                     m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt)
 
+                    # 티커별 기준가를 사전에 한 번만 계산 (N+1 반복 조회 방지)
+                    ticker_base_prices = {}
+                    for tk in tickers:
+                        if tk:
+                            ticker_base_prices[tk] = _get_last_trading_day_before(m_data, tk, target_base_dt)
+
                     for _, row in sub_df.iterrows():
                         f_ticker = row["formatted_ticker"]
                         curr_p = row["current_price"]
@@ -1518,16 +1593,11 @@ elif menu == "일별/시점별 보유 현황 분석":
                         rate = 0.0
                         profit_amt = 0.0
 
-                        if not f_ticker or not curr_p:
-                            change_rates.append(rate)
-                            period_profits.append(profit_amt)
-                            continue
-
-                        base_price = _get_last_trading_day_before(m_data, f_ticker, target_base_dt)
-
-                        if base_price and float(base_price) > 0:
-                            rate = round(((float(curr_p) - float(base_price)) / float(base_price)) * 100, 2)
-                            profit_amt = (float(curr_p) - float(base_price)) * ex_r * qty
+                        if f_ticker and curr_p:
+                            base_price = ticker_base_prices.get(f_ticker)
+                            if base_price and float(base_price) > 0:
+                                rate = round(((float(curr_p) - float(base_price)) / float(base_price)) * 100, 2)
+                                profit_amt = (float(curr_p) - float(base_price)) * ex_r * qty
 
                         change_rates.append(rate)
                         period_profits.append(profit_amt)
@@ -1742,7 +1812,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     
                     for depth, col in enumerate(active_group_cols):
                         val_str = str(row[col])
-                        current_id_path = f"{current_id_path}/{val_str}" if current_id_path else val_str
+                        current_id_path = f"{current_id_path} > {val_str}" if current_id_path else val_str
                         
                         if current_id_path not in built_nodes:
                             built_nodes.add(current_id_path)
@@ -1764,8 +1834,12 @@ elif menu == "일별/시점별 보유 현황 분석":
                                 grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
 
                             if depth == len(active_group_cols) - 1:
-                                price_sym = "$" if row["currency"] == "USD" else "₩"
-                                disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                                # 최하위 레벨이 단일 종목일 때만 단가 표시 (다중 종목 묶음 왜곡 방지)
+                                if len(sub_grp["formatted_ticker"].dropna().unique()) <= 1 and len(sub_grp["current_price"].dropna().unique()) == 1:
+                                    price_sym = "$" if row["currency"] == "USD" else "₩"
+                                    disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                                else:
+                                    disp_price = "-"
                             else:
                                 disp_price = "-"
 
