@@ -598,13 +598,10 @@ def fetch_live_ticker_price(ticker, regular_only=None):
 
 @st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_only=None):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
+    """모든 종목의 일봉 종가 데이터를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
-
-    if regular_only is None:
-        regular_only = st.session_state.get("regular_market_only", False)
 
     ticker_str = " ".join(list(set(tickers)))
     try:
@@ -615,7 +612,7 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            prepost=not regular_only,
+            prepost=False,  # 일봉 배치 시세 수집 시 prepost=False로 일봉 종가 데이터 규격 통일
         )
         return data
     except Exception:
