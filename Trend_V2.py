@@ -802,12 +802,35 @@ if menu == '트렌드 리포트':
             key='live_chart_layout',
         )
 
+      def on_global_legend_change():
+        new_val = st.session_state.get('live_legend_pos')
+        if new_val:
+          for k in list(st.session_state.keys()):
+            if k.startswith('pos_'):
+              st.session_state[k] = new_val
+          st.session_state['_prev_live_legend_pos'] = new_val
+
+      if '_prev_live_legend_pos' not in st.session_state:
+        st.session_state['_prev_live_legend_pos'] = st.session_state.get('live_legend_pos', '하단 배치')
+      elif (
+          st.session_state.get('live_legend_pos')
+          and st.session_state['live_legend_pos'] != st.session_state['_prev_live_legend_pos']
+      ):
+        on_global_legend_change()
+
+      def get_chart_legend_idx(key_name, current_global_val, options_list):
+        if key_name not in st.session_state:
+          st.session_state[key_name] = current_global_val
+        val = st.session_state.get(key_name, current_global_val)
+        return options_list.index(val) if val in options_list else 0
+
       with disp_col2:
         global_legend_pos = st.selectbox(
             '📌 공통 범례(Legend) 기본 배치',
-            options=['하단 배치', '우측 배치'],
+            options=['하단 배치', '우측 배치', '숨김'],
             index=0,
             key='live_legend_pos',
+            on_change=on_global_legend_change,
             help='기본 범례 위치를 선택합니다. 각 차트별로 개별 변경도 가능합니다.',
         )
 
@@ -1056,7 +1079,7 @@ if menu == '트렌드 리포트':
           pos_g1 = st.selectbox(
               '선택누적손익',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx(f'pos_g1_{prefix}', global_legend_pos, leg_pos_options),
               key=f'pos_g1_{prefix}',
           )
           ex_g1 = st.toggle('🔀 환차손제외', key=f'ex_g1_{prefix}')
@@ -1064,7 +1087,7 @@ if menu == '트렌드 리포트':
           pos_g2 = st.selectbox(
               '주기별손익',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx(f'pos_g2_{prefix}', global_legend_pos, leg_pos_options),
               key=f'pos_g2_{prefix}',
           )
           ex_g2 = st.toggle('🔀 환차손제외', key=f'ex_g2_{prefix}')
@@ -1072,7 +1095,7 @@ if menu == '트렌드 리포트':
           pos_g3 = st.selectbox(
               '주기별수익률',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx(f'pos_g3_{prefix}', global_legend_pos, leg_pos_options),
               key=f'pos_g3_{prefix}',
           )
           ex_g3 = st.toggle('🔀 환차손제외', key=f'ex_g3_{prefix}')
@@ -1080,7 +1103,7 @@ if menu == '트렌드 리포트':
           pos_g4 = st.selectbox(
               '기간누적수익률',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx(f'pos_g4_{prefix}', global_legend_pos, leg_pos_options),
               key=f'pos_g4_{prefix}',
           )
           ex_g4 = st.toggle('🔀 환차손제외', key=f'ex_g4_{prefix}')
@@ -1374,43 +1397,83 @@ if menu == '트렌드 리포트':
         if group_col in ['account_num', 'account_type']:
           st.write('---')
           st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트 (총 3개 개별 분석)')
-          
+
+          c_s_ctrl, _ = st.columns([3, 3])
+          with c_s_ctrl:
+            stack_layout_opt = st.radio(
+                f'🖥️ [{prefix}] 누적 차트 Layout 선택',
+                options=['1열 (기존 세로 배치)', '2열 (좌우 2개 분할 배치)'],
+                horizontal=True,
+                key=f'stack_layout_{prefix}',
+            )
+
           all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
-          
+
           # -------------------------------------------------------------------
           # 헬퍼 함수: 개별 누적 막대 차트 생성 및 렌더링
           # -------------------------------------------------------------------
           def render_stacked_bar_chart(chart_idx):
             st.markdown(f'##### 📌 누적 차트 #{chart_idx}')
-            c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
-            with c_sub1:
-              selected_filter_items = st.multiselect(
-                  f'특정 {prefix} 선택 (#{chart_idx})',
-                  options=all_filter_items,
-                  default=all_filter_items,
-                  key=f'sub_filter_{prefix}_{chart_idx}'
-              )
-            with c_sub2:
-              target_group_opt = st.radio(
-                  f'분류 기준 선택 (#{chart_idx})',
-                  options=['category4별', '보유 항목별'],
-                  horizontal=True,
-                  key=f'sub_group_opt_{prefix}_{chart_idx}'
-              )
-            with c_sub3:
+            if '2열' in stack_layout_opt:
+              c_sub1, c_sub2 = st.columns([1.2, 0.8])
+              with c_sub1:
+                selected_filter_items = st.multiselect(
+                    f'특정 {prefix} 선택 (#{chart_idx})',
+                    options=all_filter_items,
+                    default=all_filter_items,
+                    key=f'sub_filter_{prefix}_{chart_idx}',
+                )
+              with c_sub2:
+                target_group_opt = st.radio(
+                    f'분류 기준 선택 (#{chart_idx})',
+                    options=['category4별', '보유 항목별'],
+                    horizontal=True,
+                    key=f'sub_group_opt_{prefix}_{chart_idx}',
+                )
               pos_sub_stack = st.selectbox(
                   f'📌 범례 배치 (#{chart_idx})',
                   options=leg_pos_options,
-                  index=default_idx,
-                  key=f'pos_sub_stack_{prefix}_{chart_idx}'
+                  index=get_chart_legend_idx(
+                      f'pos_sub_stack_{prefix}_{chart_idx}',
+                      global_legend_pos,
+                      leg_pos_options,
+                  ),
+                  key=f'pos_sub_stack_{prefix}_{chart_idx}',
               )
+            else:
+              c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
+              with c_sub1:
+                selected_filter_items = st.multiselect(
+                    f'특정 {prefix} 선택 (#{chart_idx})',
+                    options=all_filter_items,
+                    default=all_filter_items,
+                    key=f'sub_filter_{prefix}_{chart_idx}',
+                )
+              with c_sub2:
+                target_group_opt = st.radio(
+                    f'분류 기준 선택 (#{chart_idx})',
+                    options=['category4별', '보유 항목별'],
+                    horizontal=True,
+                    key=f'sub_group_opt_{prefix}_{chart_idx}',
+                )
+              with c_sub3:
+                pos_sub_stack = st.selectbox(
+                    f'📌 범례 배치 (#{chart_idx})',
+                    options=leg_pos_options,
+                    index=get_chart_legend_idx(
+                        f'pos_sub_stack_{prefix}_{chart_idx}',
+                        global_legend_pos,
+                        leg_pos_options,
+                    ),
+                    key=f'pos_sub_stack_{prefix}_{chart_idx}',
+                )
 
             target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
 
             if selected_filter_items:
               sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
               sub_agg = sub_raw.groupby(['Date', target_col])['총평가금액'].sum().reset_index()
-              
+
               sub_agg['dt_temp'] = pd.to_datetime(sub_agg['Date'])
               sub_agg = sub_agg.sort_values('dt_temp').reset_index(drop=True)
               sub_agg['Chart_Date'] = sub_agg['dt_temp'].dt.strftime('%Y-%m-%d')
@@ -1450,11 +1513,22 @@ if menu == '트렌드 리포트':
             else:
               st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
 
-          # 누적 차트 3개를 순서대로 독립 배치
-          for idx in range(1, 4):
-            render_stacked_bar_chart(idx)
-            if idx < 3:
-              st.write('---')
+          # 누적 차트 3개 배치 (1열 vs 2열)
+          if '2열' in stack_layout_opt:
+            col_sb1, col_sb2 = st.columns(2)
+            with col_sb1:
+              render_stacked_bar_chart(1)
+            with col_sb2:
+              render_stacked_bar_chart(2)
+            st.write('---')
+            col_sb3, _ = st.columns(2)
+            with col_sb3:
+              render_stacked_bar_chart(3)
+          else:
+            for idx in range(1, 4):
+              render_stacked_bar_chart(idx)
+              if idx < 3:
+                st.write('---')
 
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
@@ -1586,7 +1660,7 @@ if menu == '트렌드 리포트':
           pos_w1 = st.selectbox(
               '1. 전체 자산 평가 금액',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx('pos_w1_total', global_legend_pos, leg_pos_options),
               key='pos_w1_total',
           )
           ex_w1 = st.toggle('🔀 환차손제외 (1번)', key='ex_w1_total')
@@ -1594,7 +1668,7 @@ if menu == '트렌드 리포트':
           pos_w2 = st.selectbox(
               '2. 구간 손익 금액 추이',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx('pos_w2_total', global_legend_pos, leg_pos_options),
               key='pos_w2_total',
           )
           ex_w2 = st.toggle('🔀 환차손제외 (2번)', key='ex_w2_total')
@@ -1602,7 +1676,7 @@ if menu == '트렌드 리포트':
           pos_w3 = st.selectbox(
               '3-1. 구간 누적수익률',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx('pos_w3_total', global_legend_pos, leg_pos_options),
               key='pos_w3_total',
           )
           ex_w3 = st.toggle('🔀 환차손제외 (3-1번)', key='ex_w3_total')
@@ -1610,7 +1684,7 @@ if menu == '트렌드 리포트':
           pos_w4 = st.selectbox(
               '3-2. 주기별 수익률',
               leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx('pos_w4_total', global_legend_pos, leg_pos_options),
               key='pos_w4_total',
           )
           ex_w4 = st.toggle('🔀 환차손제외 (3-2번)', key='ex_w4_total')
@@ -1916,7 +1990,7 @@ if menu == '트렌드 리포트':
           pos_total_stack = st.selectbox(
               '📌 범례(Legend) 배치',
               options=leg_pos_options,
-              index=default_idx,
+              index=get_chart_legend_idx('pos_total_stack', global_legend_pos, leg_pos_options),
               key='pos_total_stack'
           )
         
