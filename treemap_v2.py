@@ -905,6 +905,15 @@ if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
     st.sidebar.success("시세 캐시가 초기화되고 최신 환율이 반영되었습니다!")
     st.rerun()
 
+if st.sidebar.button("⚡ 실시간 환율 및 전체 최신 시세 일괄 업데이트"):
+    with st.spinner("실시간 환율 조회 및 전체 종목 최신 시세 업데이트 중..."):
+        st.cache_data.clear()
+        target_rate = fetch_live_exchange_rate()
+        st.session_state.live_rate_store = target_rate
+        cnt = update_all_prices_and_rate_batch(target_rate)
+        st.sidebar.success(f"업데이트 완료! (적용 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
+        st.rerun()
+
 menu = st.sidebar.selectbox(
     "메뉴 선택",
     [
