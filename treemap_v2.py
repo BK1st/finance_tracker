@@ -511,12 +511,10 @@ def normalize_ticker(ticker, currency):
     return t_str
 
 
-def fetch_live_ticker_price(ticker, regular_only=None):
-    """단일 티커의 최신 시세 가져오기 (정규장만 반영 옵션 지원)"""
+def fetch_live_ticker_price(ticker, regular_only=False):
+    """단일 티커의 최신 시세 가져오기 (regular_only=True일 경우 Pre/Post-market 제외하고 정규장 마감가/현재가 반영)"""
     if not ticker:
         return None
-    if regular_only is None:
-        regular_only = st.session_state.get("regular_market_only", False)
     try:
         t_str = str(ticker).strip().upper()
         tk = yf.Ticker(t_str)
@@ -533,7 +531,26 @@ def fetch_live_ticker_price(ticker, regular_only=None):
                 return round(float(hist["Close"].iloc[-1]), 2)
             return None
 
-        # 2. 미국 주식 등 해외 주식
+        # 2. 정규장만 반영 옵션이 켜진 경우 (Pre/Post-market 제외)
+        if regular_only:
+            fast_info = tk.fast_info
+            reg_price = fast_info.get("regularMarketPrice") or fast_info.get("lastPrice")
+            info = {}
+            try:
+                info = tk.info or {}
+            except Exception:
+                pass
+            reg_price = reg_price or info.get("regularMarketPrice") or info.get("currentPrice")
+            if reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
+                return round(float(reg_price), 2)
+            
+            # regularMarketPrice 추출 실패 시 prepost=False로 일봉 종가 사용
+            hist = tk.history(period="5d", prepost=False)
+            if not hist.empty and not pd.isna(hist["Close"].iloc[-1]):
+                return round(float(hist["Close"].iloc[-1]), 2)
+            return None
+
+        # 3. 미국 주식 등 해외 주식: Pre-market / Regular / Post-market 정밀 판별
         fast_info = tk.fast_info
         pre_price = fast_info.get("preMarketPrice")
         post_price = fast_info.get("postMarketPrice")
@@ -549,18 +566,6 @@ def fetch_live_ticker_price(ticker, regular_only=None):
         post_price = post_price or info.get("postMarketPrice")
         reg_price = last_price or info.get("currentPrice") or info.get("regularMarketPrice")
         market_state = str(info.get("marketState", "")).upper()
-
-        # 정규장만 반영 옵션이 활성화된 경우: 프리/애프터마켓 가격 및 prepost 1분봉 조회 안 함
-        if regular_only:
-            if reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
-                return round(float(reg_price), 2)
-            hist = tk.history(period="1d", prepost=False)
-            if not hist.empty and not pd.isna(hist["Close"].iloc[-1]):
-                return round(float(hist["Close"].iloc[-1]), 2)
-            for p in [reg_price, fast_info.get("previousClose"), info.get("previousClose")]:
-                if p is not None and not pd.isna(p) and float(p) > 0:
-                    return round(float(p), 2)
-            return None
 
         # (1) 프리마켓 시간대인 경우: Pre-market 가격 최우선
         if market_state in ["PRE", "PREPRE"] and pre_price and not pd.isna(pre_price) and float(pre_price) > 0:
@@ -578,7 +583,7 @@ def fetch_live_ticker_price(ticker, regular_only=None):
         if market_state == "REGULAR" and reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
             return round(float(reg_price), 2)
 
-        # (5) 시장 상태 구분이 모호한 경우: 1분봉(prepost=True)으로 가장 최근 체결 틱 확인
+        # (5) 시장 상태 구분이 모호한 경우: 1분봉(prepost=True)으로 가장 최근 체결 틱 확인 (장전/정규/장후 통틀어 최신)
         try:
             hist_1m = tk.history(period="1d", interval="1m", prepost=True)
             if not hist_1m.empty and not pd.isna(hist_1m["Close"].iloc[-1]):
@@ -597,8 +602,8 @@ def fetch_live_ticker_price(ticker, regular_only=None):
 
 
 @st.cache_data(ttl=300)
-def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_only=None):
-    """모든 종목의 일봉 종가 데이터를 yf.download로 요청하여 캐싱"""
+def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_only=False):
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (regular_only=True일 시 prepost=False 적용)"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -612,7 +617,7 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            prepost=False,  # 일봉 배치 시세 수집 시 prepost=False로 일봉 종가 데이터 규격 통일
+            prepost=not regular_only,
         )
         return data
     except Exception:
@@ -647,13 +652,10 @@ def _extract_ticker_series(market_data, ticker):
         return None
 
 
-def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular_only=None):
+def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular_only=False):
     """배치 수집된 데이터프레임에서 우선 종가를 찾고, 없을 때만 개별 실시간 시세 조회"""
     if not ticker:
         return None
-
-    if regular_only is None:
-        regular_only = st.session_state.get("regular_market_only", False)
 
     series = _extract_ticker_series(market_data, ticker)
     if series is not None and not series.empty:
@@ -684,11 +686,8 @@ def _get_last_trading_day_before(m_data, ticker, target_date_dt):
     return None
 
 
-def update_all_prices_and_rate_batch(curr_rate, regular_only=None):
+def update_all_prices_and_rate_batch(curr_rate, regular_only=False):
     """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트 (티커별 단 1회 조회 최적화)"""
-    if regular_only is None:
-        regular_only = st.session_state.get("regular_market_only", False)
-
     conn = get_connection()
     try:
         df = pd.read_sql("SELECT id, ticker, currency FROM portfolio", conn)
@@ -711,7 +710,7 @@ def update_all_prices_and_rate_batch(curr_rate, regular_only=None):
         for f_ticker in valid_tickers:
             is_kr = f_ticker.endswith(".KS") or f_ticker.endswith(".KQ")
             if not is_kr:
-                # 미국/해외 주식: 정규장만 반영 여부에 따라 시세 수집
+                # 미국/해외 주식: regular_only 여부에 따라 시세 수집
                 live_p = fetch_live_ticker_price(f_ticker, regular_only=regular_only)
                 if live_p is not None:
                     price_cache[f_ticker] = live_p
@@ -763,6 +762,8 @@ def open_trading_dialog():
         conn.close()
 
     trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
+
+    regular_only = st.session_state.get("regular_market_only", False)
 
     if trade_type == "신규 매수":
         st.caption("새로운 종목이나 계좌를 포트폴리오에 신규 추가합니다.")
@@ -911,9 +912,6 @@ st.markdown(
 
 st.title("📈 나만의 주식/자산 관리 프로그램")
 
-# ---------------------------------------------------------
-# 좌측 사이드바 설정
-# ---------------------------------------------------------
 st.sidebar.header("💱 환율 정보")
 if "live_rate_store" not in st.session_state:
     st.session_state.live_rate_store = get_exchange_rate()
@@ -922,12 +920,13 @@ current_rate = st.sidebar.number_input(
     "현재 원/달러 환율 (KRW/USD)", value=st.session_state.live_rate_store, step=1.0
 )
 
-st.sidebar.header("⚙️ 시세 수집 설정")
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ 시세 옵션")
 regular_market_only = st.sidebar.checkbox(
-    "정규장만 반영",
-    value=st.session_state.get("regular_market_only", False),
+    "정규장만 반영 (Pre/Post-market 제외)",
+    value=False,
     key="regular_market_only",
-    help="체크 시 미국 주식 등의 프리마켓/애프터마켓 시세를 제외하고 정규장 시세만 반영합니다."
+    help="체크 시 프리마켓 및 애프터마켓 시세를 제외하고 정규장 마감일/정규장 종가 시세를 기준으로 등락률을 계산합니다."
 )
 
 if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
@@ -1778,117 +1777,213 @@ elif menu == "일별/시점별 보유 현황 분석":
                     "점유율(%)": lambda x: x["share"],
                     "구분 항목": lambda x: x["label"],
                 }
-                getter = key_map.get(target_sort_col, lambda x: x["eval"])
-                nodes.sort(key=getter, reverse=reverse_flag)
+                key_fn = key_map.get(target_sort_col, lambda x: x["eval"])
+                nodes.sort(key=key_fn, reverse=reverse_flag)
                 for node in nodes:
-                    if node["children"]:
+                    if node.get("children"):
                         sort_tree_nodes(node["children"], target_sort_col, reverse_flag)
 
-            sort_tree_nodes(nested_nodes, sort_by_col, is_reverse)
+            if nested_nodes:
+                sort_tree_nodes(nested_nodes, sort_by_col, is_reverse)    
+
+            total_row_profit = filtered_df["선택기준_평가손익(원)"].sum()
+            total_row_buy = filtered_df["매입총액(원)"].sum()
+            if color_option == "총 누적 수익률 (%)":
+                total_row_rate = (total_row_profit / total_row_buy * 100) if total_row_buy != 0 else 0.0
+            else:
+                past_total_eval = active_total_eval - total_row_profit
+                total_row_rate = (total_row_profit / past_total_eval * 100) if past_total_eval != 0 else 0.0
 
             flat_rows = []
+            next_id = [1]
+            flat_rows.append({
+                "id": 0,
+                "parent_id": None,
+                "depth": -1,
+                "has_children": bool(nested_nodes),
+                "label": view_root_label,
+                "eval": active_total_eval,
+                "profit": total_row_profit,
+                "rate": total_row_rate,
+                "share": 100.0,
+            })
 
-            def flatten_tree_nodes(nodes, parent_id=None, depth=0):
-                for idx, node in enumerate(nodes):
-                    node_id = f"{parent_id}_{idx}" if parent_id else f"node_{idx}"
-                    has_children = len(node["children"]) > 0
+            def flatten_nodes(nodes, parent_id, depth):
+                for node in nodes:
+                    row_id = next_id[0]
+                    next_id[0] += 1
+                    kids = node.get("children") or []
                     flat_rows.append({
-                        "id": node_id,
+                        "id": row_id,
                         "parent_id": parent_id,
                         "depth": depth,
+                        "has_children": bool(kids),
                         "label": node["label"],
                         "eval": node["eval"],
                         "profit": node["profit"],
                         "rate": node["rate"],
                         "share": node["share"],
-                        "has_children": has_children,
                     })
-                    if has_children:
-                        flatten_tree_nodes(node["children"], parent_id=node_id, depth=depth + 1)
+                    if kids:
+                        flatten_nodes(kids, row_id, depth + 1)
 
-            # 최상위 Root 요약 행 추가
-            if color_option == "총 누적 수익률 (%)":
-                active_profit = filtered_df["평가손익(원)"].sum()
-                active_buy = filtered_df["매입총액(원)"].sum()
-                active_rate = (active_profit / active_buy * 100) if active_buy != 0 else 0.0
-            else:
-                active_profit = filtered_df["선택기준_평가손익(원)"].sum()
-                past_eval = active_total_eval - active_profit
-                active_rate = (active_profit / past_eval * 100) if past_eval != 0 else 0.0
-
-            root_row = {
-                "id": "root_0",
-                "parent_id": None,
-                "depth": 0,
-                "label": view_root_label,
-                "eval": active_total_eval,
-                "profit": active_profit,
-                "rate": active_rate,
-                "share": 100.0,
-                "has_children": len(nested_nodes) > 0,
-            }
-
-            flat_rows.append(root_row)
-            flatten_tree_nodes(nested_nodes, parent_id="root_0", depth=1)
-
+            flatten_nodes(nested_nodes, 0, 0)
             render_expandable_tree_table(flat_rows, profit_col_label, rate_col_label)
+            st.markdown("")
 
-            st.markdown("---")
+            ids, labels, parents, values = [], [], [], []
+            custom_rates, custom_prices, custom_profits = [], [], []
 
-            # Treemap 시각화
-            if not filtered_df.empty and active_group_cols:
-                fig_df = filtered_df.copy()
-                fig = px.treemap(
-                    fig_df,
-                    path=active_group_cols,
-                    values="평가액(원)",
-                    color=color_col,
-                    color_continuous_scale="RdYlGn",
-                    color_continuous_midpoint=0,
-                    title=f"📊 Treemap 계층 분석 ({view_root_label})",
+            ids.append("Root")
+            labels.append(view_root_label)
+            parents.append("")
+            values.append(active_total_eval)
+            custom_rates.append(total_row_rate)
+            custom_prices.append("-")
+            custom_profits.append(total_row_profit)
+
+            built_nodes = set(["Root"])
+
+            if active_group_cols:
+                for idx_row, row in filtered_df.iterrows():
+                    current_parent = "Root"
+                    current_id_path = ""
+                    
+                    for depth, col in enumerate(active_group_cols):
+                        val_str = str(row[col])
+                        current_id_path = f"{current_id_path} > {val_str}" if current_id_path else val_str
+                        
+                        if current_id_path not in built_nodes:
+                            built_nodes.add(current_id_path)
+                            
+                            filter_mask = pd.Series(True, index=filtered_df.index)
+                            for k in range(depth + 1):
+                                filter_mask &= (filtered_df[active_group_cols[k]] == row[active_group_cols[k]])
+                            
+                            sub_grp = filtered_df[filter_mask]
+                            
+                            grp_eval = sub_grp["평가액(원)"].sum()
+                            grp_buy = sub_grp["매입총액(원)"].sum()
+                            grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
+                            
+                            if color_option == "총 누적 수익률 (%)":
+                                grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
+                            else:
+                                grp_past_eval = grp_eval - grp_profit
+                                grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
+
+                            if depth == len(active_group_cols) - 1:
+                                # 최하위 레벨이 단일 종목일 때만 단가 표시 (다중 종목 묶음 왜곡 방지)
+                                if len(sub_grp["formatted_ticker"].dropna().unique()) <= 1 and len(sub_grp["current_price"].dropna().unique()) == 1:
+                                    price_sym = "$" if row["currency"] == "USD" else "₩"
+                                    disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                                else:
+                                    disp_price = "-"
+                            else:
+                                disp_price = "-"
+
+                            ids.append(current_id_path)
+                            labels.append(val_str)
+                            parents.append(current_parent)
+                            values.append(grp_eval)
+                            custom_rates.append(grp_rate)
+                            custom_prices.append(disp_price)
+                            custom_profits.append(grp_profit)
+
+                        current_parent = current_id_path
+
+            c_rates_arr = [r for r in custom_rates if r is not None]
+            max_abs_val = max(abs(min(c_rates_arr, default=1.0)), abs(max(c_rates_arr, default=1.0)), 1.0)
+
+            if "1) 일간" in color_option:
+                dynamic_range = [-min(max_abs_val, 3.0), min(max_abs_val, 3.0)]
+            elif "2) 주간" in color_option or "3) 월간" in color_option:
+                dynamic_range = [-min(max_abs_val, 15.0), min(max_abs_val, 15.0)]
+            else:
+                dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
+
+            fig_treemap = go.Figure(
+                go.Treemap(
+                    ids=ids,
+                    labels=labels,
+                    parents=parents,
+                    values=values,
+                    branchvalues="total",
+                    marker=dict(
+                        colors=custom_rates,
+                        colorscale=[
+                            [0.0, "#D32F2F"],
+                            [0.5, "#455A64"],
+                            [1.0, "#2E7D32"],
+                        ],
+                        cmid=0,
+                        cmin=dynamic_range[0],
+                        cmax=dynamic_range[1],
+                        showscale=False,
+                    ),
+                    customdata=list(zip(custom_rates, custom_prices, custom_profits)),
+                    texttemplate=(
+                        "<b>%{label}</b><br>"
+                        "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
+                        "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
+                        "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
+                        "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
+                    ),
+                    hovertemplate=(
+                        "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
+                        "<span style='font-size: 15px;'>"
+                        "• 평가금액: ₩%{value:,.0f}<br>"
+                        "• 현재가: %{customdata[1]}<br>"
+                        f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
+                        f"• {rate_col_label}: %{{customdata[0]:+.2f}}%<br>"
+                        "• 선택 화면 대비 점유율: %{percentRoot:.2%}<br>"
+                        "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
+                    ),
+                    hoverlabel=dict(font_size=15),
+                    textfont=dict(color="white"),
+                    insidetextfont=dict(color="white"),
                 )
-                fig.update_traces(
-                    texttemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>등락률: %{color:+.2f}%",
-                    hovertemplate="<b>%{label}</b><br>평가액: ₩%{value:,.0f}<br>수익/등락률: %{color:+.2f}%<extra></extra>",
-                )
-                fig.update_layout(margin=dict(t=40, l=10, r=10, b=10), height=600)
-                st.plotly_chart(fig, use_container_width=True)
+            )
+
+            fig_treemap.update_layout(
+                title="",
+                margin=dict(t=10, l=10, r=10, b=10),
+            )
+
+            st.plotly_chart(fig_treemap, width="stretch")
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
 # ---------------------------------------------------------
 elif menu == "💾 데이터 백업 및 복구":
-    st.header("💾 데이터 백업 및 복구")
-
-    col_b1, col_b2 = st.columns(2)
-
-    with col_b1:
-        st.subheader("📥 백업 데이터 다운로드")
-        st.caption("현재 데이터베이스 내의 포트폴리오 데이터와 분석 조건(프리셋)을 통합 JSON 파일로 다운로드합니다.")
-        json_str = export_backup_json()
-        if json_str:
-            st.download_button(
-                label="💾 백업 JSON 파일 다운로드",
-                data=json_str,
-                file_name=f"portfolio_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json",
-            )
-        else:
-            st.error("백업 데이터를 생성하는 중 오류가 발생했습니다.")
-
-    with col_b2:
-        st.subheader("📤 백업 데이터 복원 (업로드)")
-        st.caption("기존 백업 JSON 파일을 업로드하여 데이터를 복원합니다.")
-        restore_mode = st.radio("복원 방식 선택", ["기존 데이터 덮어쓰기 (초기화 후 복원)", "기존 데이터에 추가하기"])
-        uploaded_backup = st.file_uploader("백업 JSON 파일 업로드", type=["json"])
-
-        if uploaded_backup is not None:
-            if st.button("🚀 백업 복원 실행"):
-                replace_flag = "덮어쓰기" in restore_mode
-                content = uploaded_backup.read()
-                count = import_backup_json(content, replace=replace_flag)
-                if count > 0:
-                    st.success(f"🎉 성공적으로 {count}건의 데이터가 복원되었습니다!")
-                    st.rerun()
-                else:
-                    st.error("복원에 실패했습니다. 파일 형식을 확인해 주세요.")
+    st.header("💾 백업 및 데이터 관리")
+    
+    st.subheader("📤 데이터 내보내기 (JSON 파일 백업)")
+    st.caption("💡 DB 데이터뿐만 아니라 저장된 분석 조건(Treemap 프리셋)도 함께 백업 파일에 통합 포함됩니다.")
+    json_data = export_backup_json()
+    if json_data:
+        st.download_button(
+            label="⬇️ 백업 JSON 파일 다운로드",
+            data=json_data,
+            file_name="portfolio_backup.json",
+            mime="application/json"
+        )
+    
+    st.markdown("---")
+    st.subheader("📥 데이터 불러오기 (JSON 파일 복원)")
+    st.caption("💡 업로드 시 포트폴리오 데이터와 함께 저장된 분석 조건도 자동으로 복원됩니다.")
+    uploaded_json = st.file_uploader("백업 JSON 파일 업로드", type=["json"])
+    
+    col_restore1, col_restore2 = st.columns(2)
+    with col_restore1:
+        replace_mode = st.checkbox("기존 DB 전체 삭제 후 복원", value=True)
+    
+    if uploaded_json is not None:
+        if st.button("🚀 데이터 복원 실행"):
+            content = uploaded_json.read()
+            count = import_backup_json(content, replace=replace_mode)
+            if count > 0:
+                st.success(f"성공적으로 {count}개 항목 및 분석 조건을 복원했습니다!")
+                st.rerun()
+            else:
+                st.error("데이터 복원에 실패했습니다. 파일 형식을 확인해주세요.")
