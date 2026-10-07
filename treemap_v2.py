@@ -686,6 +686,62 @@ def _get_last_trading_day_before(m_data, ticker, target_date_dt):
     return None
 
 
+def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=False):
+    """
+    일간 등락률 계산을 위해 (최종 종가/평가시세, 전일 종가)를 안전하게 산출.
+    정규장만 반영 시 미국 주식 등의 시차로 인해 등락률이 0%가 되는 현상을 방지하여,
+    최종 정규장 마감 종가와 그 직전 거래일 종가를 정확히 비교하도록 처리.
+    """
+    series = _extract_ticker_series(m_data, ticker)
+    latest_close = None
+    prev_close = None
+
+    if series is not None and not series.empty:
+        if len(series) >= 2:
+            latest_close = float(series.iloc[-1])
+            prev_close = float(series.iloc[-2])
+        elif len(series) == 1:
+            latest_close = float(series.iloc[-1])
+
+    # 시리즈에서 2개 이상의 거래일 종가를 구하지 못했을 때 yfinance fallback
+    if latest_close is None or prev_close is None:
+        try:
+            tk = yf.Ticker(ticker)
+            fi = tk.fast_info
+            if latest_close is None:
+                latest_close = fi.get("regularMarketPrice") or fi.get("lastPrice")
+                if (latest_close is None or latest_close <= 0) and current_db_price and current_db_price > 0:
+                    latest_close = float(current_db_price)
+            if prev_close is None:
+                prev_close = fi.get("previousClose") or fi.get("regularMarketPreviousClose")
+
+            if prev_close is None or prev_close <= 0:
+                hist = tk.history(period="5d", prepost=False)
+                if not hist.empty and len(hist) >= 2:
+                    latest_close = float(hist["Close"].iloc[-1])
+                    prev_close = float(hist["Close"].iloc[-2])
+        except Exception:
+            pass
+
+    if regular_only:
+        # 정규장만 반영: 최종 정규장 종가 기준으로 그 전날(직전 거래일) 종가와 비교
+        eval_p = latest_close if (latest_close is not None and latest_close > 0) else current_db_price
+        base_p = prev_close
+    else:
+        # 프리/애프터마켓 포함: 현재 DB/실시간 가격을 기준으로 비교하되,
+        # 장마감 상태라 현재가가 최종 종가와 동일하면 그 전날 종가와 비교하여 0% 방지
+        eval_p = current_db_price if (current_db_price and current_db_price > 0) else latest_close
+        if latest_close is not None and prev_close is not None and prev_close > 0:
+            if eval_p is not None and abs(eval_p - latest_close) < 1e-4:
+                base_p = prev_close
+            else:
+                base_p = latest_close
+        else:
+            base_p = prev_close
+
+    return eval_p, base_p
+
+
 def update_all_prices_and_rate_batch(curr_rate, regular_only=False):
     """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트 (티커별 단 1회 조회 최적화)"""
     conn = get_connection()
@@ -1618,13 +1674,25 @@ elif menu == "일별/시점별 보유 현황 분석":
                 with st.spinner(f"[{color_option}] 기준 종가 배치 계산 중..."):
                     m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt, regular_only=regular_market_only)
 
-                    # 티커별 기준가를 사전에 한 번만 계산 (N+1 반복 조회 방지)
+                    # 티커별 기준가 및 평가가를 사전에 한 번만 계산 (N+1 반복 조회 방지)
                     ticker_base_prices = {}
+                    ticker_eval_prices = {}
+                    is_daily = "1) 일간" in color_option
+
                     for tk in tickers:
                         if tk:
-                            ticker_base_prices[tk] = _get_last_trading_day_before(m_data, tk, target_base_dt)
+                            if is_daily:
+                                # 일간 등락률: 정규장만 반영 시 최종 종가 기준으로 그 전날과 비교
+                                eval_p, base_p = _get_daily_prices(m_data, tk, None, regular_only=regular_market_only)
+                                ticker_eval_prices[tk] = eval_p
+                                ticker_base_prices[tk] = base_p
+                            else:
+                                ticker_base_prices[tk] = _get_last_trading_day_before(m_data, tk, target_base_dt)
+                                if regular_market_only:
+                                    s = _extract_ticker_series(m_data, tk)
+                                    ticker_eval_prices[tk] = float(s.iloc[-1]) if (s is not None and not s.empty) else None
 
-                    for _, row in sub_df.iterrows():
+                    for idx, row in sub_df.iterrows():
                         f_ticker = row["formatted_ticker"]
                         curr_p = row["current_price"]
                         qty = row["quantity"]
@@ -1632,11 +1700,20 @@ elif menu == "일별/시점별 보유 현황 분석":
                         rate = 0.0
                         profit_amt = 0.0
 
-                        if f_ticker and curr_p:
+                        if f_ticker:
+                            eval_p = ticker_eval_prices.get(f_ticker)
+                            if eval_p is None or eval_p <= 0:
+                                eval_p = curr_p
+                            elif regular_market_only or is_daily:
+                                # 최종 종가 반영 시 current_price 및 평가액 동기화
+                                sub_df.at[idx, "current_price"] = eval_p
+                                sub_df.at[idx, "평가액(원)"] = eval_p * qty * ex_r
+                                sub_df.at[idx, "평가손익(원)"] = sub_df.at[idx, "평가액(원)"] - sub_df.at[idx, "매입총액(원)"]
+
                             base_price = ticker_base_prices.get(f_ticker)
-                            if base_price and float(base_price) > 0:
-                                rate = round(((float(curr_p) - float(base_price)) / float(base_price)) * 100, 2)
-                                profit_amt = (float(curr_p) - float(base_price)) * ex_r * qty
+                            if eval_p and base_price and float(base_price) > 0:
+                                rate = round(((float(eval_p) - float(base_price)) / float(base_price)) * 100, 2)
+                                profit_amt = (float(eval_p) - float(base_price)) * ex_r * qty
 
                         change_rates.append(rate)
                         period_profits.append(profit_amt)
