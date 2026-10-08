@@ -56,8 +56,13 @@ def get_connection():
 
 
 def hash_pw(password_str: str) -> str:
-    """streamlit_authenticator 규격 비밀번호 해시 생성"""
-    return stauth.Hasher([password_str]).generate()[0]
+    """streamlit_authenticator 최신/구버전 호환 비밀번호 해시 생성"""
+    try:
+        # 최신 버전 (v0.3.0 이상)
+        return stauth.Hasher.hash(password_str)
+    except AttributeError:
+        # 구버전
+        return stauth.Hasher([password_str]).generate()[0]
 
 
 def init_db():
