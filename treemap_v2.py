@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+import streamlit_authenticator as stauth
 
 # ---------------------------------------------------------
 # 모바일 전용 페이지 설정 (상단 1회만 호출)
@@ -20,6 +21,67 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# ---------------------------------------------------------
+# 사용자 인증 (Login) 설정 추가
+# ---------------------------------------------------------
+# 미리 생성된 해시값 예시: 비밀번호 '1234'의 bcrypt 해시
+# 향후 관리자가 직접 비밀번호 해시를 생성하려면 다른 스크립트에서 아래 코드를 실행해 확인하세요:
+# print(stauth.Hasher(['원하는비밀번호']).generate())
+HASH_1234 = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjGsj8nPtu"
+
+config = {
+    'credentials': {
+        'usernames': {
+            'admin': {
+                'email': 'admin@example.com',
+                'name': '관리자',
+                'password': HASH_1234 # 비밀번호: 1234
+            },
+            'user1': {
+                'email': 'user1@example.com',
+                'name': '본인',  # '본인' 명의 데이터만 조회 가능
+                'password': HASH_1234 # 비밀번호: 1234
+            },
+            'user2': {
+                'email': 'user2@example.com',
+                'name': '김병주',  # '김병주' 명의 데이터만 조회 가능
+                'password': HASH_1234 # 비밀번호: 1234
+            }
+        }
+    },
+    'cookie': {
+        'expiry_days': 30,
+        'key': 'portfolio_secret_key',
+        'name': 'portfolio_login_cookie'
+    }
+}
+
+# 인증 객체 생성
+authenticator = stauth.Authenticate(
+    config['credentials'],
+    config['cookie']['name'],
+    config['cookie']['key'],
+    config['cookie']['expiry_days']
+)
+
+# 로그인 위젯 렌더링
+authenticator.login()
+
+# 로그인 상태 검증
+if st.session_state.get("authentication_status") is False:
+    st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
+elif st.session_state.get("authentication_status") is None:
+    st.warning("아이디와 비밀번호를 입력해 주세요. (예: ID: admin / PW: 1234)")
+    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
+
+# --- 로그인 성공 시 아래 코드 정상 실행 ---
+st.sidebar.markdown(f"👋 환영합니다, **{st.session_state['name']}** 님!")
+authenticator.logout('로그아웃', 'sidebar')
+st.sidebar.markdown("---")
+
+logged_in_user = st.session_state["name"]
 
 # ---------------------------------------------------------
 # DB 및 백업 설정
@@ -805,6 +867,10 @@ def open_trading_dialog():
     finally:
         conn.close()
 
+    # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 수정 가능 ---
+    if logged_in_user != "관리자":
+        df = df[df["whose"] == logged_in_user].copy()
+
     trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
 
     regular_only = st.session_state.get("regular_market_only", False)
@@ -815,7 +881,8 @@ def open_trading_dialog():
             c1, c2 = st.columns(2)
             with c1:
                 t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
-                t_whose = st.text_input("소유자", value="본인")
+                # 관리자만 소유자를 임의 지정 가능. 일반 계정은 본인 이름으로 고정.
+                t_whose = st.text_input("소유자", value=logged_in_user, disabled=(logged_in_user != "관리자"))
                 t_broker = st.text_input("증권사/금융사", value="키움증권")
                 t_acc_num = st.text_input("계좌번호")
                 t_acc_type = st.selectbox("계좌구분", ["일반", "연금", "ISA", "IRP", "기타"])
@@ -848,7 +915,7 @@ def open_trading_dialog():
 
     else:
         if df.empty:
-            st.warning("등록된 보유 포트폴리오 항목이 없습니다.")
+            st.warning("수정/매도 가능한 본인의 보유 포트폴리오 항목이 없습니다.")
             return
 
         df["record_date"] = df["record_date"].fillna("미지정").replace("", "미지정")
@@ -1010,6 +1077,10 @@ if menu == "자산 입력 및 관리":
     finally:
         conn.close()
 
+    # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 수정/조회 가능하도록 필터 ---
+    if logged_in_user != "관리자":
+        df_raw = df_raw[df_raw["whose"] == logged_in_user].copy()
+
     st.subheader("🔄 일괄 업데이트 설정")
     rate_option = st.radio(
         "환율 적용 기준 선택",
@@ -1128,7 +1199,7 @@ if menu == "자산 입력 및 관리":
                         save_df[col] = None
 
                 save_df["record_date"] = save_df["record_date"].fillna(datetime.now().strftime("%Y-%m-%d"))
-                save_df["whose"] = save_df["whose"].fillna("본인")
+                save_df["whose"] = save_df["whose"].fillna(logged_in_user if logged_in_user != "관리자" else "본인")
                 save_df["currency"] = save_df["currency"].fillna("KRW")
                 save_df["exchange_rate"] = pd.to_numeric(save_df["exchange_rate"], errors="coerce").fillna(1.0)
                 save_df["buy_price"] = pd.to_numeric(save_df["buy_price"], errors="coerce").fillna(0.0)
@@ -1138,7 +1209,13 @@ if menu == "자산 입력 및 관리":
                 conn = get_connection()
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("DELETE FROM portfolio")
+                    
+                    # 관리자면 전체 삭제 후 삽입, 아니면 본인 데이터만 삭제 후 재삽입
+                    if logged_in_user == "관리자":
+                        cursor.execute("DELETE FROM portfolio")
+                    else:
+                        cursor.execute("DELETE FROM portfolio WHERE whose = ?", (logged_in_user,))
+
                     save_df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
                     conn.commit()
                     export_backup_json()
@@ -1161,7 +1238,7 @@ if menu == "자산 입력 및 관리":
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 record_date = st.date_input("기준 날짜").strftime("%Y-%m-%d")
-                whose = st.text_input("소유자 (WHOSE)", value="본인")
+                whose = st.text_input("소유자 (WHOSE)", value=logged_in_user, disabled=(logged_in_user != "관리자"))
                 broker = st.text_input("금융사")
                 account_num = st.text_input("계좌번호")
                 account_type = st.selectbox(
@@ -1260,7 +1337,7 @@ if menu == "자산 입력 및 관리":
                 ]
 
                 if "whose" not in upload_df.columns:
-                    upload_df["whose"] = "본인"
+                    upload_df["whose"] = logged_in_user if logged_in_user != "관리자" else "본인"
 
                 for col in required_cols:
                     if col not in upload_df.columns:
@@ -1271,7 +1348,13 @@ if menu == "자산 입력 및 관리":
                 ).dt.strftime("%Y-%m-%d")
                 upload_df["currency"] = upload_df["currency"].fillna("KRW")
                 upload_df["exchange_rate"] = pd.to_numeric(upload_df["exchange_rate"], errors="coerce").fillna(1.0)
-                upload_df["whose"] = upload_df["whose"].fillna("본인")
+                
+                # 강제로 본인 명의로 고정 (관리자 제외)
+                if logged_in_user != "관리자":
+                    upload_df["whose"] = logged_in_user
+                else:
+                    upload_df["whose"] = upload_df["whose"].fillna("본인")
+                    
                 upload_df["buy_price"] = pd.to_numeric(upload_df["buy_price"], errors="coerce").fillna(0.0)
                 upload_df["quantity"] = pd.to_numeric(upload_df["quantity"], errors="coerce").fillna(0.0)
                 upload_df["current_price"] = pd.to_numeric(upload_df["current_price"], errors="coerce").fillna(0.0)
@@ -1353,6 +1436,14 @@ elif menu == "일별/시점별 보유 현황 분석":
     else:
         df["whose"] = df["whose"].fillna("본인").replace("", "본인")
         available_whose_list = sorted(df["whose"].unique())
+        
+        # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 분석 목록에 표시 ---
+        if logged_in_user != "관리자":
+            available_whose_list = [w for w in available_whose_list if w == logged_in_user]
+            if not available_whose_list:
+                st.warning(f"현재 로그인한 사용자({logged_in_user}) 명의로 등록된 자산 데이터가 없습니다.")
+                st.stop()
+
         whose_date_map = {
             w: sorted(df[df["whose"] == w]["record_date"].unique(), reverse=True)
             for w in available_whose_list
@@ -2018,6 +2109,10 @@ elif menu == "일별/시점별 보유 현황 분석":
 elif menu == "💾 데이터 백업 및 복구":
     st.header("💾 백업 및 데이터 관리")
     
+    # --- [권한 제어 필터링] 일반 계정은 본인 데이터가 포함된 것만 주의하도록 안내 ---
+    if logged_in_user != "관리자":
+        st.warning(f"현재 '{logged_in_user}' 계정으로 로그인되어 있습니다. 백업/복구는 전체 DB에 영향을 미칠 수 있으니 관리자 권한으로 수행하는 것을 권장합니다.")
+
     st.subheader("📤 데이터 내보내기 (JSON 파일 백업)")
     st.caption("💡 DB 데이터뿐만 아니라 저장된 분석 조건(Treemap 프리셋)도 함께 백업 파일에 통합 포함됩니다.")
     json_data = export_backup_json()
