@@ -23,67 +23,6 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# 사용자 인증 (Login) 설정 추가
-# ---------------------------------------------------------
-# 미리 생성된 해시값 예시: 비밀번호 '1234'의 bcrypt 해시
-# 향후 관리자가 직접 비밀번호 해시를 생성하려면 다른 스크립트에서 아래 코드를 실행해 확인하세요:
-# print(stauth.Hasher(['원하는비밀번호']).generate())
-HASH_1234 = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjGsj8nPtu"
-
-config = {
-    'credentials': {
-        'usernames': {
-            'admin': {
-                'email': 'admin@example.com',
-                'name': '관리자',
-                'password': HASH_1234 # 비밀번호: 1234
-            },
-            'user1': {
-                'email': 'user1@example.com',
-                'name': '본인',  # '본인' 명의 데이터만 조회 가능
-                'password': HASH_1234 # 비밀번호: 1234
-            },
-            'user2': {
-                'email': 'user2@example.com',
-                'name': '김병주',  # '김병주' 명의 데이터만 조회 가능
-                'password': HASH_1234 # 비밀번호: 1234
-            }
-        }
-    },
-    'cookie': {
-        'expiry_days': 30,
-        'key': 'portfolio_secret_key',
-        'name': 'portfolio_login_cookie'
-    }
-}
-
-# 인증 객체 생성
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
-
-# 로그인 위젯 렌더링
-authenticator.login()
-
-# 로그인 상태 검증
-if st.session_state.get("authentication_status") is False:
-    st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
-    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
-elif st.session_state.get("authentication_status") is None:
-    st.warning("아이디와 비밀번호를 입력해 주세요. (예: ID: admin / PW: 1234)")
-    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
-
-# --- 로그인 성공 시 아래 코드 정상 실행 ---
-st.sidebar.markdown(f"👋 환영합니다, **{st.session_state['name']}** 님!")
-authenticator.logout('로그아웃', 'sidebar')
-st.sidebar.markdown("---")
-
-logged_in_user = st.session_state["name"]
-
-# ---------------------------------------------------------
 # DB 및 백업 설정
 # ---------------------------------------------------------
 DB_FILE = "stock_data.db"
@@ -114,6 +53,142 @@ TREEMAP_COLOR_OPTIONS = [
 
 def get_connection():
     return sqlite3.connect(DB_FILE, timeout=10.0)
+
+
+def hash_pw(password_str: str) -> str:
+    """streamlit_authenticator 규격 비밀번호 해시 생성"""
+    return stauth.Hasher([password_str]).generate()[0]
+
+
+def init_db():
+    """DB 초기화, portfolio 및 users 테이블 생성 및 초기 데이터 구성"""
+    conn = get_connection()
+    count = 0
+    try:
+        cursor = conn.cursor()
+        # 포트폴리오 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                record_date TEXT,
+                whose TEXT DEFAULT '본인',
+                broker TEXT,
+                account_num TEXT,
+                account_type TEXT,
+                item_name TEXT,
+                ticker TEXT,
+                category1 TEXT,
+                category2 TEXT,
+                category3 TEXT,
+                category4 TEXT,
+                buy_price REAL,
+                quantity REAL,
+                current_price REAL,
+                currency TEXT DEFAULT 'KRW',
+                exchange_rate REAL DEFAULT 1.0
+            )
+        """)
+        
+        cursor.execute("PRAGMA table_info(portfolio)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "whose" not in columns:
+            cursor.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT DEFAULT '본인'")
+
+        # 사용자 계정 관리 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                email TEXT,
+                name TEXT,
+                password_hash TEXT,
+                is_admin INTEGER DEFAULT 0
+            )
+        """)
+
+        # 최초 실행 시 기본 계정 생성 (admin / 1234, user1 / 1234, user2 / 1234)
+        cursor.execute("SELECT COUNT(*) FROM users")
+        if cursor.fetchone()[0] == 0:
+            pw_1234 = hash_pw("1234")
+            default_users = [
+                ("admin", "admin@example.com", "관리자", pw_1234, 1),
+                ("user1", "user1@example.com", "본인", pw_1234, 0),
+                ("user2", "user2@example.com", "김병주", pw_1234, 0)
+            ]
+            cursor.executemany("""
+                INSERT INTO users (username, email, name, password_hash, is_admin)
+                VALUES (?, ?, ?, ?, ?)
+            """, default_users)
+
+        conn.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM portfolio")
+        count = cursor.fetchone()[0]
+    finally:
+        conn.close()
+
+    if count == 0 and os.path.exists(BACKUP_FILE):
+        try:
+            with open(BACKUP_FILE, "r", encoding="utf-8") as f:
+                content = f.read()
+            import_backup_json(content, replace=False)
+        except Exception:
+            pass
+
+
+def load_users_config():
+    """DB에서 사용자 정보를 읽어와 authenticator 설정 생성"""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, email, name, password_hash, is_admin FROM users")
+        rows = cursor.fetchall()
+        usernames_dict = {}
+        admin_usernames = set()
+        for row in rows:
+            u_id, email, name, pw_hash, is_admin = row
+            usernames_dict[u_id] = {
+                'email': email,
+                'name': name,
+                'password': pw_hash
+            }
+            if is_admin == 1:
+                admin_usernames.add(u_id)
+        return {'credentials': {'usernames': usernames_dict}}, admin_usernames
+    finally:
+        conn.close()
+
+
+# DB 초기화 및 계정 정보 로드
+init_db()
+config, admin_usernames = load_users_config()
+
+# 인증 객체 생성
+authenticator = stauth.Authenticate(
+    config['credentials'],
+    'portfolio_login_cookie',
+    'portfolio_secret_key',
+    30
+)
+
+# 로그인 위젯 렌더링
+authenticator.login()
+
+# 로그인 상태 검증
+if st.session_state.get("authentication_status") is False:
+    st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
+elif st.session_state.get("authentication_status") is None:
+    st.warning("아이디와 비밀번호를 입력해 주세요. (예: ID: admin / PW: 1234)")
+    st.stop()  # 코드 실행 중단 (메인 화면 숨김)
+
+# --- 로그인 성공 시 아래 코드 정상 실행 ---
+st.sidebar.markdown(f"👋 환영합니다, **{st.session_state['name']}** 님!")
+authenticator.logout('로그아웃', 'sidebar')
+st.sidebar.markdown("---")
+
+logged_in_username = st.session_state.get("username")
+logged_in_user = st.session_state.get("name")
+is_current_user_admin = (logged_in_username in admin_usernames) or (logged_in_user == "관리자")
 
 
 def export_backup_json():
@@ -215,55 +290,6 @@ def import_backup_json(json_content, replace=True):
         return 0
     finally:
         conn.close()
-
-
-def init_db():
-    """DB 초기화 및 whose 컬럼 마이그레이션 적용"""
-    conn = get_connection()
-    count = 0
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS portfolio (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                record_date TEXT,
-                whose TEXT DEFAULT '본인',
-                broker TEXT,
-                account_num TEXT,
-                account_type TEXT,
-                item_name TEXT,
-                ticker TEXT,
-                category1 TEXT,
-                category2 TEXT,
-                category3 TEXT,
-                category4 TEXT,
-                buy_price REAL,
-                quantity REAL,
-                current_price REAL,
-                currency TEXT DEFAULT 'KRW',
-                exchange_rate REAL DEFAULT 1.0
-            )
-        """)
-        conn.commit()
-        
-        cursor.execute("PRAGMA table_info(portfolio)")
-        columns = [column[1] for column in cursor.fetchall()]
-        if "whose" not in columns:
-            cursor.execute("ALTER TABLE portfolio ADD COLUMN whose TEXT DEFAULT '본인'")
-            conn.commit()
-
-        cursor.execute("SELECT COUNT(*) FROM portfolio")
-        count = cursor.fetchone()[0]
-    finally:
-        conn.close()
-
-    if count == 0 and os.path.exists(BACKUP_FILE):
-        try:
-            with open(BACKUP_FILE, "r", encoding="utf-8") as f:
-                content = f.read()
-            import_backup_json(content, replace=False)
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------
@@ -581,7 +607,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         t_str = str(ticker).strip().upper()
         tk = yf.Ticker(t_str)
 
-        # 1. 국내 주식(.KS, .KQ)은 프리/애프터마켓이 없으므로 fast_info/일봉으로 반환
         if t_str.endswith(".KS") or t_str.endswith(".KQ"):
             fast_info = tk.fast_info
             for key in ["lastPrice", "regularMarketPrice", "previousClose"]:
@@ -593,7 +618,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
                 return round(float(hist["Close"].iloc[-1]), 2)
             return None
 
-        # 2. 정규장만 반영 옵션이 켜진 경우 (Pre/Post-market 제외)
         if regular_only:
             fast_info = tk.fast_info
             reg_price = fast_info.get("regularMarketPrice") or fast_info.get("lastPrice")
@@ -611,7 +635,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
                 return round(float(hist["Close"].iloc[-1]), 2)
             return None
 
-        # 3. 정규장 외 프리/애프터마켓 포함 (regular_only=False)
         fast_info = tk.fast_info
         info = {}
         try:
@@ -624,7 +647,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         reg_price = fast_info.get("regularMarketPrice") or fast_info.get("lastPrice") or info.get("currentPrice") or info.get("regularMarketPrice")
         market_state = str(info.get("marketState", "")).upper()
 
-        # (1) 시장 상태별 직관적 우선 추출
         if market_state in ["PRE", "PREPRE"] and pre_price and not pd.isna(pre_price) and float(pre_price) > 0:
             return round(float(pre_price), 2)
 
@@ -634,7 +656,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         if market_state == "REGULAR" and reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
             return round(float(reg_price), 2)
 
-        # (2) 1분봉 데이터(prepost=True)로 가장 최근 실시간 거래 틱 가져오기 (가장 확실한 최신시세 보장)
         try:
             hist_1m = tk.history(period="1d", interval="1m", prepost=True)
             if not hist_1m.empty and not pd.isna(hist_1m["Close"].iloc[-1]):
@@ -642,7 +663,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         except Exception:
             pass
 
-        # (3) Fallback: 존재하는 유효 시세 순차 채택
         for p in [post_price, pre_price, reg_price, fast_info.get("previousClose"), info.get("previousClose")]:
             if p is not None and not pd.isna(p) and float(p) > 0:
                 return round(float(p), 2)
@@ -654,7 +674,7 @@ def fetch_live_ticker_price(ticker, regular_only=False):
 
 @st.cache_data(ttl=300)
 def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_only=False):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱 (regular_only=False일 시 prepost=True 적용)"""
+    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -676,7 +696,7 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_
 
 
 def _extract_ticker_series(market_data, ticker):
-    """배치 데이터프레임에서 특정 티커의 Close 시리즈를 안전하게 추출 (MultiIndex/SingleIndex 일관 처리)"""
+    """배치 데이터프레임에서 특정 티커의 Close 시리즈를 안전하게 추출"""
     if market_data is None or market_data.empty or not ticker:
         return None
     try:
@@ -708,7 +728,6 @@ def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular
     if not ticker:
         return None
 
-    # regular_only=False인 경우, 프리/애프터마켓 최신가를 구하기 위해 개별 조회를 먼저 시도
     if not regular_only and not target_date_str:
         live_p = fetch_live_ticker_price(ticker, regular_only=False)
         if live_p is not None:
@@ -743,9 +762,7 @@ def _get_last_trading_day_before(m_data, ticker, target_date_dt):
 
 
 def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=False):
-    """
-    일간 등락률 계산을 위해 (최종 종가/평가시세, 전일 종가)를 산출.
-    """
+    """일간 등락률 계산을 위해 (최종 종가/평가시세, 전일 종가)를 산출."""
     series = _extract_ticker_series(m_data, ticker)
     latest_close = None
     prev_close = None
@@ -780,7 +797,6 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=False)
         eval_p = latest_close if (latest_close is not None and latest_close > 0) else current_db_price
         base_p = prev_close
     else:
-        # 프리/애프터마켓 포함 모드: 실시간 시세를 최우선 평가가로 채택
         live_p = fetch_live_ticker_price(ticker, regular_only=False)
         eval_p = live_p if (live_p is not None) else (current_db_price if (current_db_price and current_db_price > 0) else latest_close)
         
@@ -868,7 +884,7 @@ def open_trading_dialog():
         conn.close()
 
     # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 수정 가능 ---
-    if logged_in_user != "관리자":
+    if not is_current_user_admin:
         df = df[df["whose"] == logged_in_user].copy()
 
     trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
@@ -881,8 +897,7 @@ def open_trading_dialog():
             c1, c2 = st.columns(2)
             with c1:
                 t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
-                # 관리자만 소유자를 임의 지정 가능. 일반 계정은 본인 이름으로 고정.
-                t_whose = st.text_input("소유자", value=logged_in_user, disabled=(logged_in_user != "관리자"))
+                t_whose = st.text_input("소유자", value=logged_in_user, disabled=not is_current_user_admin)
                 t_broker = st.text_input("증권사/금융사", value="키움증권")
                 t_acc_num = st.text_input("계좌번호")
                 t_acc_type = st.selectbox("계좌구분", ["일반", "연금", "ISA", "IRP", "기타"])
@@ -1009,8 +1024,6 @@ def open_trading_dialog():
                         conn.close()
 
 
-init_db()
-
 st.markdown(
     """
     <style>
@@ -1055,14 +1068,16 @@ if st.sidebar.button("⚡ 실시간 환율 및 전체 최신 시세 일괄 업�
         st.sidebar.success(f"업데이트 완료! (적용 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
         st.rerun()
 
-menu = st.sidebar.selectbox(
-    "메뉴 선택",
-    [
-        "자산 입력 및 관리",
-        "일별/시점별 보유 현황 분석",
-        "💾 데이터 백업 및 복구",
-    ],
-)
+# 메뉴 항목 정의 (관리자인 경우 '관리자 페이지' 추가)
+menu_options = [
+    "자산 입력 및 관리",
+    "일별/시점별 보유 현황 분석",
+    "💾 데이터 백업 및 복구",
+]
+if is_current_user_admin:
+    menu_options.append("⚙️ 관리자 페이지")
+
+menu = st.sidebar.selectbox("메뉴 선택", menu_options)
 
 # ---------------------------------------------------------
 # 메뉴 1: 자산 입력 및 관리
@@ -1078,7 +1093,7 @@ if menu == "자산 입력 및 관리":
         conn.close()
 
     # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 수정/조회 가능하도록 필터 ---
-    if logged_in_user != "관리자":
+    if not is_current_user_admin:
         df_raw = df_raw[df_raw["whose"] == logged_in_user].copy()
 
     st.subheader("🔄 일괄 업데이트 설정")
@@ -1199,7 +1214,7 @@ if menu == "자산 입력 및 관리":
                         save_df[col] = None
 
                 save_df["record_date"] = save_df["record_date"].fillna(datetime.now().strftime("%Y-%m-%d"))
-                save_df["whose"] = save_df["whose"].fillna(logged_in_user if logged_in_user != "관리자" else "본인")
+                save_df["whose"] = save_df["whose"].fillna(logged_in_user if not is_current_user_admin else "본인")
                 save_df["currency"] = save_df["currency"].fillna("KRW")
                 save_df["exchange_rate"] = pd.to_numeric(save_df["exchange_rate"], errors="coerce").fillna(1.0)
                 save_df["buy_price"] = pd.to_numeric(save_df["buy_price"], errors="coerce").fillna(0.0)
@@ -1210,8 +1225,7 @@ if menu == "자산 입력 및 관리":
                 try:
                     cursor = conn.cursor()
                     
-                    # 관리자면 전체 삭제 후 삽입, 아니면 본인 데이터만 삭제 후 재삽입
-                    if logged_in_user == "관리자":
+                    if is_current_user_admin:
                         cursor.execute("DELETE FROM portfolio")
                     else:
                         cursor.execute("DELETE FROM portfolio WHERE whose = ?", (logged_in_user,))
@@ -1238,7 +1252,7 @@ if menu == "자산 입력 및 관리":
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 record_date = st.date_input("기준 날짜").strftime("%Y-%m-%d")
-                whose = st.text_input("소유자 (WHOSE)", value=logged_in_user, disabled=(logged_in_user != "관리자"))
+                whose = st.text_input("소유자 (WHOSE)", value=logged_in_user, disabled=not is_current_user_admin)
                 broker = st.text_input("금융사")
                 account_num = st.text_input("계좌번호")
                 account_type = st.selectbox(
@@ -1337,7 +1351,7 @@ if menu == "자산 입력 및 관리":
                 ]
 
                 if "whose" not in upload_df.columns:
-                    upload_df["whose"] = logged_in_user if logged_in_user != "관리자" else "본인"
+                    upload_df["whose"] = logged_in_user if not is_current_user_admin else "본인"
 
                 for col in required_cols:
                     if col not in upload_df.columns:
@@ -1349,8 +1363,7 @@ if menu == "자산 입력 및 관리":
                 upload_df["currency"] = upload_df["currency"].fillna("KRW")
                 upload_df["exchange_rate"] = pd.to_numeric(upload_df["exchange_rate"], errors="coerce").fillna(1.0)
                 
-                # 강제로 본인 명의로 고정 (관리자 제외)
-                if logged_in_user != "관리자":
+                if not is_current_user_admin:
                     upload_df["whose"] = logged_in_user
                 else:
                     upload_df["whose"] = upload_df["whose"].fillna("본인")
@@ -1438,7 +1451,7 @@ elif menu == "일별/시점별 보유 현황 분석":
         available_whose_list = sorted(df["whose"].unique())
         
         # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 분석 목록에 표시 ---
-        if logged_in_user != "관리자":
+        if not is_current_user_admin:
             available_whose_list = [w for w in available_whose_list if w == logged_in_user]
             if not available_whose_list:
                 st.warning(f"현재 로그인한 사용자({logged_in_user}) 명의로 등록된 자산 데이터가 없습니다.")
@@ -2109,8 +2122,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 elif menu == "💾 데이터 백업 및 복구":
     st.header("💾 백업 및 데이터 관리")
     
-    # --- [권한 제어 필터링] 일반 계정은 본인 데이터가 포함된 것만 주의하도록 안내 ---
-    if logged_in_user != "관리자":
+    if not is_current_user_admin:
         st.warning(f"현재 '{logged_in_user}' 계정으로 로그인되어 있습니다. 백업/복구는 전체 DB에 영향을 미칠 수 있으니 관리자 권한으로 수행하는 것을 권장합니다.")
 
     st.subheader("📤 데이터 내보내기 (JSON 파일 백업)")
@@ -2142,3 +2154,130 @@ elif menu == "💾 데이터 백업 및 복구":
                 st.rerun()
             else:
                 st.error("데이터 복원에 실패했습니다. 파일 형식을 확인해주세요.")
+
+# ---------------------------------------------------------
+# 메뉴 4: 관리자 페이지 (관리자 계정 변경 & 일반 사용자 관리)
+# ---------------------------------------------------------
+elif menu == "⚙️ 관리자 페이지":
+    st.header("⚙️ 관리자 페이지")
+    
+    if not is_current_user_admin:
+        st.error("관리자 권한이 있는 계정만 접근할 수 있습니다.")
+        st.stop()
+
+    tab_admin, tab_users = st.tabs(["🔑 관리자 계정 변경", "👥 일반 사용자 관리"])
+
+    with tab_admin:
+        st.subheader("🔑 관리자 아이디 및 비밀번호 변경")
+        st.caption("현재 로그인된 관리자 계정의 아이디, 이름, 이메일 및 비밀번호를 변경합니다.")
+        
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT username, email, name FROM users WHERE username = ?", (logged_in_username,))
+            admin_info = cursor.fetchone()
+        finally:
+            conn.close()
+
+        cur_admin_id = admin_info[0] if admin_info else logged_in_username
+        cur_admin_email = admin_info[1] if admin_info else "admin@example.com"
+        cur_admin_name = admin_info[2] if admin_info else "관리자"
+
+        with st.form("admin_account_form"):
+            new_admin_id = st.text_input("관리자 아이디", value=cur_admin_id)
+            new_admin_name = st.text_input("관리자 이름 (화면 표시용)", value=cur_admin_name)
+            new_admin_email = st.text_input("관리자 이메일", value=cur_admin_email)
+            new_admin_pw = st.text_input("새 비밀번호 (변경할 경우에만 입력)", type="password")
+            new_admin_pw_confirm = st.text_input("새 비밀번호 확인", type="password")
+
+            submitted = st.form_submit_button("💾 관리자 계정 정보 변경")
+            if submitted:
+                if not new_admin_id.strip():
+                    st.error("관리자 아이디를 입력해 주세요.")
+                elif new_admin_pw and (new_admin_pw != new_admin_pw_confirm):
+                    st.error("새 비밀번호와 비밀번호 확인이 일치하지 않습니다.")
+                else:
+                    conn = get_connection()
+                    try:
+                        cursor = conn.cursor()
+                        if new_admin_pw.strip():
+                            new_hash = hash_pw(new_admin_pw.strip())
+                            cursor.execute("""
+                                UPDATE users 
+                                SET username = ?, email = ?, name = ?, password_hash = ?
+                                WHERE username = ?
+                            """, (new_admin_id.strip(), new_admin_email.strip(), new_admin_name.strip(), new_hash, cur_admin_id))
+                        else:
+                            cursor.execute("""
+                                UPDATE users 
+                                SET username = ?, email = ?, name = ?
+                                WHERE username = ?
+                            """, (new_admin_id.strip(), new_admin_email.strip(), new_admin_name.strip(), cur_admin_id))
+                        conn.commit()
+                        st.success("🎉 관리자 계정 정보가 성공적으로 변경되었습니다! 변경된 아이디/비밀번호로 다시 로그인해 주세요.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"계정 수정 중 오류가 발생했습니다: {e}")
+                    finally:
+                        conn.close()
+
+    with tab_users:
+        st.subheader("👥 일반 사용자 관리")
+        
+        c_u1, c_u2 = st.columns([1, 1])
+        
+        with c_u1:
+            st.markdown("#### ➕ 신규 사용자 등록")
+            with st.form("add_user_form", clear_on_submit=True):
+                add_u_id = st.text_input("아이디 (로그인용)")
+                add_u_name = st.text_input("이름 / 소유자명 (자산 '소유자' 연동)")
+                add_u_email = st.text_input("이메일", value="user@example.com")
+                add_u_pw = st.text_input("초기 비밀번호", type="password", value="1234")
+
+                btn_add = st.form_submit_button("🚀 사용자 등록")
+                if btn_add:
+                    if not add_u_id.strip() or not add_u_name.strip() or not add_u_pw.strip():
+                        st.error("아이디, 이름, 비밀번호를 올바르게 입력해 주세요.")
+                    else:
+                        conn = get_connection()
+                        try:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT username FROM users WHERE username = ?", (add_u_id.strip(),))
+                            if cursor.fetchone():
+                                st.error("이미 존재하는 아이디입니다. 다른 아이디를 입력해 주세요.")
+                            else:
+                                pw_h = hash_pw(add_u_pw.strip())
+                                cursor.execute("""
+                                    INSERT INTO users (username, email, name, password_hash, is_admin)
+                                    VALUES (?, ?, ?, ?, 0)
+                                """, (add_u_id.strip(), add_u_email.strip(), add_u_name.strip(), pw_h))
+                                conn.commit()
+                                st.success(f"🎉 신규 사용자 '{add_u_name}({add_u_id})' 등록 완료!")
+                                st.rerun()
+                        finally:
+                            conn.close()
+
+        with c_u2:
+            st.markdown("#### 🗑️ 등록된 일반 사용자 목록 및 삭제")
+            conn = get_connection()
+            try:
+                df_users = pd.read_sql("SELECT username as 아이디, name as 이름, email as 이메일 FROM users WHERE is_admin = 0", conn)
+            finally:
+                conn.close()
+
+            if not df_users.empty:
+                st.dataframe(df_users, use_container_width=True, hide_index=True)
+                
+                user_to_del = st.selectbox("등록 해제/삭제할 사용자 선택", df_users["아이디"].tolist(), key="del_user_select")
+                if st.button("❌ 선택한 사용자 계정 삭제", type="primary"):
+                    conn = get_connection()
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM users WHERE username = ?", (user_to_del,))
+                        conn.commit()
+                        st.success(f"🎉 사용자 '{user_to_del}' 계정이 성공적으로 삭제되었습니다.")
+                        st.rerun()
+                    finally:
+                        conn.close()
+            else:
+                st.info("등록된 일반 사용자가 없습니다.")
