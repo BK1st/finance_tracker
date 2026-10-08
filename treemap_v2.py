@@ -197,17 +197,24 @@ is_current_user_admin = (logged_in_username in admin_usernames) or (logged_in_us
 
 
 def export_backup_json():
-    """DB 내의 데이터 및 분석 조건(Treemap 프리셋)을 하나의 JSON 백업 파일로 저장"""
+    """DB 내의 데이터, 사용자(계정) 정보 및 분석 조건(Treemap 프리셋)을 하나의 JSON 백업 파일로 저장"""
     conn = get_connection()
     try:
-        df = pd.read_sql("""
+        # 포트폴리오 데이터 읽기
+        df_portfolio = pd.read_sql("""
             SELECT record_date, whose, broker, account_num, account_type, item_name, ticker,
                    category1, category2, category3, category4, buy_price, quantity,
                    current_price, currency, exchange_rate
             FROM portfolio
         """, conn)
+        portfolio_records = df_portfolio.to_dict(orient="records")
         
-        portfolio_records = df.to_dict(orient="records")
+        # 사용자(계정) 정보 읽기
+        df_users = pd.read_sql("""
+            SELECT username, email, name, password_hash, is_admin
+            FROM users
+        """, conn)
+        users_records = df_users.to_dict(orient="records")
         
         # 분석 조건(프리셋) 정보 함께 읽기
         presets_data = {}
@@ -226,6 +233,7 @@ def export_backup_json():
         # 통합 백업 페이로드 생성
         backup_payload = {
             "portfolio": portfolio_records,
+            "users": users_records,
             "treemap_presets": presets_data
         }
         
@@ -240,7 +248,7 @@ def export_backup_json():
 
 
 def import_backup_json(json_content, replace=True):
-    """JSON 백업 데이터를 DB 및 분석 조건(Treemap 프리셋) 파일로 복원"""
+    """JSON 백업 데이터를 DB(포트폴리오, 사용자) 및 분석 조건(Treemap 프리셋) 파일로 복원"""
     conn = get_connection()
     try:
         if isinstance(json_content, bytes):
@@ -252,34 +260,57 @@ def import_backup_json(json_content, replace=True):
         # 하위 호환성 처리 (기존의 리스트 형태 백업 파일인 경우)
         if isinstance(data, list):
             portfolio_data = data
+            users_data = []
             presets_data = {}
         elif isinstance(data, dict):
             portfolio_data = data.get("portfolio", [])
+            users_data = data.get("users", [])
             presets_data = data.get("treemap_presets", {})
         else:
             return 0
 
-        df = pd.DataFrame(portfolio_data)
+        # 포트폴리오 데이터 처리
+        df_portfolio = pd.DataFrame(portfolio_data)
         required_cols = [
             "record_date", "whose", "broker", "account_num", "account_type", "item_name",
             "ticker", "category1", "category2", "category3", "category4",
             "buy_price", "quantity", "current_price", "currency", "exchange_rate"
         ]
         for col in required_cols:
-            if col not in df.columns:
-                df[col] = None
-        df["currency"] = df["currency"].fillna("KRW")
-        df["exchange_rate"] = pd.to_numeric(df["exchange_rate"], errors="coerce").fillna(1.0)
-        df["whose"] = df["whose"].fillna("본인")
-        df["buy_price"] = pd.to_numeric(df["buy_price"], errors="coerce").fillna(0.0)
-        df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0)
-        df["current_price"] = pd.to_numeric(df["current_price"], errors="coerce").fillna(0.0)
+            if col not in df_portfolio.columns:
+                df_portfolio[col] = None
+        df_portfolio["currency"] = df_portfolio["currency"].fillna("KRW")
+        df_portfolio["exchange_rate"] = pd.to_numeric(df_portfolio["exchange_rate"], errors="coerce").fillna(1.0)
+        df_portfolio["whose"] = df_portfolio["whose"].fillna("본인")
+        df_portfolio["buy_price"] = pd.to_numeric(df_portfolio["buy_price"], errors="coerce").fillna(0.0)
+        df_portfolio["quantity"] = pd.to_numeric(df_portfolio["quantity"], errors="coerce").fillna(0.0)
+        df_portfolio["current_price"] = pd.to_numeric(df_portfolio["current_price"], errors="coerce").fillna(0.0)
         
         cursor = conn.cursor()
         if replace:
             cursor.execute("DELETE FROM portfolio")
         
-        df[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+        df_portfolio[required_cols].to_sql("portfolio", conn, if_exists="append", index=False)
+
+        # 사용자 정보 복원 처리
+        if users_data:
+            df_users = pd.DataFrame(users_data)
+            user_cols = ["username", "email", "name", "password_hash", "is_admin"]
+            for col in user_cols:
+                if col not in df_users.columns:
+                    df_users[col] = None
+            df_users["is_admin"] = pd.to_numeric(df_users["is_admin"], errors="coerce").fillna(0).astype(int)
+            
+            if replace:
+                cursor.execute("DELETE FROM users")
+            
+            # 기존 사용자 데이터와 중복(PRIMARY KEY 충돌) 시 무시 또는 덮어쓰기 위해 INSERT OR REPLACE 사용
+            for _, u_row in df_users[user_cols].dropna(subset=["username"]).iterrows():
+                cursor.execute("""
+                    INSERT OR REPLACE INTO users (username, email, name, password_hash, is_admin)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (u_row["username"], u_row["email"], u_row["name"], u_row["password_hash"], u_row["is_admin"]))
+
         conn.commit()
 
         # 분석 조건(프리셋) 복원
@@ -289,9 +320,10 @@ def import_backup_json(json_content, replace=True):
                 save_treemap_preset(p_name, p_payload)
         
         export_backup_json()
-        return len(df)
-    except Exception:
+        return len(df_portfolio)
+    except Exception as e:
         conn.rollback()
+        print(f"Restore error: {e}")
         return 0
     finally:
         conn.close()
@@ -2131,7 +2163,7 @@ elif menu == "💾 데이터 백업 및 복구":
         st.warning(f"현재 '{logged_in_user}' 계정으로 로그인되어 있습니다. 백업/복구는 전체 DB에 영향을 미칠 수 있으니 관리자 권한으로 수행하는 것을 권장합니다.")
 
     st.subheader("📤 데이터 내보내기 (JSON 파일 백업)")
-    st.caption("💡 DB 데이터뿐만 아니라 저장된 분석 조건(Treemap 프리셋)도 함께 백업 파일에 통합 포함됩니다.")
+    st.caption("💡 DB 데이터(포트폴리오, 사용자 계정 정보) 및 저장된 분석 조건(Treemap 프리셋)이 함께 백업 파일에 통합 포함됩니다.")
     json_data = export_backup_json()
     if json_data:
         st.download_button(
@@ -2143,7 +2175,7 @@ elif menu == "💾 데이터 백업 및 복구":
     
     st.markdown("---")
     st.subheader("📥 데이터 불러오기 (JSON 파일 복원)")
-    st.caption("💡 업로드 시 포트폴리오 데이터와 함께 저장된 분석 조건도 자동으로 복원됩니다.")
+    st.caption("💡 업로드 시 포트폴리오 데이터, 사용자 계정 정보, 분석 조건이 모두 자동으로 복원됩니다.")
     uploaded_json = st.file_uploader("백업 JSON 파일 업로드", type=["json"])
     
     col_restore1, col_restore2 = st.columns(2)
@@ -2154,8 +2186,8 @@ elif menu == "💾 데이터 백업 및 복구":
         if st.button("🚀 데이터 복원 실행"):
             content = uploaded_json.read()
             count = import_backup_json(content, replace=replace_mode)
-            if count > 0:
-                st.success(f"성공적으로 {count}개 항목 및 분석 조건을 복원했습니다!")
+            if count >= 0:
+                st.success(f"성공적으로 포트폴리오 항목({count}개), 사용자 계정 정보 및 분석 조건을 복원했습니다!")
                 st.rerun()
             else:
                 st.error("데이터 복원에 실패했습니다. 파일 형식을 확인해주세요.")
