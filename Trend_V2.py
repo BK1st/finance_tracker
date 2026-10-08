@@ -354,6 +354,7 @@ if menu == '트렌드 리포트':
         '계좌별',
         '증권사(Broker)별',
         '계좌유형별',
+        'Category 2별',
         'Category 4별',
         '보유항목별',
     ]
@@ -591,7 +592,7 @@ if menu == '트렌드 리포트':
         item_cum_pl_ex = {}
 
         account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc]
-        all_account_items = account_pf_all[['item_name', 'ticker', 'category4', 'currency']].drop_duplicates().to_dict('records')
+        all_account_items = account_pf_all[['item_name', 'ticker', 'category2', 'category4', 'currency']].drop_duplicates().to_dict('records')
 
         for t_date in target_dates:
           t_str = t_date.strftime('%Y-%m-%d')
@@ -645,7 +646,8 @@ if menu == '트렌드 리포트':
           for item_info in all_account_items:
             iname = item_info['item_name']
             tk = item_info['ticker']
-            cat4 = item_info['category4']
+            cat2 = item_info.get('category2') if (pd.notna(item_info.get('category2')) and str(item_info.get('category2')).strip() != '') else '미분류'
+            cat4 = item_info.get('category4') if (pd.notna(item_info.get('category4')) and str(item_info.get('category4')).strip() != '') else '미분류'
             curr = item_info['currency'] if pd.notna(item_info['currency']) else 'KRW'
             key = (str(iname), str(tk))
 
@@ -653,8 +655,10 @@ if menu == '트렌드 리포트':
               row = current_pf_dict[key]
               qty = row.get('quantity', 0) if pd.notna(row.get('quantity')) else 0
               base_price = row.get('current_price', 0) if pd.notna(row.get('current_price')) else 0
+              if pd.notna(row.get('category2')) and str(row.get('category2')).strip() != '':
+                cat2 = str(row.get('category2')).strip()
               if pd.notna(row.get('category4')) and str(row.get('category4')).strip() != '':
-                cat4 = row.get('category4')
+                cat4 = str(row.get('category4')).strip()
             else:
               qty = 0
               base_price = 0
@@ -703,10 +707,10 @@ if menu == '트렌드 리포트':
             total_acc_eval_ex_fx += item_eval_ex
 
             if qty > 0 or abs(cum_pl) > 1e-5:
-              item_eval_list.append((iname, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_return, qty))
+              item_eval_list.append((iname, cat2, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_return, qty))
 
           item_count = len(item_eval_list)
-          for item_name, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_ret, qty in item_eval_list:
+          for item_name, cat2, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_ret, qty in item_eval_list:
             if total_acc_eval > 0:
               ratio = item_eval / total_acc_eval
             else:
@@ -725,6 +729,7 @@ if menu == '트렌드 리포트':
                 'account_num': acc_label,
                 'broker': broker_name,
                 'account_type': acc_type,
+                'category2': cat2,
                 'category4': cat4,
                 'item_name': item_name,
                 'whose': whose_val,
@@ -1394,7 +1399,7 @@ if menu == '트렌드 리포트':
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
-        if group_col in ['account_num', 'account_type']:
+        if group_col in ['account_num', 'account_type', 'category2']:
           st.write('---')
           st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트 (총 3개 개별 분석)')
 
@@ -1974,7 +1979,8 @@ if menu == '트렌드 리포트':
             '계좌별': 'account_num',
             '증권사별': 'broker',
             '계좌유형별': 'account_type',
-            'category4별': 'category4',
+            'Category 2별': 'category2',
+            'Category 4별': 'category4',
             '보유 항목별': 'item_name'
         }
         
@@ -2046,6 +2052,8 @@ if menu == '트렌드 리포트':
               draw_group_summary_charts(calc_df, 'broker', '증권사별')
             elif v_type == '계좌유형별':
               draw_group_summary_charts(calc_df, 'account_type', '계좌유형별')
+            elif v_type == 'Category 2별':
+              draw_group_summary_charts(calc_df, 'category2', 'Category 2별')
             elif v_type == 'Category 4별':
               draw_group_summary_charts(calc_df, 'category4', 'Category 4별')
             elif v_type == '보유항목별':
