@@ -402,23 +402,15 @@ def _parse_iso_date(val):
 
 
 def apply_treemap_preset(payload, available_whose_list, whose_date_map):
-    """위젯 생성 전에 session_state에 조건을 반영한다."""
+    """
+    저장된 조건 불러오기 시:
+    - 소유자(WHOSE) 선택 및 소유자별 입력 날짜는 연동하지 않고 사용자가 현재 화면에서 선택한 값 유지.
+    - 포트폴리오 TREEMAP 분석 옵션(계층 L1~L4, 색상 옵션, 커스텀 기준일자, 과거 시세 옵션, 드릴다운)만 반영.
+    """
     cat_keys = list(TREEMAP_CAT_OPTIONS.keys())
     l234 = ["없음"] + cat_keys
 
-    whose = [
-        w
-        for w in payload.get("whose", available_whose_list)
-        if w in available_whose_list
-    ]
-    st.session_state["treemap_sel_whose"] = whose if whose else list(available_whose_list)
-
-    owner_dates = payload.get("owner_dates", {}) or {}
-    for w, d in owner_dates.items():
-        options = whose_date_map.get(w, [])
-        if d in options:
-            st.session_state[f"select_date_{w}"] = d
-
+    # --- 과거 시세 및 TREEMAP 분석 연동 옵션 적용 ---
     st.session_state["treemap_use_hist"] = bool(payload.get("use_historical_price", False))
     hist_date = _parse_iso_date(payload.get("target_eval_date"))
     if hist_date:
@@ -1751,7 +1743,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         st.error("조건 파일을 찾지 못했습니다.")
                     else:
                         st.session_state["_treemap_preset_pending"] = loaded
-                        st.success(f"조건을 불러옵니다: {load_name}")
+                        st.success(f"포트폴리오 분석 조건을 불러옵니다: {load_name}")
                         st.rerun()
 
             if do_delete:
