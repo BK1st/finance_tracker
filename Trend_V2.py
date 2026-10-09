@@ -1083,17 +1083,34 @@ if menu == '트렌드 리포트':
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
 
+        # 계좌 필터 및 Category4 필터 조건 다중 선택 지원 (보유항목별 등)
         if group_col in ['category4', 'item_name']:
           all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
-          selected_accounts_filter = st.multiselect(
-              f'📌 [{prefix}] 계좌 필터 선택 (전체 선택 시 전체 조회)',
-              options=all_accs,
-              default=all_accs,
-              key=f'acc_filter_{prefix}',
-              help='특정 계좌를 선택하면 해당 계좌에 대한 정보만 필터링되어 보여집니다.'
-          )
+          all_cat4 = sorted(raw_df['category4'].dropna().unique().tolist())
+
+          col_f1, col_f2 = st.columns(2)
+          with col_f1:
+            selected_accounts_filter = st.multiselect(
+                f'📌 [{prefix}] 계좌 필터 선택 (전체 선택 시 전체 조회)',
+                options=all_accs,
+                default=all_accs,
+                key=f'acc_filter_{prefix}',
+                help='특정 계좌를 선택하면 해당 계좌에 대한 정보만 필터링되어 보여집니다.'
+            )
+          with col_f2:
+            selected_cat4_filter = st.multiselect(
+                f'📌 [{prefix}] Category 4 필터 선택 (전체 선택 시 전체 조회)',
+                options=all_cat4,
+                default=all_cat4,
+                key=f'cat4_filter_{prefix}',
+                help='특정 Category 4 항목을 선택하면 해당되는 항목만 필터링되어 보여집니다.'
+            )
+
           if selected_accounts_filter:
             raw_df = raw_df[raw_df['account_num'].isin(selected_accounts_filter)]
+          if selected_cat4_filter:
+            raw_df = raw_df[raw_df['category4'].isin(selected_cat4_filter)]
+
           st.write('---')
 
         def get_grp_agg(use_ex_fx):
