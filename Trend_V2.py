@@ -91,11 +91,199 @@ def init_db():
         )
     ''')
 
+  # 종목 분류 마스터 테이블 (백업 시 함께 보존)
+  c.execute('''
+        CREATE TABLE IF NOT EXISTS item_category (
+            ticker TEXT,
+            item_name TEXT,
+            category1 TEXT,
+            category2 TEXT,
+            category3 TEXT,
+            category4 TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (ticker, item_name)
+        )
+    ''')
+
   conn.commit()
   conn.close()
 
 
 init_db()
+
+
+def sync_latest_categories_to_portfolio():
+  """DB 내의 가장 최근 record_date 기준으로 모든 종목의 category1~4를 과거 전체 portfolio 및 item_category에 일괄 동기화"""
+  conn = get_connection()
+  c = conn.cursor()
+  try:
+    pf_df = pd.read_sql(
+        "SELECT record_date, ticker, item_name, category1, category2, category3, category4 FROM portfolio ORDER BY record_date DESC",
+        conn,
+    )
+    if pf_df.empty:
+      conn.close()
+      return
+
+    cat_master = pd.read_sql("SELECT * FROM item_category", conn)
+    master_dict = {}
+    for _, row in cat_master.iterrows():
+      tk_val = str(row['ticker']).strip() if pd.notna(row['ticker']) and str(row['ticker']).strip().lower() not in ['', 'nan', 'none'] else ''
+      name_val = str(row['item_name']).strip() if pd.notna(row['item_name']) and str(row['item_name']).strip().lower() not in ['', 'nan', 'none'] else ''
+      master_dict[(tk_val, name_val)] = (
+          str(row['category1']).strip() if pd.notna(row['category1']) and str(row['category1']).strip().lower() != 'nan' else '',
+          str(row['category2']).strip() if pd.notna(row['category2']) and str(row['category2']).strip().lower() != 'nan' else '',
+          str(row['category3']).strip() if pd.notna(row['category3']) and str(row['category3']).strip().lower() != 'nan' else '',
+          str(row['category4']).strip() if pd.notna(row['category4']) and str(row['category4']).strip().lower() != 'nan' else '',
+      )
+
+    item_cat_map = {}
+    for _, row in pf_df.iterrows():
+      tk = str(row['ticker']).strip() if pd.notna(row['ticker']) and str(row['ticker']).strip().lower() not in ['', 'nan', 'none'] else ''
+      name = str(row['item_name']).strip() if pd.notna(row['item_name']) and str(row['item_name']).strip().lower() not in ['', 'nan', 'none'] else ''
+      key = (tk, name)
+      if key not in item_cat_map:
+        if key in master_dict and any(master_dict[key]):
+          item_cat_map[key] = master_dict[key]
+        else:
+          c1 = str(row['category1']).strip() if pd.notna(row['category1']) and str(row['category1']).strip().lower() != 'nan' else ''
+          c2 = str(row['category2']).strip() if pd.notna(row['category2']) and str(row['category2']).strip().lower() != 'nan' else ''
+          c3 = str(row['category3']).strip() if pd.notna(row['category3']) and str(row['category3']).strip().lower() != 'nan' else ''
+          c4 = str(row['category4']).strip() if pd.notna(row['category4']) and str(row['category4']).strip().lower() != 'nan' else ''
+          item_cat_map[key] = (c1, c2, c3, c4)
+
+    for (tk, name), (c1, c2, c3, c4) in item_cat_map.items():
+      if tk:
+        c.execute(
+            "UPDATE portfolio SET category1=?, category2=?, category3=?, category4=? WHERE ticker=?",
+            (c1, c2, c3, c4, tk),
+        )
+      elif name:
+        c.execute(
+            "UPDATE portfolio SET category1=?, category2=?, category3=?, category4=? WHERE item_name=? AND (ticker IS NULL OR ticker='' OR ticker='nan')",
+            (c1, c2, c3, c4, name),
+        )
+      c.execute(
+          """INSERT OR REPLACE INTO item_category (ticker, item_name, category1, category2, category3, category4, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))""",
+          (tk, name, c1, c2, c3, c4),
+      )
+    conn.commit()
+  except Exception as e:
+    print(f"카테고리 자동 동기화 중 오류: {e}")
+  finally:
+    conn.close()
+
+
+def save_item_categories(df_to_save):
+  """사용자가 웹(data_editor)에서 수정한 종목 분류를 item_category 및 portfolio 전체(과거 모든 일자)에 일괄 반영"""
+  conn = get_connection()
+  c = conn.cursor()
+  try:
+    for _, row in df_to_save.iterrows():
+      tk = str(row.get('ticker', '')).strip() if pd.notna(row.get('ticker')) and str(row.get('ticker')).strip().lower() not in ['', 'nan', 'none'] else ''
+      name = str(row.get('item_name', '')).strip() if pd.notna(row.get('item_name')) and str(row.get('item_name')).strip().lower() not in ['', 'nan', 'none'] else ''
+      c1 = str(row.get('category1', '')).strip() if pd.notna(row.get('category1')) and str(row.get('category1')).strip().lower() != 'nan' else ''
+      c2 = str(row.get('category2', '')).strip() if pd.notna(row.get('category2')) and str(row.get('category2')).strip().lower() != 'nan' else ''
+      c3 = str(row.get('category3', '')).strip() if pd.notna(row.get('category3')) and str(row.get('category3')).strip().lower() != 'nan' else ''
+      c4 = str(row.get('category4', '')).strip() if pd.notna(row.get('category4')) and str(row.get('category4')).strip().lower() != 'nan' else ''
+
+      if tk:
+        c.execute(
+            "UPDATE portfolio SET category1=?, category2=?, category3=?, category4=? WHERE ticker=?",
+            (c1, c2, c3, c4, tk),
+        )
+      elif name:
+        c.execute(
+            "UPDATE portfolio SET category1=?, category2=?, category3=?, category4=? WHERE item_name=? AND (ticker IS NULL OR ticker='' OR ticker='nan')",
+            (c1, c2, c3, c4, name),
+        )
+      c.execute(
+          """INSERT OR REPLACE INTO item_category (ticker, item_name, category1, category2, category3, category4, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))""",
+          (tk, name, c1, c2, c3, c4),
+      )
+    conn.commit()
+  except Exception as e:
+    st.error(f"종목 분류 저장 중 오류: {e}")
+  finally:
+    conn.close()
+
+
+def get_all_item_categories():
+  """DB에 등록된 모든 보유 종목의 유니크 목록 및 최신 분류 정보를 반환"""
+  conn = get_connection()
+  pf_df = pd.read_sql(
+      "SELECT record_date, ticker, item_name, category1, category2, category3, category4 FROM portfolio ORDER BY record_date DESC",
+      conn,
+  )
+  cat_master = pd.read_sql("SELECT * FROM item_category", conn)
+  conn.close()
+
+  if pf_df.empty and cat_master.empty:
+    return pd.DataFrame(columns=['ticker', 'item_name', 'category1', 'category2', 'category3', 'category4'])
+
+  master_dict = {}
+  for _, row in cat_master.iterrows():
+    tk = str(row['ticker']).strip() if pd.notna(row['ticker']) and str(row['ticker']).strip().lower() not in ['', 'nan', 'none'] else ''
+    name = str(row['item_name']).strip() if pd.notna(row['item_name']) and str(row['item_name']).strip().lower() not in ['', 'nan', 'none'] else ''
+    master_dict[(tk, name)] = {
+        'category1': str(row['category1']).strip() if pd.notna(row['category1']) and str(row['category1']).strip().lower() != 'nan' else '',
+        'category2': str(row['category2']).strip() if pd.notna(row['category2']) and str(row['category2']).strip().lower() != 'nan' else '',
+        'category3': str(row['category3']).strip() if pd.notna(row['category3']) and str(row['category3']).strip().lower() != 'nan' else '',
+        'category4': str(row['category4']).strip() if pd.notna(row['category4']) and str(row['category4']).strip().lower() != 'nan' else '',
+    }
+
+  items_list = []
+  seen = set()
+  for _, row in pf_df.iterrows():
+    tk = str(row['ticker']).strip() if pd.notna(row['ticker']) and str(row['ticker']).strip().lower() not in ['', 'nan', 'none'] else ''
+    name = str(row['item_name']).strip() if pd.notna(row['item_name']) and str(row['item_name']).strip().lower() not in ['', 'nan', 'none'] else ''
+    key = (tk, name)
+    if key not in seen:
+      seen.add(key)
+      if key in master_dict and any(master_dict[key].values()):
+        c1 = master_dict[key]['category1']
+        c2 = master_dict[key]['category2']
+        c3 = master_dict[key]['category3']
+        c4 = master_dict[key]['category4']
+      else:
+        c1 = str(row['category1']).strip() if pd.notna(row['category1']) and str(row['category1']).strip().lower() != 'nan' else ''
+        c2 = str(row['category2']).strip() if pd.notna(row['category2']) and str(row['category2']).strip().lower() != 'nan' else ''
+        c3 = str(row['category3']).strip() if pd.notna(row['category3']) and str(row['category3']).strip().lower() != 'nan' else ''
+        c4 = str(row['category4']).strip() if pd.notna(row['category4']) and str(row['category4']).strip().lower() != 'nan' else ''
+
+      items_list.append({
+          'ticker': tk,
+          'item_name': name,
+          'category1': c1,
+          'category2': c2,
+          'category3': c3,
+          'category4': c4,
+      })
+
+  for (tk, name), cats in master_dict.items():
+    if (tk, name) not in seen:
+      items_list.append({
+          'ticker': tk,
+          'item_name': name,
+          'category1': cats['category1'],
+          'category2': cats['category2'],
+          'category3': cats['category3'],
+          'category4': cats['category4'],
+      })
+
+  res_df = pd.DataFrame(items_list)
+  if not res_df.empty:
+    res_df = res_df.sort_values(by=['ticker', 'item_name']).reset_index(drop=True)
+  return res_df
+
+
+# 앱 시작 시 최신 기준 동기화 자동 1회 점검
+try:
+  sync_latest_categories_to_portfolio()
+except Exception:
+  pass
 
 
 def get_connection():
@@ -278,6 +466,7 @@ menu = st.sidebar.selectbox(
     [
         '트렌드 리포트',
         '계좌 별칭 관리',
+        '종목 분류 관리',
         '포트폴리오 업로드',
         '원금 및 입출금 관리',
         '등록 데이터 조회 및 웹 수정',
@@ -333,7 +522,6 @@ if menu == '트렌드 리포트':
       if pd.notna(db_whose) and str(db_whose).strip() != '':
           whose_mapping[acc_num] = str(db_whose).strip()
       else:
-          # DB에 WHOSE가 없을 경우 기존 Fallback(이름 추론) 사용
           alias = alias_map.get(acc_num, '')
           broker_str = row['broker']
           combined_str = f'{acc_num} {alias} {broker_str}'
@@ -595,8 +783,12 @@ if menu == '트렌드 리포트':
         item_cum_pl = {}
         item_cum_pl_ex = {}
 
-        account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc]
-        all_account_items = account_pf_all[['item_name', 'ticker', 'category2', 'category4', 'currency']].drop_duplicates().to_dict('records')
+        account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc].copy()
+        # [핵심 수정: 2배 중복 집계 버그 방지]
+        # 종목 식별자(item_name, ticker) 기준으로 최신 record_date 순 정렬 후 중복 완전 제거
+        account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
+        unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker'])
+        all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
 
         for t_date in target_dates:
           t_str = t_date.strftime('%Y-%m-%d')
@@ -659,10 +851,6 @@ if menu == '트렌드 리포트':
               row = current_pf_dict[key]
               qty = row.get('quantity', 0) if pd.notna(row.get('quantity')) else 0
               base_price = row.get('current_price', 0) if pd.notna(row.get('current_price')) else 0
-              if pd.notna(row.get('category2')) and str(row.get('category2')).strip() != '':
-                cat2 = str(row.get('category2')).strip()
-              if pd.notna(row.get('category4')) and str(row.get('category4')).strip() != '':
-                cat4 = str(row.get('category4')).strip()
             else:
               qty = 0
               base_price = 0
@@ -1082,7 +1270,6 @@ if menu == '트렌드 리포트':
 
         cb_c1, cb_c2, cb_c3, cb_c4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
-        default_idx = 0 if global_legend_pos == '하단 배치' else 1
 
         with cb_c1:
           pos_g1 = st.selectbox(
@@ -1595,7 +1782,7 @@ if menu == '트렌드 리포트':
         whose_list = sorted(agg1_def['whose'].unique())
 
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
-        ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key='ex_whose_summary_total')
+        ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_whose_summary_total')
         
         agg_whose_summary = get_whose_agg(ex_whose_summary)
         latest_date = raw_df['Date'].max()
@@ -1663,7 +1850,6 @@ if menu == '트렌드 리포트':
 
         cb_w1, cb_w2, cb_w3, cb_w4 = st.columns(4)
         leg_pos_options = ['하단 배치', '우측 배치', '숨김']
-        default_idx = 0 if global_legend_pos == '하단 배치' else 1
 
         with cb_w1:
           pos_w1 = st.selectbox(
@@ -2113,6 +2299,68 @@ elif menu == '계좌 별칭 관리':
         st.rerun()
 
 # -----------------------------------------------------------------------------
+# 메뉴: 종목 분류 관리 (신규 기능)
+# -----------------------------------------------------------------------------
+elif menu == '종목 분류 관리':
+  st.header('🏷️ 종목 분류(Category) 일괄 관리 및 수정')
+  st.info(
+      '💡 현재 DB에 등록된 모든 보유 종목의 분류(Category 1~4)를 한눈에 확인하고 웹에서 직접 수정할 수 있습니다.\n\n'
+      '여기서 수정한 분류 정보는 **과거 모든 일자의 포트폴리오 데이터와 백업 DB에 일괄 자동 적용**됩니다.'
+  )
+
+  item_cat_df = get_all_item_categories()
+
+  if item_cat_df.empty:
+    st.warning('등록된 포트폴리오 및 종목 데이터가 없습니다. 먼저 포트폴리오를 업로드해 주세요.')
+  else:
+    f_c1, f_c2 = st.columns([2, 1])
+    with f_c1:
+      search_kw = st.text_input('🔍 종목명 또는 티커 검색', placeholder='예: LITE, IGM, BE, DRAM 등')
+    with f_c2:
+      st.write(f'총 등록 종목 수: **{len(item_cat_df)}**개')
+
+    display_df = item_cat_df.copy()
+    if search_kw.strip():
+      kw = search_kw.strip().lower()
+      display_df = display_df[
+          display_df['item_name'].astype(str).str.lower().str.contains(kw) |
+          display_df['ticker'].astype(str).str.lower().str.contains(kw)
+      ]
+
+    st.markdown('##### 📝 종목별 분류 정보 테이블 (수정 후 아래 저장 버튼 클릭)')
+
+    edited_cat_df = st.data_editor(
+        display_df,
+        disabled=['ticker', 'item_name'],
+        use_container_width=True,
+        key='item_category_editor',
+        column_config={
+            'ticker': st.column_config.TextColumn('티커 (Ticker)', help='종목 티커 (식별자, 수정 불가)'),
+            'item_name': st.column_config.TextColumn('종목명 (Item Name)', help='종목명 (식별자, 수정 불가)'),
+            'category1': st.column_config.TextColumn('Category 1 (대분류)', help='예: 주식, ETF, 현금 등'),
+            'category2': st.column_config.TextColumn('Category 2 (중분류)', help='예: 미국주식, 국내ETF 등'),
+            'category3': st.column_config.TextColumn('Category 3 (소분류)', help='예: IT, 반도체 등'),
+            'category4': st.column_config.TextColumn('Category 4 (세부분류)', help='예: 광통신, AI소프트웨어 등'),
+        }
+    )
+
+    btn_c1, btn_c2 = st.columns([3, 2])
+    with btn_c1:
+      if st.button('💾 변경된 종목 분류 전체 DB에 일괄 저장 및 적용', type='primary'):
+        with st.spinner('변경된 분류 정보를 전체 포트폴리오 DB에 반영 중입니다...'):
+          save_item_categories(edited_cat_df)
+          sync_latest_categories_to_portfolio()
+        st.success('✅ 모든 종목의 분류 정보가 성공적으로 전체 포트폴리오(과거 전 일자)에 반영되었습니다!')
+        st.rerun()
+
+    with btn_c2:
+      if st.button('🔄 최신 포트폴리오 기준으로 전체 재동기화'):
+        with st.spinner('최신 포트폴리오 기준으로 동기화 중...'):
+          sync_latest_categories_to_portfolio()
+        st.success('최신 포트폴리오 기준 카테고리 동기화가 완료되었습니다!')
+        st.rerun()
+
+# -----------------------------------------------------------------------------
 # 메뉴 3: 포트폴리오 업로드
 # -----------------------------------------------------------------------------
 elif menu == '포트폴리오 업로드':
@@ -2182,7 +2430,10 @@ elif menu == '포트폴리오 업로드':
         conn.commit()
         conn.close()
 
-        st.success('데이터베이스 적재가 완료되었습니다! (WHOSE 및 매수단가 항목이 성공적으로 반영되었습니다)')
+        # [요구사항 1 반영] 업로드된 최신 포트폴리오의 분류 항목을 기존 DB 전체에도 일괄 동기화
+        sync_latest_categories_to_portfolio()
+
+        st.success('데이터베이스 적재가 완료되었습니다! (최신 입력된 종목 분류 항목이 기존 DB 전체에도 일괄 적용되었습니다)')
     except Exception as e:
       st.error(f'파일 처리 중 오류가 발생했습니다: {e}')
 
@@ -2347,6 +2598,9 @@ elif menu == '등록 데이터 조회 및 웹 수정':
       conn.commit()
       conn.close()
 
+      # 수정된 포트폴리오의 분류 항목을 기존 DB 전체에도 일괄 동기화
+      sync_latest_categories_to_portfolio()
+
       st.success('데이터베이스 수정 사항이 성공적으로 업데이트되었습니다!')
       st.rerun()
 
@@ -2356,6 +2610,7 @@ elif menu == '등록 데이터 조회 및 웹 수정':
 elif menu == '데이터 백업 및 복구':
   st.header('💾 DB 데이터 백업 및 복구')
 
+  st.info('💡 백업 파일에는 포트폴리오 내역, 최초 원금, 입출금 기록, 계좌 별칭 및 **종목 분류 마스터 정보(item_category)**가 모두 포함되어 함께 백업 및 복원됩니다.')
   st.subheader('📤 데이터베이스 파일 백업 (다운로드)')
   if os.path.exists(DB_FILE):
     with open(DB_FILE, 'rb') as f:
