@@ -1532,8 +1532,11 @@ elif menu == "일별/시점별 보유 현황 분석":
                 for w in selected_whose_list:
                     w_dates = whose_date_map.get(w, [])
                     if w_dates:
-                        if st.session_state.get(f"select_date_{w}") not in w_dates:
+                        # 항상 각 소유주의 가장 최신 날짜(w_dates[0])를 default로 설정
+                        if (f"select_date_{w}" not in st.session_state or 
+                            st.session_state.get(f"select_date_{w}") not in w_dates):
                             st.session_state[f"select_date_{w}"] = w_dates[0]
+                        
                         owner_selected_dates[w] = st.selectbox(
                             f"[{w}] 기준 날짜",
                             options=w_dates,
@@ -1633,25 +1636,26 @@ elif menu == "일별/시점별 보유 현황 분석":
             cat_keys = list(cat_options.keys())
             l234_options = ["없음"] + cat_keys
 
+            # Default 설정: 1단계: 소유자(WHOSE), 2단계: 분류4, 3단계: 보유항목(ITEM), 4단계: 없음, 색상: 일간
             if "treemap_l1" not in st.session_state:
-                st.session_state["treemap_l1"] = cat_keys[1]
+                st.session_state["treemap_l1"] = "소유자(WHOSE)"
             if "treemap_l2" not in st.session_state:
-                st.session_state["treemap_l2"] = l234_options[1]
+                st.session_state["treemap_l2"] = "분류4"
             if "treemap_l3" not in st.session_state:
-                st.session_state["treemap_l3"] = l234_options[3]
+                st.session_state["treemap_l3"] = "보유항목(ITEM)"
             if "treemap_l4" not in st.session_state:
-                st.session_state["treemap_l4"] = l234_options[4]
+                st.session_state["treemap_l4"] = "없음"
             if "treemap_color_option" not in st.session_state:
                 st.session_state["treemap_color_option"] = TREEMAP_COLOR_OPTIONS[1]
 
             if st.session_state.get("treemap_l1") not in cat_keys:
-                st.session_state["treemap_l1"] = cat_keys[1]
+                st.session_state["treemap_l1"] = "소유자(WHOSE)"
             if st.session_state.get("treemap_l2") not in l234_options:
-                st.session_state["treemap_l2"] = l234_options[1]
+                st.session_state["treemap_l2"] = "분류4"
             if st.session_state.get("treemap_l3") not in l234_options:
-                st.session_state["treemap_l3"] = l234_options[3]
+                st.session_state["treemap_l3"] = "보유항목(ITEM)"
             if st.session_state.get("treemap_l4") not in l234_options:
-                st.session_state["treemap_l4"] = l234_options[4]
+                st.session_state["treemap_l4"] = "없음"
             if st.session_state.get("treemap_color_option") not in TREEMAP_COLOR_OPTIONS:
                 st.session_state["treemap_color_option"] = TREEMAP_COLOR_OPTIONS[1]
 
