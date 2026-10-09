@@ -784,8 +784,6 @@ if menu == '트렌드 리포트':
         item_cum_pl_ex = {}
 
         account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc].copy()
-        # [핵심 수정: 2배 중복 집계 버그 방지]
-        # 종목 식별자(item_name, ticker) 기준으로 최신 record_date 순 정렬 후 중복 완전 제거
         account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
         unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker'])
         all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
@@ -1592,12 +1590,12 @@ if menu == '트렌드 리포트':
 
         if group_col in ['account_num', 'account_type', 'category2']:
           st.write('---')
-          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 누적 세로 막대 차트 (총 3개 개별 분석)')
+          st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 항목별 분석 (총 3개 개별 분석)')
 
           c_s_ctrl, _ = st.columns([3, 3])
           with c_s_ctrl:
             stack_layout_opt = st.radio(
-                f'🖥️ [{prefix}] 누적 차트 Layout 선택',
+                f'🖥️ [{prefix}] 분석 차트 Layout 선택',
                 options=['1열 (기존 세로 배치)', '2열 (좌우 2개 분할 배치)'],
                 horizontal=True,
                 key=f'stack_layout_{prefix}',
@@ -1606,10 +1604,10 @@ if menu == '트렌드 리포트':
           all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
 
           # -------------------------------------------------------------------
-          # 헬퍼 함수: 개별 누적 막대 차트 생성 및 렌더링
+          # 헬퍼 함수: 개별 차트 생성 및 렌더링 (막대 vs 꺾은선 지원)
           # -------------------------------------------------------------------
           def render_stacked_bar_chart(chart_idx):
-            st.markdown(f'##### 📌 누적 차트 #{chart_idx}')
+            st.markdown(f'##### 📌 차트 #{chart_idx}')
             if '2열' in stack_layout_opt:
               c_sub1, c_sub2 = st.columns([1.2, 0.8])
               with c_sub1:
@@ -1626,18 +1624,28 @@ if menu == '트렌드 리포트':
                     horizontal=True,
                     key=f'sub_group_opt_{prefix}_{chart_idx}',
                 )
-              pos_sub_stack = st.selectbox(
-                  f'📌 범례 배치 (#{chart_idx})',
-                  options=leg_pos_options,
-                  index=get_chart_legend_idx(
-                      f'pos_sub_stack_{prefix}_{chart_idx}',
-                      global_legend_pos,
-                      leg_pos_options,
-                  ),
-                  key=f'pos_sub_stack_{prefix}_{chart_idx}',
-              )
+              
+              c_sub3, c_sub4 = st.columns(2)
+              with c_sub3:
+                chart_type_opt = st.radio(
+                    f'차트 유형 선택 (#{chart_idx})',
+                    options=['누적 세로 막대', '꺾은선 그래프'],
+                    horizontal=True,
+                    key=f'sub_chart_type_{prefix}_{chart_idx}',
+                )
+              with c_sub4:
+                pos_sub_stack = st.selectbox(
+                    f'📌 범례 배치 (#{chart_idx})',
+                    options=leg_pos_options,
+                    index=get_chart_legend_idx(
+                        f'pos_sub_stack_{prefix}_{chart_idx}',
+                        global_legend_pos,
+                        leg_pos_options,
+                    ),
+                    key=f'pos_sub_stack_{prefix}_{chart_idx}',
+                )
             else:
-              c_sub1, c_sub2, c_sub3 = st.columns([2, 2, 2])
+              c_sub1, c_sub2, c_sub3, c_sub4 = st.columns([2, 1.8, 1.8, 1.6])
               with c_sub1:
                 selected_filter_items = st.multiselect(
                     f'특정 {prefix} 선택 (#{chart_idx})',
@@ -1653,6 +1661,13 @@ if menu == '트렌드 리포트':
                     key=f'sub_group_opt_{prefix}_{chart_idx}',
                 )
               with c_sub3:
+                chart_type_opt = st.radio(
+                    f'차트 유형 선택 (#{chart_idx})',
+                    options=['누적 세로 막대', '꺾은선 그래프'],
+                    horizontal=True,
+                    key=f'sub_chart_type_{prefix}_{chart_idx}',
+                )
+              with c_sub4:
                 pos_sub_stack = st.selectbox(
                     f'📌 범례 배치 (#{chart_idx})',
                     options=leg_pos_options,
@@ -1677,24 +1692,42 @@ if menu == '트렌드 리포트':
 
               fig_sub_stack = go.Figure()
               cat_list = sub_agg[target_col].unique().tolist()
-              for cat in cat_list:
-                c_df = sub_agg[sub_agg[target_col] == cat]
-                fig_sub_stack.add_trace(
-                    go.Bar(
-                        x=c_df['Chart_Date'],
-                        y=c_df['총평가금액'],
-                        name=str(cat),
-                        hovertemplate='%{y:,.0f} 원'
-                    )
-                )
+              
+              if chart_type_opt == '누적 세로 막대':
+                for cat in cat_list:
+                  c_df = sub_agg[sub_agg[target_col] == cat]
+                  fig_sub_stack.add_trace(
+                      go.Bar(
+                          x=c_df['Chart_Date'],
+                          y=c_df['총평가금액'],
+                          name=str(cat),
+                          hovertemplate='%{y:,.0f} 원'
+                      )
+                  )
+                b_mode = 'stack'
+              else:
+                for cat in cat_list:
+                  c_df = sub_agg[sub_agg[target_col] == cat]
+                  fig_sub_stack.add_trace(
+                      go.Scatter(
+                          x=c_df['Chart_Date'],
+                          y=c_df['총평가금액'],
+                          name=str(cat),
+                          mode='lines+markers',
+                          hovertemplate='%{y:,.0f} 원'
+                      )
+                  )
+                b_mode = None
 
               leg_cfg_sub, show_sub, margin_sub = build_legend_config(pos_sub_stack)
+              
+              chart_title_type = "누적 막대" if chart_type_opt == '누적 세로 막대' else "꺾은선"
               fig_sub_stack.update_layout(
                   title=dict(
-                      text=f'🔹 #{chart_idx} 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 누적)',
+                      text=f'🔹 #{chart_idx} 선택된 {prefix}의 일자별 총 평가 금액 ({target_group_opt} 기준 {chart_title_type})',
                       y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
                   ),
-                  barmode='stack',
+                  barmode=b_mode,
                   hovermode='closest',
                   height=500,
                   margin=margin_sub,
@@ -1709,7 +1742,7 @@ if menu == '트렌드 리포트':
             else:
               st.info(f'분석할 {prefix}을 1개 이상 선택해 주세요.')
 
-          # 누적 차트 3개 배치 (1열 vs 2열)
+          # 분석 차트 3개 배치 (1열 vs 2열)
           if '2열' in stack_layout_opt:
             col_sb1, col_sb2 = st.columns(2)
             with col_sb1:
@@ -2163,7 +2196,7 @@ if menu == '트렌드 리포트':
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
         st.write('---')
-        st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석 (누적 세로 막대)')
+        st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석')
         
         group_opt_map = {
             '계좌별': 'account_num',
@@ -2174,7 +2207,7 @@ if menu == '트렌드 리포트':
             '보유 항목별': 'item_name'
         }
         
-        c_tot1, c_tot2 = st.columns([3, 2])
+        c_tot1, c_tot2, c_tot3 = st.columns([2.5, 2.5, 2])
         with c_tot1:
           selected_total_group = st.radio(
               '분류 항목 선택',
@@ -2183,6 +2216,13 @@ if menu == '트렌드 리포트':
               key='total_stack_group_opt'
           )
         with c_tot2:
+          total_chart_type_opt = st.radio(
+              '차트 유형 선택',
+              options=['누적 세로 막대', '꺾은선 그래프'],
+              horizontal=True,
+              key='total_stack_chart_type_opt'
+          )
+        with c_tot3:
           pos_total_stack = st.selectbox(
               '📌 범례(Legend) 배치',
               options=leg_pos_options,
@@ -2200,24 +2240,41 @@ if menu == '트렌드 리포트':
 
         fig_total_stack = go.Figure()
         cat_list = total_agg[target_col].unique().tolist()
-        for cat in cat_list:
-          c_df = total_agg[total_agg[target_col] == cat]
-          fig_total_stack.add_trace(
-              go.Bar(
-                  x=c_df['Chart_Date'],
-                  y=c_df['총평가금액'],
-                  name=str(cat),
-                  hovertemplate='%{y:,.0f} 원'
-              )
-          )
+        
+        if total_chart_type_opt == '누적 세로 막대':
+          for cat in cat_list:
+            c_df = total_agg[total_agg[target_col] == cat]
+            fig_total_stack.add_trace(
+                go.Bar(
+                    x=c_df['Chart_Date'],
+                    y=c_df['총평가금액'],
+                    name=str(cat),
+                    hovertemplate='%{y:,.0f} 원'
+                )
+            )
+          tot_bmode = 'stack'
+        else:
+          for cat in cat_list:
+            c_df = total_agg[total_agg[target_col] == cat]
+            fig_total_stack.add_trace(
+                go.Scatter(
+                    x=c_df['Chart_Date'],
+                    y=c_df['총평가금액'],
+                    name=str(cat),
+                    mode='lines+markers',
+                    hovertemplate='%{y:,.0f} 원'
+                )
+            )
+          tot_bmode = None
 
         leg_cfg_tot, show_tot, margin_tot = build_legend_config(pos_total_stack)
+        tot_chart_title_type = "누적" if total_chart_type_opt == '누적 세로 막대' else "꺾은선"
         fig_total_stack.update_layout(
             title=dict(
-                text=f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group} 기준 누적)',
+                text=f'🔹 [전체 합산] 일자별 총 평가 금액 ({selected_total_group} 기준 {tot_chart_title_type})',
                 y=0.95, x=0.01, xanchor='left', yanchor='top', yref='container'
             ),
-            barmode='stack',
+            barmode=tot_bmode,
             hovermode='closest',
             height=500,
             margin=margin_tot,
@@ -2430,7 +2487,7 @@ elif menu == '포트폴리오 업로드':
         conn.commit()
         conn.close()
 
-        # [요구사항 1 반영] 업로드된 최신 포트폴리오의 분류 항목을 기존 DB 전체에도 일괄 동기화
+        # 업로드된 최신 포트폴리오의 분류 항목을 기존 DB 전체에도 일괄 동기화
         sync_latest_categories_to_portfolio()
 
         st.success('데이터베이스 적재가 완료되었습니다! (최신 입력된 종목 분류 항목이 기존 DB 전체에도 일괄 적용되었습니다)')
