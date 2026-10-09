@@ -43,7 +43,8 @@ def init_db():
             eval_profit_loss REAL,
             return_rate REAL,
             portfolio_weight REAL,
-            currency TEXT
+            currency TEXT,
+            whose TEXT
         )
     ''')
 
@@ -57,6 +58,7 @@ def init_db():
       'eval_profit_loss': 'REAL',
       'return_rate': 'REAL',
       'portfolio_weight': 'REAL',
+      'whose': 'TEXT'
   }
 
   for col, dtype in new_cols.items():
@@ -317,21 +319,31 @@ if menu == '트렌드 리포트':
         ' 파일을 먼저 등록해 주세요.'
     )
   else:
-    acc_info_df = pf_df[
-        ['broker', 'account_num', 'account_type']
-    ].drop_duplicates()
+    cols_to_extract = ['broker', 'account_num', 'account_type']
+    if 'whose' in pf_df.columns:
+        cols_to_extract.append('whose')
+        
+    acc_info_df = pf_df[cols_to_extract].drop_duplicates(subset=['account_num']).copy()
+    
     whose_mapping = {}
     for _, row in acc_info_df.iterrows():
       acc_num = str(row['account_num'])
-      alias = alias_map.get(acc_num, '')
-      broker_str = row['broker']
-      combined_str = f'{acc_num} {alias} {broker_str}'
-      if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
-        whose_mapping[acc_num] = 'SH'
+      db_whose = row.get('whose')
+      
+      if pd.notna(db_whose) and str(db_whose).strip() != '':
+          whose_mapping[acc_num] = str(db_whose).strip()
       else:
-        whose_mapping[acc_num] = 'BJ'
+          # DB에 WHOSE가 없을 경우 기존 Fallback(이름 추론) 사용
+          alias = alias_map.get(acc_num, '')
+          broker_str = row['broker']
+          combined_str = f'{acc_num} {alias} {broker_str}'
+          if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
+            whose_mapping[acc_num] = 'SH'
+          else:
+            whose_mapping[acc_num] = 'BJ'
+            
     acc_info_df['whose'] = acc_info_df['account_num'].map(whose_mapping)
-    all_whose_options = sorted(acc_info_df['whose'].unique().tolist())
+    all_whose_options = sorted(acc_info_df['whose'].dropna().unique().tolist())
 
     min_rec_date = pd.to_datetime(pf_df['record_date']).min().date()
     max_rec_date = date.today()
@@ -568,15 +580,7 @@ if menu == '트렌드 리포트':
             else f'미지정별칭({acc[-4:] if len(acc)>=4 else acc})'
         )
 
-        combined_str = f'{acc} {acc_alias_val} {broker_name}'
-        if (
-            '소희' in combined_str
-            or 'SH' in combined_str
-            or 'sh' in combined_str
-        ):
-          whose_val = 'SH'
-        else:
-          whose_val = 'BJ'
+        whose_val = whose_mapping.get(acc, 'BJ')
 
         init_val = (
             init_p_df[init_p_df['account_num'].astype(str) == acc][
@@ -2137,12 +2141,16 @@ elif menu == '포트폴리오 업로드':
             'category4': 'category4',
             '수량': 'quantity',
             '매수단가': 'purchase_price',
+            'buy_price': 'purchase_price',
             '현재가': 'current_price',
             '평가금액': 'eval_price',
             '평가손익': 'eval_profit_loss',
             '수익률': 'return_rate',
             '비중': 'portfolio_weight',
             '통화': 'currency',
+            'whose': 'whose',
+            '소유자': 'whose',
+            '소유주': 'whose'
         }
 
         rename_dict = {k: v for k, v in col_map.items() if k in df_upload.columns}
@@ -2162,7 +2170,7 @@ elif menu == '포트폴리오 업로드':
             'record_date', 'broker', 'account_num', 'account_name', 'account_type',
             'item_name', 'ticker', 'category1', 'category2', 'category3', 'category4',
             'quantity', 'purchase_price', 'current_price', 'eval_price',
-            'eval_profit_loss', 'return_rate', 'portfolio_weight', 'currency'
+            'eval_profit_loss', 'return_rate', 'portfolio_weight', 'currency', 'whose'
         ]
 
         for col in target_cols:
@@ -2174,7 +2182,7 @@ elif menu == '포트폴리오 업로드':
         conn.commit()
         conn.close()
 
-        st.success('데이터베이스 적재가 완료되었습니다!')
+        st.success('데이터베이스 적재가 완료되었습니다! (WHOSE 및 매수단가 항목이 성공적으로 반영되었습니다)')
     except Exception as e:
       st.error(f'파일 처리 중 오류가 발생했습니다: {e}')
 
