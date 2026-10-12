@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 import streamlit_authenticator as stauth
 
@@ -628,6 +629,19 @@ def normalize_ticker(ticker, currency):
     return t_str
 
 
+def is_korean_ticker(ticker):
+    return str(ticker or "").upper().endswith((".KS", ".KQ"))
+
+
+def regular_only_for_ticker(ticker):
+    setting_key = (
+        "regular_market_only_kr"
+        if is_korean_ticker(ticker)
+        else "regular_market_only_us"
+    )
+    return st.session_state.get(setting_key, False)
+
+
 def fetch_live_ticker_price(ticker, regular_only=False):
     """단일 티커의 최신 시세 가져오기 (regular_only=False 시 프리/애프터마켓 최신가 정확 추적)"""
     if not ticker:
@@ -637,6 +651,11 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         tk = yf.Ticker(t_str)
 
         if t_str.endswith(".KS") or t_str.endswith(".KQ"):
+            if regular_only:
+                hist = tk.history(period="5d", interval="1d", prepost=False)
+                if not hist.empty and not pd.isna(hist["Close"].iloc[-1]):
+                    return round(float(hist["Close"].iloc[-1]), 2)
+                return None
             fast_info = tk.fast_info
             for key in ["lastPrice", "regularMarketPrice", "previousClose"]:
                 val = fast_info.get(key)
@@ -649,13 +668,13 @@ def fetch_live_ticker_price(ticker, regular_only=False):
 
         if regular_only:
             fast_info = tk.fast_info
-            reg_price = fast_info.get("regularMarketPrice") or fast_info.get("lastPrice")
+            reg_price = fast_info.get("regularMarketPrice")
             info = {}
             try:
                 info = tk.info or {}
             except Exception:
                 pass
-            reg_price = reg_price or info.get("regularMarketPrice") or info.get("currentPrice")
+            reg_price = reg_price or info.get("regularMarketPrice")
             if reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
                 return round(float(reg_price), 2)
             
@@ -702,7 +721,13 @@ def fetch_live_ticker_price(ticker, regular_only=False):
 
 
 @st.cache_data(ttl=300)
-def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_only=False):
+def fetch_batch_market_data(
+    ticker_tuple,
+    start_date_str,
+    end_date_str,
+    us_regular_only=False,
+    refresh_key=None,
+):
     """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
@@ -717,7 +742,7 @@ def fetch_batch_market_data(ticker_tuple, start_date_str, end_date_str, regular_
             group_by="ticker",
             auto_adjust=True,
             progress=False,
-            prepost=not regular_only,
+            prepost=not us_regular_only,
         )
         return data
     except Exception:
@@ -752,10 +777,12 @@ def _extract_ticker_series(market_data, ticker):
         return None
 
 
-def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular_only=False):
+def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular_only=None):
     """배치 수집된 데이터프레임에서 종가를 찾고, 필요 시 개별 실시간 시세로 fallback"""
     if not ticker:
         return None
+    if regular_only is None:
+        regular_only = regular_only_for_ticker(ticker)
 
     if not regular_only and not target_date_str:
         live_p = fetch_live_ticker_price(ticker, regular_only=False)
@@ -790,8 +817,10 @@ def _get_last_trading_day_before(m_data, ticker, target_date_dt):
     return None
 
 
-def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=False):
+def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
     """일간 등락률 계산을 위해 (최종 종가/평가시세, 전일 종가)를 산출."""
+    if regular_only is None:
+        regular_only = regular_only_for_ticker(ticker)
     series = _extract_ticker_series(m_data, ticker)
     latest_close = None
     prev_close = None
@@ -840,7 +869,7 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=False)
     return eval_p, base_p
 
 
-def update_all_prices_and_rate_batch(curr_rate, regular_only=False):
+def update_all_prices_and_rate_batch(curr_rate):
     """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트"""
     conn = get_connection()
     try:
@@ -857,20 +886,26 @@ def update_all_prices_and_rate_batch(curr_rate, regular_only=False):
         start_date_str = (today - timedelta(days=10)).strftime("%Y-%m-%d")
         end_date_str = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
-        market_data = fetch_batch_market_data(valid_tickers, start_date_str, end_date_str, regular_only=regular_only)
+        market_data = fetch_batch_market_data(
+            valid_tickers,
+            start_date_str,
+            end_date_str,
+            us_regular_only=st.session_state.get("regular_market_only_us", False),
+        )
 
         price_cache = {}
         for f_ticker in valid_tickers:
-            is_kr = f_ticker.endswith(".KS") or f_ticker.endswith(".KQ")
+            ticker_regular_only = regular_only_for_ticker(f_ticker)
+            is_kr = is_korean_ticker(f_ticker)
             if not is_kr:
-                live_p = fetch_live_ticker_price(f_ticker, regular_only=regular_only)
+                live_p = fetch_live_ticker_price(f_ticker, regular_only=ticker_regular_only)
                 if live_p is not None:
                     price_cache[f_ticker] = live_p
                 else:
-                    price_cache[f_ticker] = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=regular_only)
+                    price_cache[f_ticker] = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=ticker_regular_only)
             else:
-                batch_p = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=regular_only)
-                price_cache[f_ticker] = batch_p if batch_p is not None else fetch_live_ticker_price(f_ticker, regular_only=regular_only)
+                batch_p = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=ticker_regular_only)
+                price_cache[f_ticker] = batch_p if batch_p is not None else fetch_live_ticker_price(f_ticker, regular_only=ticker_regular_only)
 
         cursor = conn.cursor()
         updated_count = 0
@@ -917,8 +952,6 @@ def open_trading_dialog():
         df = df[df["whose"] == logged_in_user].copy()
 
     trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
-
-    regular_only = st.session_state.get("regular_market_only", False)
 
     if trade_type == "신규 매수":
         st.caption("새로운 종목이나 계좌를 포트폴리오에 신규 추가합니다.")
@@ -1075,11 +1108,17 @@ current_rate = st.sidebar.number_input(
 
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ 시세 옵션")
-regular_market_only = st.sidebar.checkbox(
-    "정규장만 반영 (Pre/Post-market 제외)",
+st.sidebar.checkbox(
+    "미국장: 정규장만 반영 (Pre/Post-market 제외)",
     value=False,
-    key="regular_market_only",
-    help="체크 시 프리마켓 및 애프터마켓 시세를 제외하고 정규장 마감일/정규장 종가 시세를 기준으로 등락률을 계산합니다."
+    key="regular_market_only_us",
+    help="미국 종목의 프리마켓 및 애프터마켓 시세를 제외하고 정규장 시세를 사용합니다.",
+)
+st.sidebar.checkbox(
+    "한국장: 정규장만 반영",
+    value=False,
+    key="regular_market_only_kr",
+    help="한국 종목의 장중 최신 시세 대신 최근 정규장 일봉 종가를 사용합니다.",
 )
 
 if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
@@ -1093,7 +1132,7 @@ if st.sidebar.button("⚡ 실시간 환율 및 전체 최신 시세 일괄 업�
         st.cache_data.clear()
         target_rate = fetch_live_exchange_rate()
         st.session_state.live_rate_store = target_rate
-        cnt = update_all_prices_and_rate_batch(target_rate, regular_only=regular_market_only)
+        cnt = update_all_prices_and_rate_batch(target_rate)
         st.sidebar.success(f"업데이트 완료! (적용 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
         st.rerun()
 
@@ -1141,7 +1180,7 @@ if menu == "자산 입력 및 관리":
             else:
                 target_rate = current_rate
 
-            cnt = update_all_prices_and_rate_batch(target_rate, regular_only=regular_market_only)
+            cnt = update_all_prices_and_rate_batch(target_rate)
             st.success(f"업데이트 완료! (적용된 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
             st.rerun()
 
@@ -1311,7 +1350,10 @@ if menu == "자산 입력 및 관리":
                 final_rate = ex_rate if is_usd else 1.0
                 if current_price == 0.0 and ticker:
                     f_ticker = normalize_ticker(ticker, curr_code)
-                    fetched = fetch_live_ticker_price(f_ticker, regular_only=regular_market_only)
+                    fetched = fetch_live_ticker_price(
+                        f_ticker,
+                        regular_only=regular_only_for_ticker(f_ticker),
+                    )
                     if fetched:
                         current_price = fetched
 
@@ -1540,6 +1582,20 @@ elif menu == "일별/시점별 보유 현황 분석":
                     "🗓️ 특정 날짜 기준 과거 시세로 조회하기",
                     key="treemap_use_hist",
                 )
+                live_tracking = st.toggle(
+                    "⏱ 실시간 시세 Tracking (5분마다 갱신)",
+                    key="treemap_live_tracking",
+                    disabled=use_historical_price,
+                    help="켜두면 최신 시세와 트리맵을 5분마다 다시 조회합니다. 과거 시세 조회와는 함께 사용할 수 없습니다.",
+                )
+                if live_tracking and not use_historical_price:
+                    live_refresh_count = st_autorefresh(
+                        interval=300_000,
+                        key="treemap_live_price_autorefresh",
+                    )
+                    st.caption(
+                        f"자동 갱신 중 · 화면 갱신 시각: {datetime.now().strftime('%H:%M:%S')}"
+                    )
                 if use_historical_price:
                     target_eval_date = st.date_input(
                         "조회 기준 시세 날짜",
@@ -1570,16 +1626,60 @@ elif menu == "일별/시점별 보유 현황 분석":
                     start_dt_str = (target_dt - timedelta(days=7)).strftime("%Y-%m-%d")
                     end_dt_str = (target_dt + timedelta(days=2)).strftime("%Y-%m-%d")
                     
-                    m_data = fetch_batch_market_data(tickers, start_dt_str, end_dt_str, regular_only=regular_market_only)
+                    m_data = fetch_batch_market_data(
+                        tickers,
+                        start_dt_str,
+                        end_dt_str,
+                        us_regular_only=st.session_state.get(
+                            "regular_market_only_us", False
+                        ),
+                    )
 
                     hist_price_map = {}
                     for tk in tickers:
-                        hist_price_map[tk] = get_price_from_batch_data(m_data, tk, target_eval_date, regular_only=regular_market_only)
+                        hist_price_map[tk] = get_price_from_batch_data(
+                            m_data, tk, target_eval_date
+                        )
 
                     for idx, row in sub_df.iterrows():
                         tk = row["formatted_ticker"]
                         if tk in hist_price_map and hist_price_map[tk] is not None:
                             sub_df.at[idx, "current_price"] = hist_price_map[tk]
+
+            elif live_tracking and tickers:
+                refresh_now = datetime.now()
+                start_dt_str = (refresh_now - timedelta(days=10)).strftime("%Y-%m-%d")
+                end_dt_str = (refresh_now + timedelta(days=2)).strftime("%Y-%m-%d")
+                live_market_data = fetch_batch_market_data(
+                    tickers,
+                    start_dt_str,
+                    end_dt_str,
+                    us_regular_only=st.session_state.get(
+                        "regular_market_only_us", False
+                    ),
+                    refresh_key=live_refresh_count,
+                )
+                live_price_map = {}
+                failed_tickers = []
+                for ticker in tickers:
+                    live_price = get_price_from_batch_data(
+                        live_market_data, ticker
+                    )
+                    if live_price is not None and live_price > 0:
+                        live_price_map[ticker] = live_price
+                    else:
+                        failed_tickers.append(ticker)
+
+                for idx, row in sub_df.iterrows():
+                    latest_price = live_price_map.get(row["formatted_ticker"])
+                    if latest_price is not None:
+                        sub_df.at[idx, "current_price"] = latest_price
+
+                if failed_tickers:
+                    st.warning(
+                        f"{len(failed_tickers)}개 종목의 최신 시세를 가져오지 못해 "
+                        "기존 표시 가격을 유지했습니다."
+                    )
 
             sub_df["rate_multiplier"] = sub_df.apply(
                 lambda r: r["exchange_rate"] if r["currency"] == "USD" else 1.0,
@@ -1794,7 +1894,14 @@ elif menu == "일별/시점별 보유 현황 분석":
                 end_fetch_dt = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
                 with st.spinner(f"[{color_option}] 기준 종가 배치 계산 중..."):
-                    m_data = fetch_batch_market_data(tickers, start_fetch_dt, end_fetch_dt, regular_only=regular_market_only)
+                    m_data = fetch_batch_market_data(
+                        tickers,
+                        start_fetch_dt,
+                        end_fetch_dt,
+                        us_regular_only=st.session_state.get(
+                            "regular_market_only_us", False
+                        ),
+                    )
 
                     ticker_base_prices = {}
                     ticker_eval_prices = {}
@@ -1803,16 +1910,19 @@ elif menu == "일별/시점별 보유 현황 분석":
                     for tk in tickers:
                         if tk:
                             if is_daily:
-                                eval_p, base_p = _get_daily_prices(m_data, tk, None, regular_only=regular_market_only)
+                                eval_p, base_p = _get_daily_prices(m_data, tk)
                                 ticker_eval_prices[tk] = eval_p
                                 ticker_base_prices[tk] = base_p
                             else:
                                 ticker_base_prices[tk] = _get_last_trading_day_before(m_data, tk, target_base_dt)
-                                if regular_market_only:
+                                if regular_only_for_ticker(tk):
                                     s = _extract_ticker_series(m_data, tk)
                                     ticker_eval_prices[tk] = float(s.iloc[-1]) if (s is not None and not s.empty) else None
                                 else:
-                                    ticker_eval_prices[tk] = fetch_live_ticker_price(tk, regular_only=False)
+                                    ticker_eval_prices[tk] = fetch_live_ticker_price(
+                                        tk,
+                                        regular_only=regular_only_for_ticker(tk),
+                                    )
 
                     for idx, row in sub_df.iterrows():
                         f_ticker = row["formatted_ticker"]
