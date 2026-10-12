@@ -571,8 +571,87 @@ if menu == '트렌드 리포트':
         help='선택한 WHOSE 소유의 계좌만 아래 계좌 선택 목록에 표시됩니다.',
     )
 
-    filtered_acc_info = acc_info_df[
+    def normalize_filter_value(value, empty_label):
+      if pd.isna(value) or str(value).strip().lower() in ('', 'nan'):
+        return empty_label
+      return str(value).strip()
+
+    item_inventory_df = (
+        pf_df.sort_values('record_date', ascending=False)
+        .drop_duplicates(subset=['account_num', 'item_name', 'ticker'])
+        .copy()
+    )
+    item_inventory_df['account_num'] = item_inventory_df['account_num'].astype(str)
+    item_inventory_df['category2_filter'] = item_inventory_df['category2'].map(
+        lambda value: normalize_filter_value(value, '미분류')
+    )
+    item_inventory_df['category4_filter'] = item_inventory_df['category4'].map(
+        lambda value: normalize_filter_value(value, '미분류')
+    )
+    item_inventory_df['whose_filter'] = item_inventory_df['account_num'].map(
+        whose_mapping
+    )
+
+    whose_sig = tuple(selected_whose)
+    whose_items_df = item_inventory_df[
+        item_inventory_df['whose_filter'].isin(selected_whose)
+    ]
+    whose_accounts_df = acc_info_df[
         acc_info_df['whose'].isin(selected_whose)
+    ]
+    account_type_options = sorted({
+        normalize_filter_value(value, '미지정')
+        for value in whose_accounts_df['account_type']
+    })
+    category2_options = sorted(whose_items_df['category2_filter'].unique().tolist())
+    category4_options = sorted(whose_items_df['category4_filter'].unique().tolist())
+
+    if st.session_state.get('_trend_filter_whose_sig') != whose_sig:
+      st.session_state['trend_sel_account_types'] = account_type_options
+      st.session_state['trend_sel_category2'] = category2_options
+      st.session_state['trend_sel_category4'] = category4_options
+      st.session_state['_trend_filter_whose_sig'] = whose_sig
+
+    filter_options = {
+        'trend_sel_account_types': account_type_options,
+        'trend_sel_category2': category2_options,
+        'trend_sel_category4': category4_options,
+    }
+    for key, options in filter_options.items():
+      selected_values = st.session_state.get(key, options)
+      st.session_state[key] = [value for value in selected_values if value in options]
+
+    filter_cols = st.columns(3)
+    with filter_cols[0]:
+      selected_account_types = st.multiselect(
+          '계좌유형 필터',
+          options=account_type_options,
+          key='trend_sel_account_types',
+      )
+    with filter_cols[1]:
+      selected_category2 = st.multiselect(
+          'Category 2 필터',
+          options=category2_options,
+          key='trend_sel_category2',
+      )
+    with filter_cols[2]:
+      selected_category4 = st.multiselect(
+          'Category 4 필터',
+          options=category4_options,
+          key='trend_sel_category4',
+      )
+
+    matching_items_df = whose_items_df[
+        whose_items_df['category2_filter'].isin(selected_category2)
+        & whose_items_df['category4_filter'].isin(selected_category4)
+    ]
+    eligible_accounts = set(matching_items_df['account_num'])
+    selected_account_type_set = set(selected_account_types)
+    filtered_acc_info = whose_accounts_df[
+        whose_accounts_df['account_num'].astype(str).isin(eligible_accounts)
+        & whose_accounts_df['account_type'].map(
+            lambda value: normalize_filter_value(value, '미지정')
+        ).isin(selected_account_type_set)
     ]
 
     acc_options = []
@@ -597,17 +676,22 @@ if menu == '트렌드 리포트':
       label = f'{broker_str} | {display_alias} [{acc_type_str}]'
       acc_options.append(label)
 
-    whose_sig = tuple(selected_whose)
-    if st.session_state.get('_trend_whose_sig') != whose_sig:
+    account_filter_sig = (
+        whose_sig,
+        tuple(selected_account_types),
+        tuple(selected_category2),
+        tuple(selected_category4),
+    )
+    if st.session_state.get('_trend_account_filter_sig') != account_filter_sig:
       st.session_state['trend_sel_accs'] = acc_options
-      st.session_state['_trend_whose_sig'] = whose_sig
+      st.session_state['_trend_account_filter_sig'] = account_filter_sig
     else:
       valid_accs = [
           lbl
           for lbl in st.session_state.get('trend_sel_accs', acc_options)
           if lbl in acc_options
       ]
-      st.session_state['trend_sel_accs'] = valid_accs if valid_accs else acc_options
+      st.session_state['trend_sel_accs'] = valid_accs
 
     selected_acc_labels = st.multiselect(
         '조회할 계좌 선택 (WHOSE 연동)',
@@ -840,8 +924,8 @@ if menu == '트렌드 리포트':
           for item_info in all_account_items:
             iname = item_info['item_name']
             tk = item_info['ticker']
-            cat2 = item_info.get('category2') if (pd.notna(item_info.get('category2')) and str(item_info.get('category2')).strip() != '') else '미분류'
-            cat4 = item_info.get('category4') if (pd.notna(item_info.get('category4')) and str(item_info.get('category4')).strip() != '') else '미분류'
+            cat2 = normalize_filter_value(item_info.get('category2'), '미분류')
+            cat4 = normalize_filter_value(item_info.get('category4'), '미분류')
             curr = item_info['currency'] if pd.notna(item_info['currency']) else 'KRW'
             key = (str(iname), str(tk))
 
@@ -900,6 +984,11 @@ if menu == '트렌드 리포트':
               item_eval_list.append((iname, cat2, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_return, qty))
 
           item_count = len(item_eval_list)
+          item_eval_list = [
+              item
+              for item in item_eval_list
+              if item[1] in selected_category2 and item[2] in selected_category4
+          ]
           for item_name, cat2, cat4, item_eval, item_eval_ex, cum_pl, cum_pl_ex, period_pl, item_ret, qty in item_eval_list:
             if total_acc_eval > 0:
               ratio = item_eval / total_acc_eval
