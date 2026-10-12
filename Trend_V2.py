@@ -1296,47 +1296,84 @@ if menu == '트렌드 리포트':
               ]
 
               if ex_summary and '원금_ex_fx' in holdings_df.columns:
-                principal_col = '원금_ex_fx'
-                profit_loss_col = '평가손익_ex_fx'
-                eval_col = '총평가금액_ex_fx'
+                period_return_col = '주기별 수익률'
+                holdings_period_df = raw_df[
+                    (raw_df['category4'] == selected_category)
+                    & ~raw_df['item_name'].str.contains('현금', na=False)
+                ].copy()
+                holdings_period_df['평가손익'] = holdings_period_df['평가손익_ex_fx']
+                holdings_period_df['총평가금액'] = holdings_period_df['총평가금액_ex_fx']
               else:
-                principal_col = '원금'
-                profit_loss_col = '평가손익'
-                eval_col = '총평가금액'
+                period_return_col = '주기별 수익률'
+                holdings_period_df = raw_df[
+                    (raw_df['category4'] == selected_category)
+                    & ~raw_df['item_name'].str.contains('현금', na=False)
+                ].copy()
 
               if holdings_df.empty:
                 st.info('선택한 Category 4에 표시할 보유종목이 없습니다.')
               else:
-                holdings_summary = (
-                    holdings_df.groupby(['item_name', 'category2'], dropna=False)[
-                        [principal_col, profit_loss_col, eval_col]
+                holdings_period_df = (
+                    holdings_period_df.groupby(
+                        ['Date', 'item_name'], dropna=False
+                    )[
+                        [
+                            '평가손익',
+                            '총평가금액',
+                            period_return_col,
+                        ]
                     ]
                     .sum()
                     .reset_index()
-                    .rename(columns={
-                        'item_name': '종목명',
-                        'category2': 'Category 2',
-                        principal_col: '원금 (원)',
-                        profit_loss_col: '평가손익 (원)',
-                        eval_col: '평가금액 (원)',
-                    })
                 )
-                holdings_summary['수익률 (%)'] = np.where(
-                    holdings_summary['원금 (원)'] > 0,
-                    holdings_summary['평가손익 (원)']
-                    / holdings_summary['원금 (원)']
+                holdings_period_df['growth_factor'] = (
+                    1 + holdings_period_df[period_return_col].fillna(0) / 100
+                )
+                holdings_period_df = holdings_period_df.sort_values('Date')
+                holdings_period_df['누적_성장지수'] = (
+                    holdings_period_df.groupby('item_name', dropna=False)[
+                        'growth_factor'
+                    ].cumprod()
+                )
+                holdings_period_df['선택기간 누적 수익률'] = (
+                    holdings_period_df['누적_성장지수'] - 1
+                ) * 100
+
+                holdings_summary = (
+                    holdings_period_df.groupby('item_name', dropna=False).tail(1)
+                    .rename(columns={
+                        'item_name': '보유종목',
+                        '평가손익': '선택구간 누적 평가 손익 (원)',
+                        '총평가금액': '최종 기말 평가 금액 (원)',
+                        '선택기간 누적 수익률': '선택구간 누적 수익률 (%)',
+                    })
+                    .copy()
+                )
+                holdings_summary['점유율 (%)'] = np.where(
+                    total_eval_sum > 0,
+                    holdings_summary['최종 기말 평가 금액 (원)']
+                    / total_eval_sum
                     * 100,
                     0,
                 )
                 holdings_summary = holdings_summary.sort_values(
-                    '평가금액 (원)', ascending=False
+                    '최종 기말 평가 금액 (원)', ascending=False
                 )
+                holdings_summary = holdings_summary[
+                    [
+                        '보유종목',
+                        '선택구간 누적 평가 손익 (원)',
+                        '최종 기말 평가 금액 (원)',
+                        '점유율 (%)',
+                        '선택구간 누적 수익률 (%)',
+                    ]
+                ]
                 st.dataframe(
                     holdings_summary.style.format({
-                        '원금 (원)': '{:,.0f}',
-                        '평가손익 (원)': '{:,.0f}',
-                        '평가금액 (원)': '{:,.0f}',
-                        '수익률 (%)': '{:.2f}%',
+                        '선택구간 누적 평가 손익 (원)': '{:,.0f}',
+                        '최종 기말 평가 금액 (원)': '{:,.0f}',
+                        '점유율 (%)': '{:.2f}%',
+                        '선택구간 누적 수익률 (%)': '{:.2f}%',
                     }),
                     use_container_width=True,
                     hide_index=True,
