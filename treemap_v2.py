@@ -483,6 +483,7 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
         has_children = bool(row["has_children"])
         hidden_class = " tree-hidden" if depth >= 1 else ""
         parent_cls = " tree-parent" if has_children else ""
+        depth_cls = f" depth-{min(depth, 4)}"
         caret = "▶" if has_children else ""
         indent_px = 8 + max(depth, 0) * 18
         label = html.escape(str(row["label"]))
@@ -493,7 +494,8 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
         parent_id = "" if row["parent_id"] is None else str(row["parent_id"])
         title = "더블클릭하면 하위 항목이 펼쳐집니다." if has_children else ""
         body_parts.append(
-            f'<tr class="{parent_cls}{hidden_class}" data-id="{row["id"]}" '
+            f'<tr class="{parent_cls}{hidden_class}{depth_cls}" data-id="{row["id"]}" '
+            f'data-depth="{depth}" '
             f'data-parent="{parent_id}" data-has-children="{str(has_children).lower()}" '
             f'title="{html.escape(title)}">'
             f'<td class="label-cell" style="padding-left:{indent_px}px;">'
@@ -514,35 +516,51 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
 <head>
 <meta charset="utf-8"/>
 <style>
-  body {{ margin: 0; font-family: "Segoe UI", sans-serif; color: #1f1f1f; }}
-  .hint {{ font-size: 12px; color: #666; margin: 0 0 8px 0; }}
-  table.tree-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  body {{ margin: 0; font-family: "Malgun Gothic", "Segoe UI", sans-serif; color: #17212b; }}
+  .hint {{ font-size: 13px; line-height: 1.5; color: #475569; margin: 0 0 10px 0; }}
+  .table-wrap {{ width: 100%; overflow-x: auto; border: 1px solid #d7dee8; border-radius: 8px; }}
+  table.tree-table {{ width: 100%; min-width: 680px; border-collapse: separate; border-spacing: 0; font-size: 14px; }}
   table.tree-table th {{
-    background: #f0f2f6; text-align: right; padding: 8px 10px;
-    border-bottom: 1px solid #d0d5dd; white-space: nowrap;
+    position: sticky; top: 0; z-index: 1; background: #e8eef6;
+    color: #243247; text-align: right; padding: 11px 12px;
+    border-bottom: 2px solid #c5d0de; white-space: nowrap;
+    font-size: 13px; font-weight: 700;
   }}
   table.tree-table th:first-child {{ text-align: left; }}
   table.tree-table td {{
-    padding: 7px 10px; border-bottom: 1px solid #ececec; white-space: nowrap;
+    padding: 10px 12px; border-bottom: 1px solid #e3e8ef;
+    white-space: nowrap; line-height: 1.45;
   }}
-  table.tree-table td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  table.tree-table td.label-cell {{ max-width: 300px; overflow: hidden; text-overflow: ellipsis; }}
+  table.tree-table td.num {{ text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }}
+  table.tree-table tr:nth-child(even) {{ background: #f8fafc; }}
+  table.tree-table tr.depth-0 {{ background: #edf3fa; font-weight: 700; }}
+  table.tree-table tr.depth-1 {{ color: #26384d; }}
   table.tree-table tr.tree-parent {{ cursor: pointer; }}
-  table.tree-table tr.tree-parent:hover {{ background: #eef4ff; }}
+  table.tree-table tr.tree-parent:hover {{ background: #e2edff; }}
   table.tree-table tr.tree-hidden {{ display: none; }}
   .caret {{
-    display: inline-block; width: 14px; color: #3366cc; font-size: 11px;
+    display: inline-block; width: 18px; color: #174ea6; font-size: 12px;
+    font-weight: 700;
     user-select: none;
+  }}
+  @media (max-width: 700px) {{
+    table.tree-table {{ font-size: 13px; }}
+    table.tree-table th {{ padding: 9px 10px; font-size: 12px; }}
+    table.tree-table td {{ padding: 9px 10px; }}
   }}
 </style>
 </head>
 <body>
   <p class="hint">상위 항목을 더블클릭하거나 ▶ 를 누르면 하위 세부 항목이 펼쳐집니다.</p>
-  <table class="tree-table">
-    <thead><tr>{header_html}</tr></thead>
-    <tbody>
-      {''.join(body_parts)}
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="tree-table">
+      <thead><tr>{header_html}</tr></thead>
+      <tbody>
+        {''.join(body_parts)}
+      </tbody>
+    </table>
+  </div>
   <script>
     function childrenOf(id) {{
       return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
@@ -2227,14 +2245,13 @@ elif menu == "일별/시점별 보유 현황 분석":
                         cmin=dynamic_range[0],
                         cmax=dynamic_range[1],
                         showscale=False,
+                        line=dict(color="rgba(255,255,255,0.9)", width=2),
                     ),
                     customdata=list(zip(custom_rates, custom_prices, custom_profits)),
                     texttemplate=(
                         "<b>%{label}</b><br>"
-                        "<span style='font-size: 14px;'><b>₩%{value:,.0f}</b></span><br>"
-                        "<span style='font-size: 11px;'>현재가: %{customdata[1]}</span><br>"
-                        "<span style='font-size: 11px;'>점유율: %{percentRoot:.2%}</span><br>"
-                        "<span style='font-size: 11px;'><b>%{customdata[0]:+.2f}%</b></span>"
+                        "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
+                        "<span style='font-size: 14px;'><b>%{customdata[0]:+.2f}%</b></span>"
                     ),
                     hovertemplate=(
                         "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
@@ -2247,8 +2264,16 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
                     ),
                     hoverlabel=dict(font_size=15),
-                    textfont=dict(color="white"),
-                    insidetextfont=dict(color="white"),
+                    textfont=dict(
+                        family="Malgun Gothic, Segoe UI, sans-serif",
+                        size=14,
+                        color="white",
+                    ),
+                    insidetextfont=dict(
+                        family="Malgun Gothic, Segoe UI, sans-serif",
+                        size=14,
+                        color="white",
+                    ),
                 )
             )
 
