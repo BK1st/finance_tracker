@@ -1270,15 +1270,79 @@ if menu == '트렌드 리포트':
         cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        st.dataframe(
-            summary_df.style.format({
-                '선택구간 누적 평가 손익 (원)': '{:,.0f}',
-                '최종 기말 평가 금액 (원)': '{:,.0f}',
-                '점유율 (%)': '{:.2f}%',
-                '선택구간 누적 수익률 (%)': '{:.2f}%',
-            }),
-            use_container_width=True,
-        )
+        summary_table = summary_df.style.format({
+            '선택구간 누적 평가 손익 (원)': '{:,.0f}',
+            '최종 기말 평가 금액 (원)': '{:,.0f}',
+            '점유율 (%)': '{:.2f}%',
+            '선택구간 누적 수익률 (%)': '{:.2f}%',
+        })
+        if group_col == 'category4':
+          st.caption('Category 4 행을 선택하면 아래에 해당 보유종목별 내역이 표시됩니다.')
+          summary_selection = st.dataframe(
+              summary_table,
+              use_container_width=True,
+              on_select='rerun',
+              selection_mode='single-row',
+              key=f'group_summary_selection_{prefix}',
+          )
+          selected_rows = summary_selection.selection.rows
+          if selected_rows and selected_rows[0] < len(summary_df):
+            selected_category = summary_df.iloc[selected_rows[0]][prefix]
+            if selected_category != '전체 합산':
+              st.markdown(f'#### 📦 [{selected_category}] 보유종목별 내역 ({latest_date})')
+              holdings_df = latest_df[latest_df['category4'] == selected_category].copy()
+              holdings_df = holdings_df[
+                  ~holdings_df['item_name'].str.contains('현금', na=False)
+              ]
+
+              if ex_summary and '원금_ex_fx' in holdings_df.columns:
+                principal_col = '원금_ex_fx'
+                profit_loss_col = '평가손익_ex_fx'
+                eval_col = '총평가금액_ex_fx'
+              else:
+                principal_col = '원금'
+                profit_loss_col = '평가손익'
+                eval_col = '총평가금액'
+
+              if holdings_df.empty:
+                st.info('선택한 Category 4에 표시할 보유종목이 없습니다.')
+              else:
+                holdings_summary = (
+                    holdings_df.groupby(['item_name', 'category2'], dropna=False)[
+                        [principal_col, profit_loss_col, eval_col]
+                    ]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={
+                        'item_name': '종목명',
+                        'category2': 'Category 2',
+                        principal_col: '원금 (원)',
+                        profit_loss_col: '평가손익 (원)',
+                        eval_col: '평가금액 (원)',
+                    })
+                )
+                holdings_summary['수익률 (%)'] = np.where(
+                    holdings_summary['원금 (원)'] > 0,
+                    holdings_summary['평가손익 (원)']
+                    / holdings_summary['원금 (원)']
+                    * 100,
+                    0,
+                )
+                holdings_summary = holdings_summary.sort_values(
+                    '평가금액 (원)', ascending=False
+                )
+                st.dataframe(
+                    holdings_summary.style.format({
+                        '원금 (원)': '{:,.0f}',
+                        '평가손익 (원)': '{:,.0f}',
+                        '평가금액 (원)': '{:,.0f}',
+                        '수익률 (%)': '{:.2f}%',
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        else:
+          st.dataframe(summary_table, use_container_width=True)
         st.write('---')
 
         st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 및 환율 옵션 설정')
