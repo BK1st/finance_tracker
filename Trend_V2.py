@@ -16,6 +16,8 @@ from plotly.subplots import make_subplots
 DATA_DIR = os.path.join(os.path.dirname(__file__), '.data')
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_FILE = os.path.join(DATA_DIR, 'asset_tracker.db')
+BJ_YEAR_END_BASELINE_DATE = '2025-12-31'
+BJ_PORTFOLIO_ASSUMED_FROM = '2026-07-31'
 
 
 def init_db():
@@ -70,6 +72,15 @@ def init_db():
             account_num TEXT PRIMARY KEY,
             broker TEXT,
             initial_amount REAL
+        )
+    ''')
+
+  c.execute('''
+        CREATE TABLE IF NOT EXISTS account_year_end_value (
+            account_num TEXT PRIMARY KEY,
+            broker TEXT,
+            baseline_date TEXT NOT NULL,
+            baseline_amount REAL NOT NULL
         )
     ''')
 
@@ -297,6 +308,144 @@ def get_account_aliases():
   return dict(zip(alias_df['account_num'], alias_df['alias']))
 
 
+def resolve_account_whose(account_num, whose, broker, alias_map):
+  if pd.notna(whose) and str(whose).strip():
+    return str(whose).strip()
+
+  alias = alias_map.get(str(account_num), '')
+  combined_str = f'{account_num} {alias} {broker}'
+  if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
+    return 'SH'
+  return 'BJ'
+
+
+def build_bj_account_performance(
+    account_df, market_data, cash_flow_df, baseline_amount, target_dates,
+    end_date, frequency,
+):
+  cutoff = pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+  end_ts = pd.Timestamp(end_date)
+  if end_ts < cutoff:
+    return {}
+  calendar = pd.date_range(cutoff, end_ts, freq='D')
+
+  if frequency == '일간 (주말 제외)':
+    scheduled_dates = calendar[calendar.dayofweek < 5]
+  elif frequency == '주간 (매주 토요일)':
+    scheduled_dates = calendar[calendar.dayofweek == 5]
+  elif frequency == '월간 (매달 말일)':
+    scheduled_dates = calendar[calendar.is_month_end]
+  elif frequency == '연간 (매년 말일)':
+    scheduled_dates = calendar[calendar.is_year_end]
+  else:
+    scheduled_dates = calendar
+
+  calc_dates = set(scheduled_dates)
+  calc_dates.update(
+      pd.Timestamp(target_date)
+      for target_date in target_dates
+      if pd.Timestamp(target_date) >= cutoff
+  )
+  calc_dates.add(cutoff)
+  calc_dates = sorted(calc_dates)
+
+  account_df = account_df.copy()
+  account_df['record_date'] = pd.to_datetime(account_df['record_date'])
+  account_df = account_df.sort_values('record_date')
+  account_cash_flows = cash_flow_df[
+      cash_flow_df['account_num'].astype(str)
+      == str(account_df['account_num'].iloc[0])
+  ].copy() if not cash_flow_df.empty else pd.DataFrame()
+
+  def market_price(ticker, target_date):
+    if ticker not in market_data.columns:
+      return None
+    prices = market_data[ticker].dropna()
+    if prices.empty:
+      return None
+    prices = prices[pd.to_datetime(prices.index) <= target_date]
+    if prices.empty:
+      return None
+    return float(prices.iloc[-1])
+
+  def net_flow_between(start_date, finish_date):
+    if account_cash_flows.empty:
+      return 0.0
+    flows = account_cash_flows[
+        (account_cash_flows['trans_date'] > start_date.strftime('%Y-%m-%d'))
+        & (account_cash_flows['trans_date'] <= finish_date.strftime('%Y-%m-%d'))
+    ]
+    deposits = flows.loc[flows['flow_type'] == '입금', 'amount'].sum()
+    withdrawals = flows.loc[flows['flow_type'] == '출금', 'amount'].sum()
+    return float(deposits - withdrawals)
+
+  def cumulative_net_flow(finish_date):
+    if account_cash_flows.empty:
+      return 0.0
+    flows = account_cash_flows[
+        (account_cash_flows['trans_date'] > BJ_YEAR_END_BASELINE_DATE)
+        & (account_cash_flows['trans_date'] <= finish_date.strftime('%Y-%m-%d'))
+    ]
+    deposits = flows.loc[flows['flow_type'] == '입금', 'amount'].sum()
+    withdrawals = flows.loc[flows['flow_type'] == '출금', 'amount'].sum()
+    return float(deposits - withdrawals)
+
+  performance = {}
+  previous_eval = None
+  previous_date = None
+
+  for target_date in calc_dates:
+    holdings = account_df[account_df['record_date'] <= target_date]
+    if holdings.empty:
+      holdings = account_df[account_df['record_date'] == account_df['record_date'].max()]
+    else:
+      latest_snapshot_date = holdings['record_date'].max()
+      holdings = holdings[holdings['record_date'] == latest_snapshot_date]
+
+    fx_rate = market_price('KRW=X', target_date)
+    if fx_rate is None or fx_rate <= 0:
+      fx_rate = 1350.0
+
+    total_eval = 0.0
+    for _, holding in holdings.iterrows():
+      quantity = pd.to_numeric(holding.get('quantity'), errors='coerce')
+      fallback_price = pd.to_numeric(holding.get('current_price'), errors='coerce')
+      quantity = float(quantity) if pd.notna(quantity) else 0.0
+      fallback_price = float(fallback_price) if pd.notna(fallback_price) else 0.0
+      ticker = format_ticker(holding.get('ticker'))
+      price = market_price(ticker, target_date) if ticker else None
+      if price is None or price <= 0:
+        price = fallback_price
+      currency = holding.get('currency')
+      multiplier = fx_rate if currency == 'USD' else 1.0
+      total_eval += quantity * price * multiplier
+
+    cumulative_profit = (
+        total_eval
+        - float(baseline_amount)
+        - cumulative_net_flow(target_date)
+    )
+
+    if target_date == cutoff or previous_eval is None or previous_date is None:
+      period_profit = np.nan
+      period_base = np.nan
+    else:
+      period_flow = net_flow_between(previous_date, target_date)
+      period_profit = total_eval - previous_eval - period_flow
+      period_base = previous_eval + period_flow
+
+    performance[target_date.strftime('%Y-%m-%d')] = {
+        'period_profit': period_profit,
+        'cumulative_profit': cumulative_profit,
+        'period_base': period_base,
+        'cumulative_base': float(baseline_amount) + cumulative_net_flow(target_date),
+    }
+    previous_eval = total_eval
+    previous_date = target_date
+
+  return performance
+
+
 # -----------------------------------------------------------------------------
 # 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
@@ -499,6 +648,7 @@ if menu == '트렌드 리포트':
   conn = get_connection()
   pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
   init_p_df = pd.read_sql('SELECT * FROM initial_principal', conn)
+  year_end_value_df = pd.read_sql('SELECT * FROM account_year_end_value', conn)
   cf_df = pd.read_sql('SELECT * FROM cash_flow', conn)
   conn.close()
 
@@ -517,18 +667,9 @@ if menu == '트렌드 리포트':
     whose_mapping = {}
     for _, row in acc_info_df.iterrows():
       acc_num = str(row['account_num'])
-      db_whose = row.get('whose')
-      
-      if pd.notna(db_whose) and str(db_whose).strip() != '':
-          whose_mapping[acc_num] = str(db_whose).strip()
-      else:
-          alias = alias_map.get(acc_num, '')
-          broker_str = row['broker']
-          combined_str = f'{acc_num} {alias} {broker_str}'
-          if '소희' in combined_str or 'SH' in combined_str or 'sh' in combined_str:
-            whose_mapping[acc_num] = 'SH'
-          else:
-            whose_mapping[acc_num] = 'BJ'
+      whose_mapping[acc_num] = resolve_account_whose(
+          acc_num, row.get('whose'), row.get('broker'), alias_map
+      )
             
     acc_info_df['whose'] = acc_info_df['account_num'].map(whose_mapping)
     all_whose_options = sorted(acc_info_df['whose'].dropna().unique().tolist())
@@ -794,9 +935,43 @@ if menu == '트렌드 리포트':
       ].copy()
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
+      selected_bj_accounts = [
+          account for account in selected_accounts
+          if whose_mapping.get(account) == 'BJ'
+      ]
+      saved_baselines = dict(zip(
+          year_end_value_df['account_num'].astype(str),
+          year_end_value_df['baseline_amount'],
+      ))
+      missing_bj_baselines = [
+          account for account in selected_bj_accounts
+          if account not in saved_baselines or saved_baselines[account] <= 0
+      ]
+      if missing_bj_baselines:
+        st.warning(
+            '다음 BJ 계좌의 2025년 말 평가금액이 미등록입니다. '
+            '전체·계좌·증권사·계좌유형별 기준 손익은 해당 BJ 계좌를 제외하고 '
+            '계산됩니다. 원금 및 입출금 관리에서 기준액을 입력해 주세요: '
+            + ', '.join(missing_bj_baselines)
+        )
+      if selected_bj_accounts and pd.Timestamp(end_date) >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM):
+        st.info(
+            'BJ 계좌: 2025-12-31 기준액으로 올해 누적손익을 계산하고, '
+            '2026-07-31 이전은 주기별 손익을 미관측으로 처리합니다. '
+            'Category 2 손익은 2026-07-31 이후만 표시하며 연말~7월 구간은 '
+            'Category 2에 배분하지 않습니다. Category 4·보유 항목별과 SH 계좌는 기존 방식입니다.'
+        )
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
         s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+        if (
+            selected_bj_accounts
+            and pd.Timestamp(end_date) >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+        ):
+          bj_history_start = (
+              pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM) - pd.Timedelta(days=10)
+          ).strftime('%Y-%m-%d')
+          s_str = min(s_str, bj_history_start)
         e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime(
             '%Y-%m-%d'
         )
@@ -868,6 +1043,22 @@ if menu == '트렌드 리포트':
         item_cum_pl_ex = {}
 
         account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc].copy()
+        account_baseline = year_end_value_df[
+            year_end_value_df['account_num'].astype(str) == acc
+        ]
+        account_performance = {}
+        if whose_val == 'BJ' and not account_baseline.empty:
+          baseline_row = account_baseline.iloc[0]
+          account_performance = build_bj_account_performance(
+              account_pf_all,
+              market_data,
+              cf_df,
+              baseline_row['baseline_amount'],
+              target_dates,
+              end_date,
+              option_freq,
+          )
+
         account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
         unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker'])
         all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
@@ -904,8 +1095,15 @@ if menu == '트렌드 리포트':
 
           acc_pf = account_pf_all[account_pf_all['record_date'] <= t_str]
           if acc_pf.empty:
-            min_date = account_pf_all['record_date'].min()
-            acc_pf = account_pf_all[account_pf_all['record_date'] == min_date]
+            if (
+                whose_val == 'BJ'
+                and t_str >= BJ_PORTFOLIO_ASSUMED_FROM
+            ):
+              max_date = account_pf_all['record_date'].max()
+              acc_pf = account_pf_all[account_pf_all['record_date'] == max_date]
+            else:
+              min_date = account_pf_all['record_date'].min()
+              acc_pf = account_pf_all[account_pf_all['record_date'] == min_date]
 
           current_pf = pd.DataFrame()
           if not acc_pf.empty:
@@ -1002,6 +1200,7 @@ if menu == '트렌드 리포트':
 
             item_principal = principal * ratio
             item_principal_ex = principal * ratio_ex
+            account_metrics = account_performance.get(t_str, {})
 
             base_records.append({
                 'Date': t_str,
@@ -1020,6 +1219,10 @@ if menu == '트렌드 리포트':
                 '원금_ex_fx': item_principal_ex,
                 '평가손익_ex_fx': cum_pl_ex,
                 '총평가금액_ex_fx': item_eval_ex,
+                '계좌기준_주기손익': account_metrics.get('period_profit', np.nan),
+                '계좌기준_누적손익': account_metrics.get('cumulative_profit', np.nan),
+                '계좌기준_주기기준액': account_metrics.get('period_base', np.nan),
+                '계좌기준_누적기준액': account_metrics.get('cumulative_base', np.nan),
             })
 
       bm_calc_dict = {}
@@ -1171,6 +1374,11 @@ if menu == '트렌드 리포트':
       # -------------------------------------------------------------------------
       def draw_group_summary_charts(raw_df, group_col, prefix):
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
+        if (raw_df['whose'] == 'BJ').any():
+          st.caption(
+              'BJ의 보정 손익은 원화 기준 연말 기준액으로 계산됩니다. '
+              '환차손 제외를 선택해도 BJ의 보정 손익에는 환율 제외가 적용되지 않습니다.'
+          )
 
         # 계좌 필터 및 Category4 필터 조건 다중 선택 지원 (보유항목별 등)
         if group_col in ['category4', 'item_name']:
@@ -1285,6 +1493,204 @@ if menu == '트렌드 리포트':
             grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
             grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
+          if group_col in ['account_num', 'broker', 'account_type']:
+            sh_rows = df_curr[df_curr['whose'] != 'BJ']
+            sh_agg = (
+                sh_rows.groupby(['Date', group_col])[
+                    ['총평가금액', '원금']
+                ]
+                .sum()
+                .reset_index()
+                .sort_values([group_col, 'Date'])
+            )
+            sh_agg['sh_period_profit'] = sh_agg.groupby(group_col)[
+                '총평가금액'
+            ].diff()
+            sh_agg['sh_cumulative_profit'] = (
+                sh_agg['총평가금액']
+                - sh_agg.groupby(group_col)['총평가금액'].transform('first')
+            )
+            sh_agg['sh_start_value'] = sh_agg.groupby(group_col)[
+                '총평가금액'
+            ].transform('first')
+
+            bj_rows = df_curr[
+                (df_curr['whose'] == 'BJ')
+                & df_curr['계좌기준_누적손익'].notna()
+            ].drop_duplicates(['Date', 'account_num'])
+            bj_agg = (
+                bj_rows.groupby(['Date', group_col])[
+                    [
+                        '계좌기준_주기손익',
+                        '계좌기준_누적손익',
+                        '계좌기준_누적기준액',
+                    ]
+                ]
+                .agg({
+                    '계좌기준_주기손익': lambda values: values.sum(min_count=1),
+                    '계좌기준_누적손익': lambda values: values.sum(min_count=1),
+                    '계좌기준_누적기준액': lambda values: values.sum(min_count=1),
+                })
+                .reset_index()
+                .rename(columns={
+                    '계좌기준_주기손익': 'bj_period_profit',
+                    '계좌기준_누적손익': 'bj_cumulative_profit',
+                    '계좌기준_누적기준액': 'bj_start_value',
+                })
+            )
+
+            combined = sh_agg.merge(
+                bj_agg, on=['Date', group_col], how='outer'
+            )
+            combined['주기별 평가손익'] = combined[
+                ['sh_period_profit', 'bj_period_profit']
+            ].sum(axis=1, min_count=1)
+            combined['선택구간 누적손익'] = combined[
+                ['sh_cumulative_profit', 'bj_cumulative_profit']
+            ].sum(axis=1, min_count=1)
+            combined['누적기준액'] = (
+                combined['sh_start_value'].fillna(0)
+                + combined['bj_start_value'].fillna(0)
+            )
+            combined['has_bj_baseline'] = combined['bj_cumulative_profit'].notna()
+
+            grp_agg = grp_agg.merge(
+                combined[
+                    [
+                        'Date',
+                        group_col,
+                        '주기별 평가손익',
+                        '선택구간 누적손익',
+                        '누적기준액',
+                        'has_bj_baseline',
+                    ]
+                ],
+                on=['Date', group_col],
+                how='left',
+                suffixes=('', '_corrected'),
+            )
+            grp_agg['주기별 평가손익'] = grp_agg[
+                '주기별 평가손익_corrected'
+            ].where(
+                grp_agg['주기별 평가손익_corrected'].notna(),
+                np.nan,
+            )
+            grp_agg['선택구간 누적손익'] = grp_agg[
+                '선택구간 누적손익_corrected'
+            ]
+
+            grp_agg['prev_eval'] = grp_agg.groupby(group_col)[
+                '총평가금액'
+            ].shift(1)
+            grp_agg['prev_principal'] = grp_agg.groupby(group_col)['원금'].shift(1)
+            grp_agg['period_cash_flow'] = (
+                grp_agg['원금'] - grp_agg['prev_principal']
+            )
+            grp_agg['period_start_base'] = (
+                grp_agg['prev_eval'].fillna(grp_agg['총평가금액'])
+                + grp_agg['period_cash_flow'].fillna(0)
+            )
+            grp_agg['주기별 수익률'] = np.where(
+                grp_agg['period_start_base'] > 0,
+                grp_agg['주기별 평가손익'] / grp_agg['period_start_base'] * 100,
+                0,
+            )
+            corrected_return = np.where(
+                grp_agg['누적기준액'] > 0,
+                grp_agg['선택구간 누적손익'] / grp_agg['누적기준액'] * 100,
+                0,
+            )
+            grp_agg['선택기간 누적 수익률'] = np.where(
+                grp_agg['has_bj_baseline'],
+                corrected_return,
+                grp_agg['선택기간 누적 수익률'],
+            )
+            grp_agg.drop(
+                columns=[
+                    '주기별 평가손익_corrected',
+                    '선택구간 누적손익_corrected',
+                ],
+                inplace=True,
+            )
+
+          elif group_col == 'category2':
+            sh_rows = df_curr[df_curr['whose'] != 'BJ']
+            sh_agg = (
+                sh_rows.groupby(['Date', group_col])[
+                    ['총평가금액', '원금']
+                ]
+                .sum()
+                .reset_index()
+                .sort_values([group_col, 'Date'])
+            )
+            sh_agg['sh_period_profit'] = sh_agg.groupby(group_col)[
+                '총평가금액'
+            ].diff()
+            sh_agg['sh_cumulative_profit'] = (
+                sh_agg['총평가금액']
+                - sh_agg.groupby(group_col)['총평가금액'].transform('first')
+            )
+
+            bj_rows = df_curr[
+                (df_curr['whose'] == 'BJ')
+                & (df_curr['Date'] >= BJ_PORTFOLIO_ASSUMED_FROM)
+            ]
+            bj_agg = (
+                bj_rows.groupby(['Date', group_col])['주기별 평가손익']
+                .sum()
+                .reset_index()
+                .sort_values([group_col, 'Date'])
+            )
+            bj_agg['bj_cumulative_profit'] = bj_agg.groupby(group_col)[
+                '주기별 평가손익'
+            ].cumsum()
+            bj_agg.loc[
+                bj_agg['Date'] == BJ_PORTFOLIO_ASSUMED_FROM,
+                '주기별 평가손익',
+            ] = np.nan
+            bj_agg.rename(
+                columns={'주기별 평가손익': 'bj_period_profit'},
+                inplace=True,
+            )
+            combined = sh_agg.merge(
+                bj_agg, on=['Date', group_col], how='outer'
+            )
+            combined['주기별 평가손익'] = combined[
+                ['sh_period_profit', 'bj_period_profit']
+            ].sum(axis=1, min_count=1)
+            combined['선택구간 누적손익'] = combined[
+                ['sh_cumulative_profit', 'bj_cumulative_profit']
+            ].sum(axis=1, min_count=1)
+            grp_agg = grp_agg.merge(
+                combined[
+                    ['Date', group_col, '주기별 평가손익', '선택구간 누적손익']
+                ],
+                on=['Date', group_col],
+                how='left',
+                suffixes=('', '_corrected'),
+            )
+            grp_agg['주기별 평가손익'] = grp_agg[
+                '주기별 평가손익_corrected'
+            ]
+            grp_agg['선택구간 누적손익'] = grp_agg[
+                '선택구간 누적손익_corrected'
+            ]
+            grp_agg['prev_eval'] = grp_agg.groupby(group_col)[
+                '총평가금액'
+            ].shift(1)
+            grp_agg['주기별 수익률'] = np.where(
+                grp_agg['prev_eval'] > 0,
+                grp_agg['주기별 평가손익'] / grp_agg['prev_eval'] * 100,
+                0,
+            )
+            grp_agg.drop(
+                columns=[
+                    '주기별 평가손익_corrected',
+                    '선택구간 누적손익_corrected',
+                ],
+                inplace=True,
+            )
+
           return grp_agg
 
         grp_agg_def = get_grp_agg(False)
@@ -1309,7 +1715,7 @@ if menu == '트렌드 리포트':
         summary_table_data = []
         total_eval_sum = 0
         total_pl_sum = 0
-        total_principal_sum = 0
+        total_return_base_sum = 0
 
         for grp in groups:
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
@@ -1327,10 +1733,16 @@ if menu == '트렌드 리포트':
               final_principal = sub_latest['원금_ex_fx'].sum() if not sub_latest.empty else 0
             else:
               final_principal = sub_latest['원금'].sum() if not sub_latest.empty else 0
+            has_bj_baseline = (
+                sub['has_bj_baseline'].iloc[-1]
+                if 'has_bj_baseline' in sub.columns else False
+            )
+            if pd.notna(has_bj_baseline) and bool(has_bj_baseline):
+              final_principal = sub['누적기준액'].iloc[-1]
 
             total_eval_sum += final_eval
-            total_pl_sum += final_p_loss
-            total_principal_sum += final_principal
+            total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
+            total_return_base_sum += final_principal
 
             summary_table_data.append({
                 prefix: grp,
@@ -1346,7 +1758,10 @@ if menu == '트렌드 리포트':
           del row['_eval']
           del row['_principal']
 
-        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        total_ret = (
+            total_pl_sum / total_return_base_sum * 100
+            if total_return_base_sum > 0 else 0
+        )
         summary_table_data.append({
             prefix: '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
@@ -1967,6 +2382,11 @@ if menu == '트렌드 리포트':
 
       def render_total_whose_charts(raw_df):
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
+        if (raw_df['whose'] == 'BJ').any():
+          st.caption(
+              'BJ의 보정 손익은 원화 기준 연말 기준액으로 계산됩니다. '
+              '환차손 제외를 선택해도 BJ의 보정 손익에는 환율 제외가 적용되지 않습니다.'
+          )
 
         def get_whose_agg(use_ex_fx):
           df_curr = raw_df.copy()
@@ -2015,6 +2435,60 @@ if menu == '트렌드 리포트':
           grp_agg['누적_성장지수'] = grp_agg.groupby('whose')['growth_factor'].cumprod()
           grp_agg['구간별 누적수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
+          bj_rows = df_curr[
+              (df_curr['whose'] == 'BJ')
+              & df_curr['계좌기준_누적손익'].notna()
+          ].drop_duplicates(['Date', 'account_num'])
+          bj_agg = (
+              bj_rows.groupby('Date')[
+                  [
+                      '계좌기준_주기손익',
+                      '계좌기준_누적손익',
+                      '계좌기준_주기기준액',
+                      '계좌기준_누적기준액',
+              ]
+                  ]
+              .agg({
+                  '계좌기준_주기손익': lambda values: values.sum(min_count=1),
+                  '계좌기준_누적손익': lambda values: values.sum(min_count=1),
+                  '계좌기준_주기기준액': lambda values: values.sum(min_count=1),
+                  '계좌기준_누적기준액': lambda values: values.sum(min_count=1),
+              })
+              .rename(columns={
+                  '계좌기준_주기손익': 'bj_period_profit',
+                  '계좌기준_누적손익': 'bj_cumulative_profit',
+                  '계좌기준_주기기준액': 'bj_period_base',
+                  '계좌기준_누적기준액': 'bj_base',
+              })
+          )
+          bj_by_date = bj_agg.to_dict('index')
+          grp_agg['bj_base'] = np.nan
+          for row_index, row in grp_agg[grp_agg['whose'] == 'BJ'].iterrows():
+            bj_metrics = bj_by_date.get(row['Date'])
+            if bj_metrics is None:
+              grp_agg.at[row_index, '주기별 평가손익'] = np.nan
+              grp_agg.at[row_index, '선택구간 누적손익'] = np.nan
+              grp_agg.at[row_index, '주기별 수익률'] = np.nan
+              grp_agg.at[row_index, '구간별 누적수익률'] = np.nan
+              continue
+
+            grp_agg.at[row_index, '주기별 평가손익'] = bj_metrics[
+                'bj_period_profit'
+            ]
+            grp_agg.at[row_index, '선택구간 누적손익'] = bj_metrics[
+                'bj_cumulative_profit'
+            ]
+            grp_agg.at[row_index, 'bj_base'] = bj_metrics['bj_base']
+            period_base = bj_metrics['bj_period_base']
+            grp_agg.at[row_index, '주기별 수익률'] = (
+                bj_metrics['bj_period_profit'] / period_base * 100
+                if pd.notna(period_base) and period_base > 0 else np.nan
+            )
+            grp_agg.at[row_index, '구간별 누적수익률'] = (
+                bj_metrics['bj_cumulative_profit'] / bj_metrics['bj_base'] * 100
+                if bj_metrics['bj_base'] > 0 else 0
+            )
+
           return grp_agg
 
         agg1_def = get_whose_agg(False)
@@ -2044,9 +2518,15 @@ if menu == '트렌드 리포트':
             else:
               sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
               final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
+            if (
+                w == 'BJ'
+                and 'bj_base' in sub.columns
+                and pd.notna(sub['bj_base'].iloc[-1])
+            ):
+              final_principal = sub['bj_base'].iloc[-1]
 
             total_eval_sum += final_eval
-            total_pl_sum += final_p_loss
+            total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
             total_principal_sum += final_principal
 
             whose_summary_data.append({
@@ -2706,7 +3186,11 @@ elif menu == '포트폴리오 업로드':
 elif menu == '원금 및 입출금 관리':
   st.header('💰 최초 원금 및 현금흐름(입출금) 관리')
 
-  tab1, tab2 = st.tabs(['🏦 계좌별 최초 원금 설정', '💸 입출금(Cash Flow) 기록 관리'])
+  tab1, tab2, tab3 = st.tabs([
+      '🏦 계좌별 최초 원금 설정',
+      '💸 입출금(Cash Flow) 기록 관리',
+      '📅 BJ 2025년 말 평가액 기준',
+  ])
 
   with tab1:
     st.subheader('계좌별 최초 시작 원금 등록 및 수정')
@@ -2820,6 +3304,92 @@ elif menu == '원금 및 입출금 관리':
     else:
       st.info('등록된 입출금 내역이 없습니다.')
 
+  with tab3:
+    st.subheader('BJ 계좌별 2025년 12월 31일 최종 평가금액')
+    st.caption(
+        '입력한 금액은 BJ 계좌의 올해 누적 평가손익 기준으로만 사용됩니다. '
+        'SH 계좌와 Category 4·보유 항목별 집계에는 적용되지 않습니다. '
+        '0원은 미등록으로 처리됩니다.'
+    )
+    conn = get_connection()
+    baseline_accounts = pd.read_sql(
+        'SELECT DISTINCT broker, account_num, whose FROM portfolio', conn
+    )
+    existing_year_end_values = pd.read_sql(
+        'SELECT account_num, baseline_amount FROM account_year_end_value', conn
+    )
+    conn.close()
+
+    baseline_accounts = baseline_accounts.drop_duplicates(
+        subset=['account_num']
+    ).copy()
+    baseline_accounts['account_num'] = baseline_accounts['account_num'].astype(str)
+    baseline_accounts['resolved_whose'] = baseline_accounts.apply(
+        lambda row: resolve_account_whose(
+            row['account_num'], row['whose'], row['broker'], alias_map
+        ),
+        axis=1,
+    )
+    baseline_accounts = baseline_accounts[
+        baseline_accounts['resolved_whose'] == 'BJ'
+    ]
+    baseline_values = dict(zip(
+        existing_year_end_values['account_num'].astype(str),
+        existing_year_end_values['baseline_amount'],
+    ))
+
+    if baseline_accounts.empty:
+      st.info('등록된 BJ 계좌가 없습니다.')
+    else:
+      with st.form('bj_year_end_value_form'):
+        account_values = {}
+        for _, row in baseline_accounts.iterrows():
+          account_num = row['account_num']
+          broker = row['broker'] if pd.notna(row['broker']) else '증권사 미지정'
+          alias = alias_map.get(account_num, '')
+          account_label = (
+              f'[{broker}] {account_num} ({alias})' if alias
+              else f'[{broker}] {account_num}'
+          )
+          account_values[account_num] = (
+              broker,
+              st.number_input(
+                  f'{account_label} 평가금액 (원)',
+                  min_value=0.0,
+                  value=float(baseline_values.get(account_num, 0.0)),
+                  step=100000.0,
+                  format='%.0f',
+                  key=f'bj_year_end_value_{account_num}',
+              ),
+          )
+
+        save_year_end_values = st.form_submit_button('💾 BJ 기준 평가액 저장')
+        if save_year_end_values:
+          conn = get_connection()
+          cursor = conn.cursor()
+          for account_num, (broker, amount) in account_values.items():
+            if amount == 0:
+              cursor.execute(
+                  'DELETE FROM account_year_end_value WHERE account_num = ?',
+                  (account_num,),
+              )
+            else:
+              cursor.execute(
+                  '''INSERT OR REPLACE INTO account_year_end_value
+                     (account_num, broker, baseline_date, baseline_amount)
+                     VALUES (?, ?, ?, ?)''',
+                  (
+                      account_num,
+                      broker,
+                      BJ_YEAR_END_BASELINE_DATE,
+                      amount,
+                  ),
+              )
+          conn.commit()
+          conn.close()
+          st.success('BJ 계좌별 2025년 말 평가금액을 저장했습니다.')
+          st.rerun()
+
 # -----------------------------------------------------------------------------
 # 메뉴 5: 등록 데이터 조회 및 웹 수정
 # -----------------------------------------------------------------------------
@@ -2873,7 +3443,7 @@ elif menu == '등록 데이터 조회 및 웹 수정':
 elif menu == '데이터 백업 및 복구':
   st.header('💾 DB 데이터 백업 및 복구')
 
-  st.info('💡 백업 파일에는 포트폴리오 내역, 최초 원금, 입출금 기록, 계좌 별칭 및 **종목 분류 마스터 정보(item_category)**가 모두 포함되어 함께 백업 및 복원됩니다.')
+  st.info('💡 백업 파일에는 포트폴리오 내역, 최초 원금, BJ 계좌별 2025년 말 평가액, 입출금 기록, 계좌 별칭 및 **종목 분류 마스터 정보(item_category)**가 모두 포함되어 함께 백업 및 복원됩니다.')
   st.subheader('📤 데이터베이스 파일 백업 (다운로드)')
   if os.path.exists(DB_FILE):
     with open(DB_FILE, 'rb') as f:
