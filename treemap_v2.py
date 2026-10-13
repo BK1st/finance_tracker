@@ -850,7 +850,7 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
         elif len(series) == 1:
             latest_close = float(series.iloc[-1])
 
-    if latest_close is None or prev_close is None:
+    if is_korean_ticker(ticker) or latest_close is None or prev_close is None:
         try:
             tk = yf.Ticker(ticker)
             fi = tk.fast_info
@@ -858,7 +858,18 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
                 latest_close = fi.get("regularMarketPrice") or fi.get("lastPrice")
                 if (latest_close is None or latest_close <= 0) and current_db_price and current_db_price > 0:
                     latest_close = float(current_db_price)
-            if prev_close is None:
+
+            if is_korean_ticker(ticker):
+                quote_prev_close = fi.get("previousClose")
+                if quote_prev_close is None or pd.isna(quote_prev_close) or quote_prev_close <= 0:
+                    quote_prev_close = fi.get("regularMarketPreviousClose")
+                if (
+                    quote_prev_close is not None
+                    and not pd.isna(quote_prev_close)
+                    and quote_prev_close > 0
+                ):
+                    prev_close = float(quote_prev_close)
+            elif prev_close is None:
                 prev_close = fi.get("previousClose") or fi.get("regularMarketPreviousClose")
 
             if prev_close is None or prev_close <= 0:
