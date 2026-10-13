@@ -393,7 +393,8 @@ def build_bj_account_performance(
     withdrawals = flows.loc[flows['flow_type'] == '출금', 'amount'].sum()
     return float(deposits - withdrawals)
 
-  fixed_fx_rate = market_price('KRW=X', query_start)
+  fixed_fx_date = max(query_start, cutoff)
+  fixed_fx_rate = market_price('KRW=X', fixed_fx_date)
   if fixed_fx_rate is None or fixed_fx_rate <= 0:
     fixed_fx_rate = 1350.0
 
@@ -455,20 +456,15 @@ def build_bj_account_performance(
       )
       period_base_ex_fx = previous_eval_ex_fx + period_flow
 
-    if query_start >= cutoff and target_date == cutoff:
+    if target_date == cutoff:
       cumulative_profit_ex_fx = cumulative_profit
-    elif query_start >= cutoff and target_date > cutoff:
+    elif target_date > cutoff:
       if cumulative_profit_ex_fx is None:
         raise RuntimeError(
             'BJ 환차손 제외 연 누적 추정치의 2026-07-31 기준값이 없습니다.'
         )
       cumulative_profit_ex_fx += period_profit_ex_fx
     else:
-      cumulative_profit_ex_fx = cumulative_profit
-
-    if query_start < cutoff:
-      period_profit_ex_fx = period_profit
-      period_base_ex_fx = period_base
       cumulative_profit_ex_fx = cumulative_profit
 
     performance[target_date.strftime('%Y-%m-%d')] = {
@@ -1042,15 +1038,14 @@ if menu == '트렌드 리포트':
         else:
           usd_krw_first = 1350.0
 
+      bj_fixed_fx_date = max(
+          pd.Timestamp(start_date),
+          pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM),
+      )
       bj_fixed_fx_rate = None
-      if (
-          pd.Timestamp(start_date)
-          >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-          and 'KRW=X' in market_data.columns
-          and not market_data.empty
-      ):
+      if 'KRW=X' in market_data.columns and not market_data.empty:
         bj_fixed_fx_rate = market_data['KRW=X'].asof(
-            pd.Timestamp(start_date)
+            bj_fixed_fx_date
         )
       if (
           bj_fixed_fx_rate is None
@@ -1184,8 +1179,6 @@ if menu == '트렌드 리포트':
             item_bj_ex_fx_rate = (
                 bj_fixed_fx_rate
                 if whose_val == 'BJ'
-                and pd.Timestamp(start_date)
-                >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
                 else usd_krw_first
             )
 
@@ -1473,7 +1466,7 @@ if menu == '트렌드 리포트':
               'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
               '환차손 제외 연 누적 추정치는 2026-07-31까지 기존 누적손익을 '
               '유지하고, 이후 주기 손익만 고정환율 기준으로 반영합니다. '
-              '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
+              '조회 시작일이 2026-07-31 이전이면 7/31 환율, 이후이면 '
               '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
 
@@ -1515,8 +1508,6 @@ if menu == '트렌드 리포트':
             df_curr['총평가금액'] = df_curr['총평가금액_ex_fx']
             if (
                 group_col in ['account_num', 'broker', 'account_type', 'category2']
-                and pd.Timestamp(start_date)
-                >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
                 and '총평가금액_bj_ex_fx' in df_curr.columns
             ):
               bj_mask = df_curr['whose'] == 'BJ'
@@ -1601,11 +1592,7 @@ if menu == '트렌드 리포트':
             grp_agg['선택기간 누적 수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
           if group_col in ['account_num', 'broker', 'account_type']:
-            use_bj_ex_fx = (
-                use_ex_fx
-                and pd.Timestamp(start_date)
-                >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-            )
+            use_bj_ex_fx = use_ex_fx
             bj_period_col = (
                 '계좌기준_주기손익_ex_fx'
                 if use_bj_ex_fx else '계좌기준_주기손익'
@@ -1836,11 +1823,7 @@ if menu == '트렌드 리포트':
           elif group_col == 'category2':
             category2_period_col = (
                 '주기별 평가손익_bj_ex_fx'
-                if (
-                    use_ex_fx
-                    and pd.Timestamp(start_date)
-                    >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-                )
+                if use_ex_fx
                 else '주기별 평가손익'
             )
             sh_rows = df_curr[df_curr['whose'] != 'BJ']
@@ -1938,11 +1921,7 @@ if menu == '트렌드 리포트':
 
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
-        show_bj_ex_fx_estimate = (
-            ex_summary
-            and pd.Timestamp(start_date)
-            >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-        )
+        show_bj_ex_fx_estimate = ex_summary
         bj_year_profit_label = (
             'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)'
             if show_bj_ex_fx_estimate
@@ -2672,17 +2651,13 @@ if menu == '트렌드 리포트':
               'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
               '환차손 제외 연 누적 추정치는 2026-07-31까지 기존 누적손익을 '
               '유지하고, 이후 주기 손익만 고정환율 기준으로 반영합니다. '
-              '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
+              '조회 시작일이 2026-07-31 이전이면 7/31 환율, 이후이면 '
               '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
 
         def get_whose_agg(use_ex_fx):
           df_curr = raw_df.copy()
-          use_bj_ex_fx = (
-              use_ex_fx
-              and pd.Timestamp(start_date)
-              >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-          )
+          use_bj_ex_fx = use_ex_fx
           bj_period_col = (
               '계좌기준_주기손익_ex_fx'
               if use_bj_ex_fx else '계좌기준_주기손익'
@@ -2867,11 +2842,7 @@ if menu == '트렌드 리포트':
 
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_whose_summary_total')
-        show_bj_ex_fx_estimate = (
-            ex_whose_summary
-            and pd.Timestamp(start_date)
-            >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-        )
+        show_bj_ex_fx_estimate = ex_whose_summary
         bj_year_profit_label = (
             'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)'
             if show_bj_ex_fx_estimate
