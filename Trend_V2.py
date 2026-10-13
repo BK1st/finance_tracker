@@ -455,12 +455,12 @@ def build_bj_account_performance(
       )
       period_base_ex_fx = previous_eval_ex_fx + period_flow
 
-    if query_start >= cutoff and target_date > query_start:
+    if query_start >= cutoff and target_date == cutoff:
+      cumulative_profit_ex_fx = cumulative_profit
+    elif query_start >= cutoff and target_date > cutoff:
       if cumulative_profit_ex_fx is None:
-        cumulative_profit_ex_fx = (
-            total_eval
-            - float(baseline_amount)
-            - cumulative_net_flow(target_date)
+        raise RuntimeError(
+            'BJ 환차손 제외 연 누적 추정치의 2026-07-31 기준값이 없습니다.'
         )
       cumulative_profit_ex_fx += period_profit_ex_fx
     else:
@@ -1471,6 +1471,8 @@ if menu == '트렌드 리포트':
           st.caption(
               '선택구간 누적손익은 조회 구간 첫 평가액 대비 증감입니다. '
               'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
+              '환차손 제외 연 누적 추정치는 2026-07-31까지 기존 누적손익을 '
+              '유지하고, 이후 주기 손익만 고정환율 기준으로 반영합니다. '
               '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
               '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
@@ -1936,6 +1938,21 @@ if menu == '트렌드 리포트':
 
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
+        show_bj_ex_fx_estimate = (
+            ex_summary
+            and pd.Timestamp(start_date)
+            >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+        )
+        bj_year_profit_label = (
+            'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)'
+            if show_bj_ex_fx_estimate
+            else 'BJ 올해 누적 평가손익'
+        )
+        bj_year_return_label = (
+            'BJ 올해 누적 수익률 (7/31 이후 환차손 제외 추정)'
+            if show_bj_ex_fx_estimate
+            else 'BJ 올해 누적 수익률'
+        )
         
         grp_agg_summary = get_grp_agg(ex_summary)
 
@@ -1992,16 +2009,16 @@ if menu == '트렌드 리포트':
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
-                'BJ 올해 누적 평가 손익 (원)': final_bj_year_profit,
-                'BJ 올해 누적 수익률 (%)': final_bj_year_return,
+                bj_year_profit_label: final_bj_year_profit,
+                bj_year_return_label: final_bj_year_return,
                 '_eval': final_eval,
                 '_principal': final_principal,
             })
 
         total_bj_year_profit = sum(
-            row['BJ 올해 누적 평가 손익 (원)']
+            row[bj_year_profit_label]
             for row in summary_table_data
-            if pd.notna(row['BJ 올해 누적 평가 손익 (원)'])
+            if pd.notna(row[bj_year_profit_label])
         )
         total_bj_year_return = (
             total_bj_year_profit / total_bj_year_base_sum * 100
@@ -2022,8 +2039,8 @@ if menu == '트렌드 리포트':
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
-            'BJ 올해 누적 평가 손익 (원)': total_bj_year_profit,
-            'BJ 올해 누적 수익률 (%)': total_bj_year_return,
+            bj_year_profit_label: total_bj_year_profit,
+            bj_year_return_label: total_bj_year_return,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
         })
 
@@ -2034,8 +2051,8 @@ if menu == '트렌드 리포트':
             '최종 기말 평가 금액 (원)',
             '점유율 (%)',
             '선택구간 누적 수익률 (%)',
-            'BJ 올해 누적 평가 손익 (원)',
-            'BJ 올해 누적 수익률 (%)',
+            bj_year_profit_label,
+            bj_year_return_label,
         ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
@@ -2044,8 +2061,8 @@ if menu == '트렌드 리포트':
             '최종 기말 평가 금액 (원)': '{:,.0f}',
             '점유율 (%)': '{:.2f}%',
             '선택구간 누적 수익률 (%)': '{:.2f}%',
-            'BJ 올해 누적 평가 손익 (원)': '{:,.0f}',
-            'BJ 올해 누적 수익률 (%)': '{:.2f}%',
+            bj_year_profit_label: '{:,.0f}',
+            bj_year_return_label: '{:.2f}%',
         })
         if group_col == 'category4':
           st.caption('Category 4 행을 선택하면 아래에 해당 보유종목별 내역이 표시됩니다.')
@@ -2653,6 +2670,8 @@ if menu == '트렌드 리포트':
           st.caption(
               '선택구간 누적손익은 조회 구간 첫 평가액 대비 증감입니다. '
               'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
+              '환차손 제외 연 누적 추정치는 2026-07-31까지 기존 누적손익을 '
+              '유지하고, 이후 주기 손익만 고정환율 기준으로 반영합니다. '
               '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
               '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
@@ -2848,6 +2867,21 @@ if menu == '트렌드 리포트':
 
         st.markdown('### 📋 [전체 합산] WHOSE별 최종 핵심지표 요약 표')
         ex_whose_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_whose_summary_total')
+        show_bj_ex_fx_estimate = (
+            ex_whose_summary
+            and pd.Timestamp(start_date)
+            >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+        )
+        bj_year_profit_label = (
+            'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)'
+            if show_bj_ex_fx_estimate
+            else 'BJ 올해 누적 평가손익'
+        )
+        bj_year_return_label = (
+            'BJ 올해 누적 수익률 (7/31 이후 환차손 제외 추정)'
+            if show_bj_ex_fx_estimate
+            else 'BJ 올해 누적 수익률'
+        )
         
         agg_whose_summary = get_whose_agg(ex_whose_summary)
         latest_date = raw_df['Date'].max()
@@ -2906,8 +2940,8 @@ if menu == '트렌드 리포트':
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
-                'BJ 올해 누적 평가 손익 (원)': final_bj_year_profit,
-                'BJ 올해 누적 수익률 (%)': final_bj_year_return,
+                bj_year_profit_label: final_bj_year_profit,
+                bj_year_return_label: final_bj_year_return,
                 '_eval': final_eval,
             })
 
@@ -2917,9 +2951,9 @@ if menu == '트렌드 리포트':
 
         total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
         total_bj_year_profit = sum(
-            row['BJ 올해 누적 평가 손익 (원)']
+            row[bj_year_profit_label]
             for row in whose_summary_data
-            if pd.notna(row['BJ 올해 누적 평가 손익 (원)'])
+            if pd.notna(row[bj_year_profit_label])
         )
         total_bj_year_return = (
             total_bj_year_profit / total_bj_year_base_sum * 100
@@ -2930,8 +2964,8 @@ if menu == '트렌드 리포트':
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
-            'BJ 올해 누적 평가 손익 (원)': total_bj_year_profit,
-            'BJ 올해 누적 수익률 (%)': total_bj_year_return,
+            bj_year_profit_label: total_bj_year_profit,
+            bj_year_return_label: total_bj_year_return,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
         })
 
@@ -2942,8 +2976,8 @@ if menu == '트렌드 리포트':
             '최종 기말 평가 금액 (원)',
             '점유율 (%)',
             '선택구간 누적 수익률 (%)',
-            'BJ 올해 누적 평가 손익 (원)',
-            'BJ 올해 누적 수익률 (%)',
+            bj_year_profit_label,
+            bj_year_return_label,
         ]
         whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
@@ -2953,8 +2987,8 @@ if menu == '트렌드 리포트':
                 '최종 기말 평가 금액 (원)': '{:,.0f}',
                 '점유율 (%)': '{:.2f}%',
                 '선택구간 누적 수익률 (%)': '{:.2f}%',
-                'BJ 올해 누적 평가 손익 (원)': '{:,.0f}',
-                'BJ 올해 누적 수익률 (%)': '{:.2f}%',
+                bj_year_profit_label: '{:,.0f}',
+                bj_year_return_label: '{:.2f}%',
             }),
             use_container_width=True,
         )
