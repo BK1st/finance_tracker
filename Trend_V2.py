@@ -1598,11 +1598,10 @@ if menu == '트렌드 리포트':
               subset=['주기별 수익률']
           )
           fig_period_ret.add_trace(
-              go.Scatter(
+              go.Bar(
                   x=sub['Chart_Date'],
                   y=sub['주기별 수익률'],
                   name=str(grp),
-                  mode='lines+markers',
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1616,12 +1615,10 @@ if menu == '트렌드 리포트':
           bm_df.drop(columns=['dt_temp'], inplace=True)
           sub_bm = bm_df.dropna(subset=['주기별 수익률'])
           fig_period_ret.add_trace(
-              go.Scatter(
+              go.Bar(
                   x=sub_bm['Chart_Date'],
                   y=sub_bm['주기별 수익률'],
-                  mode='lines',
                   name=f'📌 {bm_name}',
-                  line=bm_styles.get(bm_name, dict(dash='dot')),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -1631,7 +1628,8 @@ if menu == '트렌드 리포트':
         fig_period_ret.update_layout(
             title=dict(
                 text=(
-                    f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (꺾은선,'
+                    f'🔹 [{prefix}] 선택기간 주기별 수익률 Trend (그룹형'
+                    f' 세로 막대,'
                     f' 벤치마크 포함){suf_g3}'
                 ),
                 y=0.95,
@@ -1640,6 +1638,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
+            barmode='group',
             hovermode='closest',
             height=500,
             margin=margin_g3,
