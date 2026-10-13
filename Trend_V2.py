@@ -1469,10 +1469,10 @@ if menu == '트렌드 리포트':
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
         if (raw_df['whose'] == 'BJ').any():
           st.caption(
-              'BJ의 보정 손익은 원화 기준 연말 기준액으로 계산됩니다. '
-              '환차손 제외를 선택하고 조회 시작일이 2026-07-31 이후이면, '
-              '조회 시작일 환율을 고정 기준으로 사용합니다. '
-              '그 이전부터 조회하면 BJ는 기존 보정 손익을 유지합니다.'
+              '선택구간 누적손익은 조회 구간 첫 평가액 대비 증감입니다. '
+              'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
+              '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
+              '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
 
         # 계좌 필터 및 Category4 필터 조건 다중 선택 지원 (보유항목별 등)
@@ -1670,6 +1670,41 @@ if menu == '트렌드 리포트':
                     bj_cumulative_base_col: 'bj_start_value',
                 })
             )
+            bj_selection_eval = (
+                df_curr[
+                    (df_curr['whose'] == 'BJ')
+                    & df_curr['account_num'].isin(
+                        bj_rows['account_num'].dropna().unique()
+                    )
+                ]
+                .groupby(['Date', group_col])['총평가금액']
+                .sum()
+                .reset_index()
+                .sort_values([group_col, 'Date'])
+            )
+            bj_selection_eval['bj_selection_cumulative_profit'] = (
+                bj_selection_eval['총평가금액']
+                - bj_selection_eval.groupby(group_col)[
+                    '총평가금액'
+                ].transform('first')
+            )
+            bj_selection_eval['bj_selection_base'] = (
+                bj_selection_eval.groupby(group_col)[
+                    '총평가금액'
+                ].transform('first')
+            )
+            bj_agg = bj_agg.merge(
+                bj_selection_eval[
+                    [
+                        'Date',
+                        group_col,
+                        'bj_selection_cumulative_profit',
+                        'bj_selection_base',
+                    ]
+                ],
+                on=['Date', group_col],
+                how='left',
+            )
             bj_period_bases = (
                 bj_rows.groupby(['Date', group_col])[bj_period_base_col]
                 .agg(lambda values: values.sum(min_count=1))
@@ -1686,12 +1721,32 @@ if menu == '트렌드 리포트':
             combined['주기별 평가손익'] = combined[
                 ['sh_period_profit', 'bj_period_profit']
             ].sum(axis=1, min_count=1)
+            use_bj_selection_period = (
+                pd.Timestamp(start_date)
+                >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+            )
+            bj_selected_profit_col = (
+                'bj_selection_cumulative_profit'
+                if use_bj_selection_period else 'bj_cumulative_profit'
+            )
+            bj_selected_base_col = (
+                'bj_selection_base'
+                if use_bj_selection_period else 'bj_start_value'
+            )
             combined['선택구간 누적손익'] = combined[
-                ['sh_cumulative_profit', 'bj_cumulative_profit']
+                ['sh_cumulative_profit', bj_selected_profit_col]
             ].sum(axis=1, min_count=1)
-            combined['누적기준액'] = (
+            combined['선택구간 기준액'] = (
                 combined['sh_start_value'].fillna(0)
-                + combined['bj_start_value'].fillna(0)
+                + combined[bj_selected_base_col].fillna(0)
+            )
+            combined['BJ 올해 누적손익'] = combined['bj_cumulative_profit']
+            combined['BJ 올해 누적기준액'] = combined['bj_start_value']
+            combined['BJ 올해 누적 수익률'] = np.where(
+                combined['BJ 올해 누적기준액'] > 0,
+                combined['BJ 올해 누적손익']
+                / combined['BJ 올해 누적기준액'] * 100,
+                np.nan,
             )
             combined['주기기준액'] = combined[
                 ['sh_period_base', 'bj_period_base']
@@ -1705,7 +1760,10 @@ if menu == '트렌드 리포트':
                         group_col,
                         '주기별 평가손익',
                         '선택구간 누적손익',
-                        '누적기준액',
+                        '선택구간 기준액',
+                        'BJ 올해 누적손익',
+                        'BJ 올해 누적기준액',
+                        'BJ 올해 누적 수익률',
                         '주기기준액',
                         'has_bj_baseline',
                     ]
@@ -1740,14 +1798,29 @@ if menu == '트렌드 리포트':
                 grp_agg['주기별 평가손익'] / grp_agg['주기기준액'] * 100,
                 np.nan,
             )
-            corrected_return = np.where(
-                grp_agg['누적기준액'] > 0,
-                grp_agg['선택구간 누적손익'] / grp_agg['누적기준액'] * 100,
-                0,
-            )
+            if use_bj_selection_period:
+              corrected_growth_factor = 1 + (
+                  grp_agg['주기별 수익률'].fillna(0) / 100
+              )
+              corrected_cumulative_return = (
+                  grp_agg.assign(
+                      _corrected_growth_factor=corrected_growth_factor
+                  )
+                  .groupby(group_col)['_corrected_growth_factor']
+                  .cumprod()
+                  .sub(1)
+                  .mul(100)
+              )
+            else:
+              corrected_cumulative_return = np.where(
+                  grp_agg['선택구간 기준액'] > 0,
+                  grp_agg['선택구간 누적손익']
+                  / grp_agg['선택구간 기준액'] * 100,
+                  0,
+              )
             grp_agg['선택기간 누적 수익률'] = np.where(
                 grp_agg['has_bj_baseline'],
-                corrected_return,
+                corrected_cumulative_return,
                 grp_agg['선택기간 누적 수익률'],
             )
             grp_agg.drop(
@@ -1870,6 +1943,7 @@ if menu == '트렌드 리포트':
         total_eval_sum = 0
         total_pl_sum = 0
         total_return_base_sum = 0
+        total_bj_year_base_sum = 0
 
         for grp in groups:
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
@@ -1892,20 +1966,47 @@ if menu == '트렌드 리포트':
                 if 'has_bj_baseline' in sub.columns else False
             )
             if pd.notna(has_bj_baseline) and bool(has_bj_baseline):
-              final_principal = sub['누적기준액'].iloc[-1]
+              final_principal = sub['선택구간 기준액'].iloc[-1]
+
+            final_bj_year_profit = (
+                sub['BJ 올해 누적손익'].iloc[-1]
+                if 'BJ 올해 누적손익' in sub.columns else np.nan
+            )
+            final_bj_year_return = (
+                sub['BJ 올해 누적 수익률'].iloc[-1]
+                if 'BJ 올해 누적 수익률' in sub.columns else np.nan
+            )
+            final_bj_year_base = (
+                sub['BJ 올해 누적기준액'].iloc[-1]
+                if 'BJ 올해 누적기준액' in sub.columns else np.nan
+            )
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
             total_return_base_sum += final_principal
+            if pd.notna(final_bj_year_base):
+              total_bj_year_base_sum += final_bj_year_base
 
             summary_table_data.append({
                 prefix: grp,
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
+                'BJ 올해 누적 평가 손익 (원)': final_bj_year_profit,
+                'BJ 올해 누적 수익률 (%)': final_bj_year_return,
                 '_eval': final_eval,
                 '_principal': final_principal,
             })
+
+        total_bj_year_profit = sum(
+            row['BJ 올해 누적 평가 손익 (원)']
+            for row in summary_table_data
+            if pd.notna(row['BJ 올해 누적 평가 손익 (원)'])
+        )
+        total_bj_year_return = (
+            total_bj_year_profit / total_bj_year_base_sum * 100
+            if total_bj_year_base_sum > 0 else np.nan
+        )
 
         for row in summary_table_data:
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
@@ -1921,11 +2022,21 @@ if menu == '트렌드 리포트':
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
+            'BJ 올해 누적 평가 손익 (원)': total_bj_year_profit,
+            'BJ 올해 누적 수익률 (%)': total_bj_year_return,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
         })
 
         summary_df = pd.DataFrame(summary_table_data)
-        cols = [prefix, '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
+        cols = [
+            prefix,
+            '선택구간 누적 평가 손익 (원)',
+            '최종 기말 평가 금액 (원)',
+            '점유율 (%)',
+            '선택구간 누적 수익률 (%)',
+            'BJ 올해 누적 평가 손익 (원)',
+            'BJ 올해 누적 수익률 (%)',
+        ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
         summary_table = summary_df.style.format({
@@ -1933,6 +2044,8 @@ if menu == '트렌드 리포트':
             '최종 기말 평가 금액 (원)': '{:,.0f}',
             '점유율 (%)': '{:.2f}%',
             '선택구간 누적 수익률 (%)': '{:.2f}%',
+            'BJ 올해 누적 평가 손익 (원)': '{:,.0f}',
+            'BJ 올해 누적 수익률 (%)': '{:.2f}%',
         })
         if group_col == 'category4':
           st.caption('Category 4 행을 선택하면 아래에 해당 보유종목별 내역이 표시됩니다.')
@@ -2538,10 +2651,10 @@ if menu == '트렌드 리포트':
         st.markdown('### 📊 [전체 합산 - WHOSE별 분석]')
         if (raw_df['whose'] == 'BJ').any():
           st.caption(
-              'BJ의 보정 손익은 원화 기준 연말 기준액으로 계산됩니다. '
-              '환차손 제외를 선택하고 조회 시작일이 2026-07-31 이후이면, '
-              '조회 시작일 환율을 고정 기준으로 사용합니다. '
-              '그 이전부터 조회하면 BJ는 기존 보정 손익을 유지합니다.'
+              '선택구간 누적손익은 조회 구간 첫 평가액 대비 증감입니다. '
+              'BJ 올해 누적손익은 2025년 말 기준액으로 별도 표시합니다. '
+              '환차손 제외 시 BJ는 조회 시작일이 2026-07-31 이후인 경우 '
+              '조회 시작일 환율을 고정 기준으로 사용합니다.'
           )
 
         def get_whose_agg(use_ex_fx):
@@ -2642,8 +2755,31 @@ if menu == '트렌드 리포트':
                   bj_cumulative_base_col: 'bj_base',
               })
           )
+          bj_selection_eval = (
+              df_curr[
+                  (df_curr['whose'] == 'BJ')
+                  & df_curr['account_num'].isin(
+                      bj_rows['account_num'].dropna().unique()
+                  )
+              ]
+              .groupby('Date')['총평가금액']
+              .sum()
+              .sort_index()
+          )
+          bj_selection_base = bj_selection_eval.iloc[0] if not bj_selection_eval.empty else np.nan
+          bj_selection_metrics = pd.DataFrame({
+              'bj_selection_cumulative_profit': (
+                  bj_selection_eval - bj_selection_base
+              ),
+              'bj_selection_base': bj_selection_base,
+          })
+          bj_agg = bj_agg.join(bj_selection_metrics, how='left')
           bj_by_date = bj_agg.to_dict('index')
           grp_agg['bj_base'] = np.nan
+          grp_agg['bj_selection_base'] = np.nan
+          grp_agg['BJ 올해 누적손익'] = np.nan
+          grp_agg['BJ 올해 누적기준액'] = np.nan
+          grp_agg['BJ 올해 누적 수익률'] = np.nan
           for row_index, row in grp_agg[grp_agg['whose'] == 'BJ'].iterrows():
             bj_metrics = bj_by_date.get(row['Date'])
             if bj_metrics is None:
@@ -2656,18 +2792,53 @@ if menu == '트렌드 리포트':
             grp_agg.at[row_index, '주기별 평가손익'] = bj_metrics[
                 'bj_period_profit'
             ]
-            grp_agg.at[row_index, '선택구간 누적손익'] = bj_metrics[
-                'bj_cumulative_profit'
-            ]
+            year_profit = bj_metrics['bj_cumulative_profit']
+            selection_profit = bj_metrics['bj_selection_cumulative_profit']
+            use_selection_period = (
+                pd.Timestamp(start_date)
+                >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+            )
+            if use_selection_period:
+              interval_profit = selection_profit
+              interval_base = bj_metrics['bj_selection_base']
+            else:
+              interval_profit = year_profit
+              interval_base = bj_metrics['bj_base']
+            grp_agg.at[row_index, '선택구간 누적손익'] = interval_profit
             grp_agg.at[row_index, 'bj_base'] = bj_metrics['bj_base']
+            grp_agg.at[row_index, 'bj_selection_base'] = bj_metrics[
+                'bj_selection_base'
+            ]
+            grp_agg.at[row_index, 'BJ 올해 누적손익'] = year_profit
+            grp_agg.at[row_index, 'BJ 올해 누적기준액'] = bj_metrics['bj_base']
+            grp_agg.at[row_index, 'BJ 올해 누적 수익률'] = (
+                year_profit / bj_metrics['bj_base'] * 100
+                if pd.notna(bj_metrics['bj_base'])
+                and bj_metrics['bj_base'] > 0 else np.nan
+            )
             period_base = bj_metrics['bj_period_base']
             grp_agg.at[row_index, '주기별 수익률'] = (
                 bj_metrics['bj_period_profit'] / period_base * 100
                 if pd.notna(period_base) and period_base > 0 else np.nan
             )
             grp_agg.at[row_index, '구간별 누적수익률'] = (
-                bj_metrics['bj_cumulative_profit'] / bj_metrics['bj_base'] * 100
-                if bj_metrics['bj_base'] > 0 else 0
+                interval_profit / interval_base * 100
+                if pd.notna(interval_base) and interval_base > 0 else 0
+            )
+
+          if (
+              pd.Timestamp(start_date)
+              >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+          ):
+            bj_mask = grp_agg['whose'] == 'BJ'
+            bj_growth_factor = 1 + (
+                grp_agg.loc[bj_mask, '주기별 수익률'].fillna(0) / 100
+            )
+            grp_agg.loc[bj_mask, '구간별 누적수익률'] = (
+                bj_growth_factor.groupby(grp_agg.loc[bj_mask, 'whose'])
+                .cumprod()
+                .sub(1)
+                .mul(100)
             )
 
           return grp_agg
@@ -2685,6 +2856,7 @@ if menu == '트렌드 리포트':
         total_eval_sum = 0
         total_pl_sum = 0
         total_principal_sum = 0
+        total_bj_year_base_sum = 0
 
         for w in whose_list:
           sub = agg_whose_summary[agg_whose_summary['whose'] == w]
@@ -2701,20 +2873,41 @@ if menu == '트렌드 리포트':
               final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
             if (
                 w == 'BJ'
-                and 'bj_base' in sub.columns
-                and pd.notna(sub['bj_base'].iloc[-1])
+                and 'bj_selection_base' in sub.columns
+                and pd.notna(sub['bj_selection_base'].iloc[-1])
             ):
-              final_principal = sub['bj_base'].iloc[-1]
+              final_principal = (
+                  sub['bj_selection_base'].iloc[-1]
+                  if pd.Timestamp(start_date)
+                  >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+                  else sub['bj_base'].iloc[-1]
+              )
+            final_bj_year_profit = (
+                sub['BJ 올해 누적손익'].iloc[-1]
+                if 'BJ 올해 누적손익' in sub.columns else np.nan
+            )
+            final_bj_year_base = (
+                sub['BJ 올해 누적기준액'].iloc[-1]
+                if 'BJ 올해 누적기준액' in sub.columns else np.nan
+            )
+            final_bj_year_return = (
+                sub['BJ 올해 누적 수익률'].iloc[-1]
+                if 'BJ 올해 누적 수익률' in sub.columns else np.nan
+            )
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
             total_principal_sum += final_principal
+            if pd.notna(final_bj_year_base):
+              total_bj_year_base_sum += final_bj_year_base
 
             whose_summary_data.append({
                 'WHOSE': w,
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
+                'BJ 올해 누적 평가 손익 (원)': final_bj_year_profit,
+                'BJ 올해 누적 수익률 (%)': final_bj_year_return,
                 '_eval': final_eval,
             })
 
@@ -2723,16 +2916,35 @@ if menu == '트렌드 리포트':
           del row['_eval']
 
         total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        total_bj_year_profit = sum(
+            row['BJ 올해 누적 평가 손익 (원)']
+            for row in whose_summary_data
+            if pd.notna(row['BJ 올해 누적 평가 손익 (원)'])
+        )
+        total_bj_year_return = (
+            total_bj_year_profit / total_bj_year_base_sum * 100
+            if total_bj_year_base_sum > 0 else np.nan
+        )
         whose_summary_data.append({
             'WHOSE': '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
+            'BJ 올해 누적 평가 손익 (원)': total_bj_year_profit,
+            'BJ 올해 누적 수익률 (%)': total_bj_year_return,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
         })
 
         whose_summary_df = pd.DataFrame(whose_summary_data)
-        cols_w = ['WHOSE', '선택구간 누적 평가 손익 (원)', '최종 기말 평가 금액 (원)', '점유율 (%)', '선택구간 누적 수익률 (%)']
+        cols_w = [
+            'WHOSE',
+            '선택구간 누적 평가 손익 (원)',
+            '최종 기말 평가 금액 (원)',
+            '점유율 (%)',
+            '선택구간 누적 수익률 (%)',
+            'BJ 올해 누적 평가 손익 (원)',
+            'BJ 올해 누적 수익률 (%)',
+        ]
         whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
         st.dataframe(
@@ -2741,6 +2953,8 @@ if menu == '트렌드 리포트':
                 '최종 기말 평가 금액 (원)': '{:,.0f}',
                 '점유율 (%)': '{:.2f}%',
                 '선택구간 누적 수익률 (%)': '{:.2f}%',
+                'BJ 올해 누적 평가 손익 (원)': '{:,.0f}',
+                'BJ 올해 누적 수익률 (%)': '{:.2f}%',
             }),
             use_container_width=True,
         )
