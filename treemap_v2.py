@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_plotly_events import plotly_events
@@ -785,6 +786,23 @@ def fetch_batch_market_data(
         return data
     except Exception:
         return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, max_entries=128, show_spinner=False)
+def fetch_ticker_chart_data(ticker, period, interval, include_extended_hours):
+    """Fetch and briefly cache OHLCV data for the selected treemap ticker."""
+    try:
+        history = yf.Ticker(ticker).history(
+            period=period,
+            interval=interval,
+            prepost=include_extended_hours,
+            auto_adjust=False,
+        )
+        if history.empty:
+            return pd.DataFrame(), "Yahoo Finance returned no chart data for this ticker and interval."
+        return history, None
+    except Exception as exc:
+        return pd.DataFrame(), f"Unable to load Yahoo Finance chart data: {exc}"
 
 
 def _extract_ticker_series(market_data, ticker):
@@ -2293,7 +2311,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             custom_profits.append(total_row_profit)
 
             built_nodes = set(["Root"])
-            treemap_leaf_rows = {}
+            treemap_chart_nodes = {}
 
             if active_group_cols:
                 for idx_row, row in filtered_df.iterrows():
@@ -2340,15 +2358,33 @@ elif menu == "일별/시점별 보유 현황 분석":
                             custom_prices.append(disp_price)
                             custom_profits.append(grp_profit)
                             if depth == len(active_group_cols) - 1:
-                                treemap_leaf_rows[current_id_path] = (
-                                    sub_grp[
-                                        ["whose", "account_num", "item_name", "ticker"]
-                                    ]
-                                    .drop_duplicates()
-                                    .fillna("")
+                                leaf_tickers = (
+                                    sub_grp["formatted_ticker"]
+                                    .dropna()
                                     .astype(str)
-                                    .apply(lambda column: column.str.strip())
+                                    .unique()
+                                    .tolist()
                                 )
+                                leaf_currencies = (
+                                    sub_grp["currency"]
+                                    .dropna()
+                                    .astype(str)
+                                    .unique()
+                                    .tolist()
+                                )
+                                treemap_chart_nodes[current_id_path] = {
+                                    "label": val_str,
+                                    "ticker": (
+                                        leaf_tickers[0]
+                                        if len(leaf_tickers) == 1
+                                        else None
+                                    ),
+                                    "currency": (
+                                        leaf_currencies[0]
+                                        if len(leaf_currencies) == 1
+                                        else None
+                                    ),
+                                }
 
                         current_parent = current_id_path
 
@@ -2417,24 +2453,19 @@ elif menu == "일별/시점별 보유 현황 분석":
                 margin=dict(t=10, l=10, r=10, b=10),
             )
 
-            treemap_asset_signature = tuple(
-                (
-                    point_id,
-                    tuple(
-                        sorted(
-                            assets.itertuples(index=False, name=None)
-                        )
-                    ),
+            chart_signature = tuple(
+                sorted(
+                    (
+                        node_id,
+                        node["ticker"],
+                        node["currency"],
+                    )
+                    for node_id, node in treemap_chart_nodes.items()
                 )
-                for point_id, assets in sorted(treemap_leaf_rows.items())
             )
-            if st.session_state.get(
-                "treemap_asset_signature"
-            ) != treemap_asset_signature:
-                st.session_state.pop("treemap_selected_point_id", None)
-                st.session_state["treemap_asset_signature"] = (
-                    treemap_asset_signature
-                )
+            if st.session_state.get("treemap_chart_signature") != chart_signature:
+                st.session_state.pop("treemap_chart_selection", None)
+                st.session_state["treemap_chart_signature"] = chart_signature
 
             clicked_points = plotly_events(
                 fig_treemap,
@@ -2442,7 +2473,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 select_event=False,
                 hover_event=False,
                 override_height=700,
-                key=f"treemap_asset_click_{abs(hash(treemap_asset_signature))}",
+                key=f"treemap_stock_chart_click_{abs(hash(chart_signature))}",
             )
             if clicked_points:
                 point_number = clicked_points[0].get("pointNumber")
@@ -2451,116 +2482,180 @@ elif menu == "일별/시점별 보유 현황 분석":
                 except (TypeError, ValueError):
                     point_number = -1
                 if 0 <= point_number < len(ids):
-                    st.session_state["treemap_selected_point_id"] = ids[
-                        point_number
-                    ]
-
-            selected_point_id = st.session_state.get(
-                "treemap_selected_point_id"
-            )
-            if selected_point_id not in treemap_leaf_rows:
-                selected_point_id = None
-                st.session_state.pop("treemap_selected_point_id", None)
-
-            if selected_point_id:
-                selected_assets = treemap_leaf_rows[selected_point_id]
-                selected_asset_keys = set(
-                    selected_assets[
-                        ["whose", "account_num", "item_name", "ticker"]
-                    ].itertuples(index=False, name=None)
-                )
-
-                history_df = df.copy()
-                identity_columns = [
-                    "whose",
-                    "account_num",
-                    "item_name",
-                    "ticker",
-                ]
-                for column in identity_columns:
-                    history_df[column] = (
-                        history_df[column]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                    )
-                history_keys = pd.MultiIndex.from_frame(
-                    history_df[identity_columns]
-                )
-                matching_history = history_df[
-                    history_keys.isin(selected_asset_keys)
-                ].copy()
-
-                if not matching_history.empty:
-                    current_prices = pd.to_numeric(
-                        matching_history["current_price"], errors="coerce"
-                    ).fillna(0)
-                    quantities = pd.to_numeric(
-                        matching_history["quantity"], errors="coerce"
-                    ).fillna(0)
-                    exchange_rates = pd.to_numeric(
-                        matching_history["exchange_rate"], errors="coerce"
-                    )
-                    exchange_rates = exchange_rates.where(
-                        matching_history["currency"] == "USD", 1.0
-                    ).fillna(1.0)
-                    matching_history["평가액(원)"] = (
-                        current_prices * quantities * exchange_rates
-                    )
-                    matching_history["기준일"] = pd.to_datetime(
-                        matching_history["record_date"], errors="coerce"
-                    )
-                    trend_df = (
-                        matching_history.dropna(subset=["기준일"])
-                        .groupby("기준일", as_index=False)["평가액(원)"]
-                        .sum()
-                        .sort_values("기준일")
-                    )
-
-                    selected_item_names = sorted(
-                        selected_assets["item_name"].dropna().unique().tolist()
-                    )
-                    selected_title = ", ".join(selected_item_names)
-                    st.markdown("### 📈 선택 보유 종목 평가금액 추이")
-                    st.caption(
-                        f"선택 항목: {selected_title} · 저장된 날짜별 평가액 기준"
-                    )
-                    if not trend_df.empty:
-                        fig_asset_trend = go.Figure(
-                            go.Scatter(
-                                x=trend_df["기준일"],
-                                y=trend_df["평가액(원)"],
-                                mode="lines+markers",
-                                hovertemplate=(
-                                    "%{x|%Y-%m-%d}<br>"
-                                    "평가금액: ₩%{y:,.0f}<extra></extra>"
-                                ),
-                            )
-                        )
-                        fig_asset_trend.update_layout(
-                            title=selected_title or "선택 항목 합산",
-                            height=380,
-                            margin=dict(t=50, l=20, r=20, b=20),
-                            hovermode="x",
-                        )
-                        fig_asset_trend.update_xaxes(
-                            title_text="기준일", type="date"
-                        )
-                        fig_asset_trend.update_yaxes(
-                            title_text="평가금액 (원)", tickformat=",.0f"
-                        )
-                        st.plotly_chart(
-                            fig_asset_trend,
-                            width="stretch",
-                            key="treemap_selected_asset_trend",
+                    clicked_id = ids[point_number]
+                    if clicked_id in treemap_chart_nodes:
+                        st.session_state["treemap_chart_selection"] = (
+                            treemap_chart_nodes[clicked_id]
                         )
                     else:
-                        st.info("선택 항목의 날짜별 평가 데이터가 없습니다.")
-            else:
-                st.caption(
-                    "트리맵의 하위 타일을 클릭하면 해당 보유항목의 "
-                    "날짜별 평가금액 추이를 확인할 수 있습니다."
+                        st.session_state.pop("treemap_chart_selection", None)
+
+            st.caption(
+                "주가 차트를 보려면 보유 종목 타일을 클릭하세요. "
+                "상위 분류 타일과 실제 시장 티커가 없는 항목은 차트가 제공되지 않습니다."
+            )
+
+            selected_chart = st.session_state.get("treemap_chart_selection")
+            if selected_chart:
+                selected_ticker = selected_chart.get("ticker")
+                st.markdown(
+                    f"### 📈 {selected_chart['label']} "
+                    f"({selected_ticker or '티커 없음'}) 주가 차트"
                 )
+                if not selected_ticker or not selected_chart.get("currency"):
+                    st.info(
+                        "이 타일은 하나의 실제 거래 티커로 식별되지 않아 "
+                        "주가 차트를 표시할 수 없습니다."
+                    )
+                else:
+                    interval_labels = {
+                        "1분봉": "1m",
+                        "5분봉": "5m",
+                        "15분봉": "15m",
+                        "30분봉": "30m",
+                        "1시간봉": "60m",
+                        "일봉": "1d",
+                        "주봉": "1wk",
+                        "월봉": "1mo",
+                    }
+                    period_labels = {
+                        "1일": "1d",
+                        "5일": "5d",
+                        "7일": "7d",
+                        "1개월": "1mo",
+                        "3개월": "3mo",
+                        "6개월": "6mo",
+                        "1년": "1y",
+                        "2년": "2y",
+                        "5년": "5y",
+                        "10년": "10y",
+                        "전체": "max",
+                    }
+                    interval_period_options = {
+                        "1m": ["1일", "5일", "7일"],
+                        "5m": ["1일", "5일", "1개월"],
+                        "15m": ["1일", "5일", "1개월"],
+                        "30m": ["1일", "5일", "1개월"],
+                        "60m": [
+                            "1일", "5일", "1개월", "3개월", "6개월", "1년", "2년"
+                        ],
+                        "1d": [
+                            "1개월", "3개월", "6개월", "1년", "2년", "5년", "전체"
+                        ],
+                        "1wk": [
+                            "3개월", "6개월", "1년", "2년", "5년", "전체"
+                        ],
+                        "1mo": ["1년", "2년", "5년", "10년", "전체"],
+                    }
+                    interval_labels["1분봉"] = "1m"
+                    chart_control_cols = st.columns(2)
+                    with chart_control_cols[0]:
+                        selected_interval_label = st.selectbox(
+                            "차트 봉 간격",
+                            options=list(interval_labels),
+                            index=5,
+                            key="treemap_stock_chart_interval",
+                        )
+                    selected_interval = interval_labels[selected_interval_label]
+                    allowed_periods = interval_period_options[selected_interval]
+                    period_default = (
+                        "6개월" if "6개월" in allowed_periods
+                        else "1년" if "1년" in allowed_periods
+                        else allowed_periods[-1]
+                    )
+                    period_state_key = "treemap_stock_chart_period"
+                    if st.session_state.get(period_state_key) not in allowed_periods:
+                        st.session_state[period_state_key] = period_default
+                    with chart_control_cols[1]:
+                        selected_period_label = st.selectbox(
+                            "조회 기간",
+                            options=allowed_periods,
+                            key=period_state_key,
+                        )
+
+                    include_extended_hours = (
+                        selected_chart["currency"] == "USD"
+                        and not regular_only_for_ticker(selected_ticker)
+                    )
+                    with st.spinner("Yahoo Finance 주가 데이터를 조회 중..."):
+                        chart_data, chart_error = fetch_ticker_chart_data(
+                            selected_ticker,
+                            period_labels[selected_period_label],
+                            selected_interval,
+                            include_extended_hours,
+                        )
+
+                    if chart_error:
+                        st.warning(chart_error)
+                    elif not chart_data.empty:
+                        chart_index = chart_data.index
+                        if getattr(chart_index, "tz", None) is not None:
+                            chart_index = chart_index.tz_convert(None)
+
+                        fig_stock = make_subplots(
+                            rows=2,
+                            cols=1,
+                            shared_xaxes=True,
+                            vertical_spacing=0.04,
+                            row_heights=[0.75, 0.25],
+                        )
+                        fig_stock.add_trace(
+                            go.Candlestick(
+                                x=chart_index,
+                                open=chart_data["Open"],
+                                high=chart_data["High"],
+                                low=chart_data["Low"],
+                                close=chart_data["Close"],
+                                name="주가",
+                            ),
+                            row=1,
+                            col=1,
+                        )
+                        if "Volume" in chart_data.columns:
+                            fig_stock.add_trace(
+                                go.Bar(
+                                    x=chart_index,
+                                    y=chart_data["Volume"],
+                                    name="거래량",
+                                    marker_color="#78909C",
+                                ),
+                                row=2,
+                                col=1,
+                            )
+                        fig_stock.update_layout(
+                            title=(
+                                f"{selected_chart['label']} · "
+                                f"{selected_interval_label} · "
+                                f"{selected_period_label}"
+                            ),
+                            height=650,
+                            margin=dict(t=55, l=20, r=20, b=20),
+                            xaxis_rangeslider_visible=False,
+                            hovermode="x unified",
+                        )
+                        fig_stock.update_yaxes(
+                            title_text=(
+                                "가격 (USD)"
+                                if selected_chart["currency"] == "USD"
+                                else "가격 (KRW)"
+                            ),
+                            row=1,
+                            col=1,
+                        )
+                        fig_stock.update_yaxes(
+                            title_text="거래량", row=2, col=1
+                        )
+                        fig_stock.update_xaxes(
+                            type="date", row=1, col=1
+                        )
+                        fig_stock.update_xaxes(
+                            type="date", row=2, col=1
+                        )
+                        st.plotly_chart(
+                            fig_stock,
+                            width="stretch",
+                            key="treemap_selected_stock_chart",
+                        )
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
