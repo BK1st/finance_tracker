@@ -3391,11 +3391,7 @@ if menu == '트렌드 리포트':
         render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
 
       if active_views:
-        tabs = st.tabs(
-            active_views,
-            key='trend_report_views',
-            on_change='rerun',
-        )
+        tabs = st.tabs(active_views)
         for tab, v_type in zip(tabs, active_views):
           with tab:
             if v_type == '전체 합산':
