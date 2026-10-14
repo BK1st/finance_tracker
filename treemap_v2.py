@@ -10,6 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
+from streamlit_plotly_events import plotly_events
 from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 import streamlit_authenticator as stauth
@@ -2292,6 +2293,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             custom_profits.append(total_row_profit)
 
             built_nodes = set(["Root"])
+            treemap_leaf_rows = {}
 
             if active_group_cols:
                 for idx_row, row in filtered_df.iterrows():
@@ -2337,6 +2339,16 @@ elif menu == "일별/시점별 보유 현황 분석":
                             custom_rates.append(grp_rate)
                             custom_prices.append(disp_price)
                             custom_profits.append(grp_profit)
+                            if depth == len(active_group_cols) - 1:
+                                treemap_leaf_rows[current_id_path] = (
+                                    sub_grp[
+                                        ["whose", "account_num", "item_name", "ticker"]
+                                    ]
+                                    .drop_duplicates()
+                                    .fillna("")
+                                    .astype(str)
+                                    .apply(lambda column: column.str.strip())
+                                )
 
                         current_parent = current_id_path
 
@@ -2405,7 +2417,150 @@ elif menu == "일별/시점별 보유 현황 분석":
                 margin=dict(t=10, l=10, r=10, b=10),
             )
 
-            st.plotly_chart(fig_treemap, width="stretch")
+            treemap_asset_signature = tuple(
+                (
+                    point_id,
+                    tuple(
+                        sorted(
+                            assets.itertuples(index=False, name=None)
+                        )
+                    ),
+                )
+                for point_id, assets in sorted(treemap_leaf_rows.items())
+            )
+            if st.session_state.get(
+                "treemap_asset_signature"
+            ) != treemap_asset_signature:
+                st.session_state.pop("treemap_selected_point_id", None)
+                st.session_state["treemap_asset_signature"] = (
+                    treemap_asset_signature
+                )
+
+            clicked_points = plotly_events(
+                fig_treemap,
+                click_event=True,
+                select_event=False,
+                hover_event=False,
+                override_height=700,
+                key=f"treemap_asset_click_{abs(hash(treemap_asset_signature))}",
+            )
+            if clicked_points:
+                point_number = clicked_points[0].get("pointNumber")
+                try:
+                    point_number = int(point_number)
+                except (TypeError, ValueError):
+                    point_number = -1
+                if 0 <= point_number < len(ids):
+                    st.session_state["treemap_selected_point_id"] = ids[
+                        point_number
+                    ]
+
+            selected_point_id = st.session_state.get(
+                "treemap_selected_point_id"
+            )
+            if selected_point_id not in treemap_leaf_rows:
+                selected_point_id = None
+                st.session_state.pop("treemap_selected_point_id", None)
+
+            if selected_point_id:
+                selected_assets = treemap_leaf_rows[selected_point_id]
+                selected_asset_keys = set(
+                    selected_assets[
+                        ["whose", "account_num", "item_name", "ticker"]
+                    ].itertuples(index=False, name=None)
+                )
+
+                history_df = df.copy()
+                identity_columns = [
+                    "whose",
+                    "account_num",
+                    "item_name",
+                    "ticker",
+                ]
+                for column in identity_columns:
+                    history_df[column] = (
+                        history_df[column]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+                history_keys = pd.MultiIndex.from_frame(
+                    history_df[identity_columns]
+                )
+                matching_history = history_df[
+                    history_keys.isin(selected_asset_keys)
+                ].copy()
+
+                if not matching_history.empty:
+                    current_prices = pd.to_numeric(
+                        matching_history["current_price"], errors="coerce"
+                    ).fillna(0)
+                    quantities = pd.to_numeric(
+                        matching_history["quantity"], errors="coerce"
+                    ).fillna(0)
+                    exchange_rates = pd.to_numeric(
+                        matching_history["exchange_rate"], errors="coerce"
+                    )
+                    exchange_rates = exchange_rates.where(
+                        matching_history["currency"] == "USD", 1.0
+                    ).fillna(1.0)
+                    matching_history["평가액(원)"] = (
+                        current_prices * quantities * exchange_rates
+                    )
+                    matching_history["기준일"] = pd.to_datetime(
+                        matching_history["record_date"], errors="coerce"
+                    )
+                    trend_df = (
+                        matching_history.dropna(subset=["기준일"])
+                        .groupby("기준일", as_index=False)["평가액(원)"]
+                        .sum()
+                        .sort_values("기준일")
+                    )
+
+                    selected_item_names = sorted(
+                        selected_assets["item_name"].dropna().unique().tolist()
+                    )
+                    selected_title = ", ".join(selected_item_names)
+                    st.markdown("### 📈 선택 보유 종목 평가금액 추이")
+                    st.caption(
+                        f"선택 항목: {selected_title} · 저장된 날짜별 평가액 기준"
+                    )
+                    if not trend_df.empty:
+                        fig_asset_trend = go.Figure(
+                            go.Scatter(
+                                x=trend_df["기준일"],
+                                y=trend_df["평가액(원)"],
+                                mode="lines+markers",
+                                hovertemplate=(
+                                    "%{x|%Y-%m-%d}<br>"
+                                    "평가금액: ₩%{y:,.0f}<extra></extra>"
+                                ),
+                            )
+                        )
+                        fig_asset_trend.update_layout(
+                            title=selected_title or "선택 항목 합산",
+                            height=380,
+                            margin=dict(t=50, l=20, r=20, b=20),
+                            hovermode="x",
+                        )
+                        fig_asset_trend.update_xaxes(
+                            title_text="기준일", type="date"
+                        )
+                        fig_asset_trend.update_yaxes(
+                            title_text="평가금액 (원)", tickformat=",.0f"
+                        )
+                        st.plotly_chart(
+                            fig_asset_trend,
+                            width="stretch",
+                            key="treemap_selected_asset_trend",
+                        )
+                    else:
+                        st.info("선택 항목의 날짜별 평가 데이터가 없습니다.")
+            else:
+                st.caption(
+                    "트리맵의 하위 타일을 클릭하면 해당 보유항목의 "
+                    "날짜별 평가금액 추이를 확인할 수 있습니다."
+                )
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
