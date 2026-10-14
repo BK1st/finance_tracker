@@ -660,6 +660,7 @@ def regular_only_for_ticker(ticker):
     return st.session_state.get(setting_key, False)
 
 
+@st.cache_data(ttl=300)
 def fetch_live_ticker_price(ticker, regular_only=False):
     """단일 티커의 최신 시세 가져오기 (regular_only=False 시 프리/애프터마켓 최신가 정확 추적)"""
     if not ticker:
@@ -738,7 +739,7 @@ def fetch_live_ticker_price(ticker, regular_only=False):
     return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=None, max_entries=32)
 def fetch_batch_market_data(
     ticker_tuple,
     start_date_str,
@@ -746,7 +747,7 @@ def fetch_batch_market_data(
     us_regular_only=False,
     refresh_key=None,
 ):
-    """모든 종목의 시세를 yf.download로 요청하여 캐싱"""
+    """배치 시세를 캐싱하고, 갱신 키가 바뀌거나 캐시를 비울 때만 다시 조회."""
     tickers = [t for t in ticker_tuple if t]
     if not tickers:
         return pd.DataFrame()
@@ -835,7 +836,13 @@ def _get_last_trading_day_before(m_data, ticker, target_date_dt):
     return None
 
 
-def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
+def _get_daily_prices(
+    m_data,
+    ticker,
+    current_db_price=None,
+    regular_only=None,
+    allow_live=True,
+):
     """일간 등락률 계산을 위해 (최종 종가/평가시세, 전일 종가)를 산출."""
     if regular_only is None:
         regular_only = regular_only_for_ticker(ticker)
@@ -850,7 +857,7 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
         elif len(series) == 1:
             latest_close = float(series.iloc[-1])
 
-    if not regular_only and not is_korean_ticker(ticker):
+    if allow_live and not regular_only and not is_korean_ticker(ticker):
         try:
             tk = yf.Ticker(ticker)
             fi = tk.fast_info
@@ -874,7 +881,9 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
         except Exception:
             pass
 
-    if is_korean_ticker(ticker) or latest_close is None or prev_close is None:
+    if allow_live and (
+        is_korean_ticker(ticker) or latest_close is None or prev_close is None
+    ):
         try:
             tk = yf.Ticker(ticker)
             fi = tk.fast_info
@@ -905,10 +914,20 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
             pass
 
     if regular_only:
-        eval_p = latest_close if (latest_close is not None and latest_close > 0) else current_db_price
+        eval_p = (
+            current_db_price
+            if not allow_live and current_db_price and current_db_price > 0
+            else latest_close
+            if latest_close is not None and latest_close > 0
+            else current_db_price
+        )
         base_p = prev_close
     else:
-        live_p = fetch_live_ticker_price(ticker, regular_only=False)
+        live_p = (
+            fetch_live_ticker_price(ticker, regular_only=False)
+            if allow_live
+            else None
+        )
         eval_p = live_p if (live_p is not None) else (current_db_price if (current_db_price and current_db_price > 0) else latest_close)
         
         if latest_close is not None and prev_close is not None and prev_close > 0:
@@ -1959,16 +1978,29 @@ elif menu == "일별/시점별 보유 현황 분석":
                     ticker_base_prices = {}
                     ticker_eval_prices = {}
                     is_daily = "1) 일간" in color_option
+                    stored_prices = (
+                        sub_df.dropna(subset=["formatted_ticker"])
+                        .drop_duplicates(subset=["formatted_ticker"])
+                        .set_index("formatted_ticker")["current_price"]
+                        .to_dict()
+                    )
 
                     for tk in tickers:
                         if tk:
                             if is_daily:
-                                eval_p, base_p = _get_daily_prices(m_data, tk)
+                                eval_p, base_p = _get_daily_prices(
+                                    m_data,
+                                    tk,
+                                    current_db_price=stored_prices.get(tk),
+                                    allow_live=live_tracking,
+                                )
                                 ticker_eval_prices[tk] = eval_p
                                 ticker_base_prices[tk] = base_p
                             else:
                                 ticker_base_prices[tk] = _get_last_trading_day_before(m_data, tk, target_base_dt)
-                                if regular_only_for_ticker(tk):
+                                if not live_tracking:
+                                    ticker_eval_prices[tk] = stored_prices.get(tk)
+                                elif regular_only_for_ticker(tk):
                                     s = _extract_ticker_series(m_data, tk)
                                     ticker_eval_prices[tk] = float(s.iloc[-1]) if (s is not None and not s.empty) else None
                                 else:
