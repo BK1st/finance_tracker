@@ -2,16 +2,16 @@ import html
 import io
 import json
 import os
+import re
 import sqlite3
 import urllib.request
+from urllib.parse import quote
 from datetime import date, datetime, timedelta
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_plotly_events import plotly_events
 from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 import streamlit_authenticator as stauth
@@ -606,6 +606,69 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
     components.html(html_doc, height=height, scrolling=True)
 
 
+def render_clickable_treemap(fig, chart_nodes, height=700):
+    fig.update_layout(autosize=True, height=height)
+    ticker_urls = {}
+    for node_id, node in chart_nodes.items():
+        ticker = node.get("ticker")
+        currency = node.get("currency")
+        if not ticker or not currency:
+            continue
+
+        if currency == "KRW":
+            if not re.fullmatch(r"\d{6}\.(?:KS|KQ)", ticker):
+                continue
+        elif currency == "USD":
+            if not re.fullmatch(r"[A-Z0-9.^=-]+", ticker):
+                continue
+        else:
+            continue
+
+        ticker_urls[node_id] = (
+            "https://finance.yahoo.com/quote/"
+            f"{quote(ticker, safe='.-^=')}/chart/"
+        )
+
+    figure_json = json.dumps(
+        json.loads(fig.to_json()), ensure_ascii=False
+    ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    ticker_urls_json = json.dumps(
+        ticker_urls, ensure_ascii=False
+    ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    html_doc = """
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    html, body, #treemap { width: 100%; height: 100%; margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="treemap"></div>
+  <script>
+    const figure = """ + figure_json + """;
+    const tickerUrls = """ + ticker_urls_json + """;
+    const chart = document.getElementById("treemap");
+    Plotly.newPlot(chart, figure.data, figure.layout, {
+      responsive: true,
+      displayModeBar: false
+    }).then(() => {
+      chart.on("plotly_click", (event) => {
+        const point = event.points && event.points[0];
+        const url = point && tickerUrls[point.id];
+        if (url) window.open(url, "_blank", "noopener,noreferrer");
+      });
+      new ResizeObserver(() => Plotly.Plots.resize(chart)).observe(chart);
+    });
+  </script>
+</body>
+</html>
+"""
+    components.html(html_doc, height=height, scrolling=False)
+
+
 # ---------------------------------------------------------
 # 배치 시세 수집 및 캐싱 함수
 # ---------------------------------------------------------
@@ -786,23 +849,6 @@ def fetch_batch_market_data(
         return data
     except Exception:
         return pd.DataFrame()
-
-
-@st.cache_data(ttl=300, max_entries=128, show_spinner=False)
-def fetch_ticker_chart_data(ticker, period, interval, include_extended_hours):
-    """Fetch and briefly cache OHLCV data for the selected treemap ticker."""
-    try:
-        history = yf.Ticker(ticker).history(
-            period=period,
-            interval=interval,
-            prepost=include_extended_hours,
-            auto_adjust=False,
-        )
-        if history.empty:
-            return pd.DataFrame(), "Yahoo Finance returned no chart data for this ticker and interval."
-        return history, None
-    except Exception as exc:
-        return pd.DataFrame(), f"Unable to load Yahoo Finance chart data: {exc}"
 
 
 def _extract_ticker_series(market_data, ticker):
@@ -2453,209 +2499,11 @@ elif menu == "일별/시점별 보유 현황 분석":
                 margin=dict(t=10, l=10, r=10, b=10),
             )
 
-            chart_signature = tuple(
-                sorted(
-                    (
-                        node_id,
-                        node["ticker"],
-                        node["currency"],
-                    )
-                    for node_id, node in treemap_chart_nodes.items()
-                )
-            )
-            if st.session_state.get("treemap_chart_signature") != chart_signature:
-                st.session_state.pop("treemap_chart_selection", None)
-                st.session_state["treemap_chart_signature"] = chart_signature
-
-            clicked_points = plotly_events(
-                fig_treemap,
-                click_event=True,
-                select_event=False,
-                hover_event=False,
-                override_height=700,
-                key=f"treemap_stock_chart_click_{abs(hash(chart_signature))}",
-            )
-            if clicked_points:
-                point_number = clicked_points[0].get("pointNumber")
-                try:
-                    point_number = int(point_number)
-                except (TypeError, ValueError):
-                    point_number = -1
-                if 0 <= point_number < len(ids):
-                    clicked_id = ids[point_number]
-                    if clicked_id in treemap_chart_nodes:
-                        st.session_state["treemap_chart_selection"] = (
-                            treemap_chart_nodes[clicked_id]
-                        )
-                    else:
-                        st.session_state.pop("treemap_chart_selection", None)
-
             st.caption(
-                "주가 차트를 보려면 보유 종목 타일을 클릭하세요. "
-                "상위 분류 타일과 실제 시장 티커가 없는 항목은 차트가 제공되지 않습니다."
+                "보유 종목 타일을 클릭하면 Yahoo Finance 차트가 새 탭에서 열립니다. "
+                "분류 타일 또는 실제 시장 티커가 없는 항목은 열리지 않습니다."
             )
-
-            selected_chart = st.session_state.get("treemap_chart_selection")
-            if selected_chart:
-                selected_ticker = selected_chart.get("ticker")
-                st.markdown(
-                    f"### 📈 {selected_chart['label']} "
-                    f"({selected_ticker or '티커 없음'}) 주가 차트"
-                )
-                if not selected_ticker or not selected_chart.get("currency"):
-                    st.info(
-                        "이 타일은 하나의 실제 거래 티커로 식별되지 않아 "
-                        "주가 차트를 표시할 수 없습니다."
-                    )
-                else:
-                    interval_labels = {
-                        "1분봉": "1m",
-                        "5분봉": "5m",
-                        "15분봉": "15m",
-                        "30분봉": "30m",
-                        "1시간봉": "60m",
-                        "일봉": "1d",
-                        "주봉": "1wk",
-                        "월봉": "1mo",
-                    }
-                    period_labels = {
-                        "1일": "1d",
-                        "5일": "5d",
-                        "7일": "7d",
-                        "1개월": "1mo",
-                        "3개월": "3mo",
-                        "6개월": "6mo",
-                        "1년": "1y",
-                        "2년": "2y",
-                        "5년": "5y",
-                        "10년": "10y",
-                        "전체": "max",
-                    }
-                    interval_period_options = {
-                        "1m": ["1일", "5일", "7일"],
-                        "5m": ["1일", "5일", "1개월"],
-                        "15m": ["1일", "5일", "1개월"],
-                        "30m": ["1일", "5일", "1개월"],
-                        "60m": [
-                            "1일", "5일", "1개월", "3개월", "6개월", "1년", "2년"
-                        ],
-                        "1d": [
-                            "1개월", "3개월", "6개월", "1년", "2년", "5년", "전체"
-                        ],
-                        "1wk": [
-                            "3개월", "6개월", "1년", "2년", "5년", "전체"
-                        ],
-                        "1mo": ["1년", "2년", "5년", "10년", "전체"],
-                    }
-                    interval_labels["1분봉"] = "1m"
-                    chart_control_cols = st.columns(2)
-                    with chart_control_cols[0]:
-                        selected_interval_label = st.selectbox(
-                            "차트 봉 간격",
-                            options=list(interval_labels),
-                            index=5,
-                            key="treemap_stock_chart_interval",
-                        )
-                    selected_interval = interval_labels[selected_interval_label]
-                    allowed_periods = interval_period_options[selected_interval]
-                    period_default = (
-                        "6개월" if "6개월" in allowed_periods
-                        else "1년" if "1년" in allowed_periods
-                        else allowed_periods[-1]
-                    )
-                    period_state_key = "treemap_stock_chart_period"
-                    if st.session_state.get(period_state_key) not in allowed_periods:
-                        st.session_state[period_state_key] = period_default
-                    with chart_control_cols[1]:
-                        selected_period_label = st.selectbox(
-                            "조회 기간",
-                            options=allowed_periods,
-                            key=period_state_key,
-                        )
-
-                    include_extended_hours = (
-                        selected_chart["currency"] == "USD"
-                        and not regular_only_for_ticker(selected_ticker)
-                    )
-                    with st.spinner("Yahoo Finance 주가 데이터를 조회 중..."):
-                        chart_data, chart_error = fetch_ticker_chart_data(
-                            selected_ticker,
-                            period_labels[selected_period_label],
-                            selected_interval,
-                            include_extended_hours,
-                        )
-
-                    if chart_error:
-                        st.warning(chart_error)
-                    elif not chart_data.empty:
-                        chart_index = chart_data.index
-                        if getattr(chart_index, "tz", None) is not None:
-                            chart_index = chart_index.tz_convert(None)
-
-                        fig_stock = make_subplots(
-                            rows=2,
-                            cols=1,
-                            shared_xaxes=True,
-                            vertical_spacing=0.04,
-                            row_heights=[0.75, 0.25],
-                        )
-                        fig_stock.add_trace(
-                            go.Candlestick(
-                                x=chart_index,
-                                open=chart_data["Open"],
-                                high=chart_data["High"],
-                                low=chart_data["Low"],
-                                close=chart_data["Close"],
-                                name="주가",
-                            ),
-                            row=1,
-                            col=1,
-                        )
-                        if "Volume" in chart_data.columns:
-                            fig_stock.add_trace(
-                                go.Bar(
-                                    x=chart_index,
-                                    y=chart_data["Volume"],
-                                    name="거래량",
-                                    marker_color="#78909C",
-                                ),
-                                row=2,
-                                col=1,
-                            )
-                        fig_stock.update_layout(
-                            title=(
-                                f"{selected_chart['label']} · "
-                                f"{selected_interval_label} · "
-                                f"{selected_period_label}"
-                            ),
-                            height=650,
-                            margin=dict(t=55, l=20, r=20, b=20),
-                            xaxis_rangeslider_visible=False,
-                            hovermode="x unified",
-                        )
-                        fig_stock.update_yaxes(
-                            title_text=(
-                                "가격 (USD)"
-                                if selected_chart["currency"] == "USD"
-                                else "가격 (KRW)"
-                            ),
-                            row=1,
-                            col=1,
-                        )
-                        fig_stock.update_yaxes(
-                            title_text="거래량", row=2, col=1
-                        )
-                        fig_stock.update_xaxes(
-                            type="date", row=1, col=1
-                        )
-                        fig_stock.update_xaxes(
-                            type="date", row=2, col=1
-                        )
-                        st.plotly_chart(
-                            fig_stock,
-                            width="stretch",
-                            key="treemap_selected_stock_chart",
-                        )
+            render_clickable_treemap(fig_treemap, treemap_chart_nodes)
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
