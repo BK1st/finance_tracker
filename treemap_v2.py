@@ -850,6 +850,30 @@ def _get_daily_prices(m_data, ticker, current_db_price=None, regular_only=None):
         elif len(series) == 1:
             latest_close = float(series.iloc[-1])
 
+    if not regular_only and not is_korean_ticker(ticker):
+        try:
+            tk = yf.Ticker(ticker)
+            fi = tk.fast_info
+            info = tk.info or {}
+            market_state = str(info.get("marketState", "")).upper()
+            if market_state in ["POST", "POSTPOST", "CLOSED"]:
+                post_price = fi.get("postMarketPrice") or info.get("postMarketPrice")
+                regular_price = (
+                    fi.get("regularMarketPrice")
+                    or info.get("regularMarketPrice")
+                )
+                if (
+                    post_price is not None
+                    and not pd.isna(post_price)
+                    and float(post_price) > 0
+                    and regular_price is not None
+                    and not pd.isna(regular_price)
+                    and float(regular_price) > 0
+                ):
+                    return float(post_price), float(regular_price)
+        except Exception:
+            pass
+
     if is_korean_ticker(ticker) or latest_close is None or prev_close is None:
         try:
             tk = yf.Ticker(ticker)
