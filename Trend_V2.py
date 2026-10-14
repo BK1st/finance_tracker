@@ -3214,11 +3214,10 @@ if menu == '트렌드 리포트':
         for w in whose_list:
           sub = agg3b[agg3b['whose'] == w].dropna(subset=['주기별 수익률'])
           fig3b.add_trace(
-              go.Scatter(
+              go.Bar(
                   x=sub['Chart_Date'],
                   y=sub['주기별 수익률'],
                   name=f'주기별 수익률 (%) ({w})',
-                  mode='lines+markers',
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -3231,12 +3230,10 @@ if menu == '트렌드 리포트':
           bm_df.drop(columns=['dt_temp'], inplace=True)
           sub_bm = bm_df.dropna(subset=['주기별 수익률'])
           fig3b.add_trace(
-              go.Scatter(
+              go.Bar(
                   x=sub_bm['Chart_Date'],
                   y=sub_bm['주기별 수익률'],
-                  mode='lines',
                   name=f'📌 {bm_name}',
-                  line=bm_styles.get(bm_name, dict(dash='dash')),
                   hovertemplate='%{y:.2f}%',
               )
           )
@@ -3246,7 +3243,7 @@ if menu == '트렌드 리포트':
             title=dict(
                 text=(
                     f'3-2. [전체합산] 주기별 수익률 추이 (WHOSE 기준'
-                    f' 분리){suf_w4}'
+                    f' 그룹형 세로 막대){suf_w4}'
                 ),
                 y=0.95,
                 x=0.01,
@@ -3254,6 +3251,7 @@ if menu == '트렌드 리포트':
                 yanchor='top',
                 yref='container',
             ),
+            barmode='group',
             hovermode='closest',
             height=500,
             margin=margin_w4,
@@ -3391,7 +3389,12 @@ if menu == '트렌드 리포트':
         render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
 
       if active_views:
-        tabs = st.tabs(active_views)
+        tabs_key = 'trend_report_views'
+        default_tab = st.session_state.get(tabs_key, active_views[0])
+        if default_tab not in active_views:
+          default_tab = active_views[0]
+        st.session_state[tabs_key] = default_tab
+        tabs = st.tabs(active_views, key=tabs_key, default=default_tab)
         for tab, v_type in zip(tabs, active_views):
           with tab:
             if v_type == '전체 합산':
