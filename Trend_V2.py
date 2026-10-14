@@ -2472,7 +2472,12 @@ if menu == '트렌드 리포트':
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
-        if group_col in ['account_num', 'account_type', 'category2']:
+        if group_col in [
+            'account_num',
+            'account_type',
+            'category2',
+            'category4',
+        ]:
           st.write('---')
           st.markdown(f'### 📊 [{prefix}] 선택 기준 일자별 총 평가 금액 항목별 분석 (총 3개 개별 분석)')
 
@@ -2486,6 +2491,18 @@ if menu == '트렌드 리포트':
             )
 
           all_filter_items = sorted(raw_df[group_col].dropna().unique().tolist())
+          target_group_options = (
+              ['보유 항목별', '계좌별', 'whose별', '계좌유형별']
+              if group_col == 'category4'
+              else ['category4별', '보유 항목별']
+          )
+          target_group_columns = {
+              'category4별': 'category4',
+              '보유 항목별': 'item_name',
+              '계좌별': 'account_num',
+              'whose별': 'whose',
+              '계좌유형별': 'account_type',
+          }
 
           # -------------------------------------------------------------------
           # 헬퍼 함수: 개별 차트 생성 및 렌더링 (막대 vs 꺾은선 지원)
@@ -2504,7 +2521,7 @@ if menu == '트렌드 리포트':
               with c_sub2:
                 target_group_opt = st.radio(
                     f'분류 기준 선택 (#{chart_idx})',
-                    options=['category4별', '보유 항목별'],
+                    options=target_group_options,
                     horizontal=True,
                     key=f'sub_group_opt_{prefix}_{chart_idx}',
                 )
@@ -2540,7 +2557,7 @@ if menu == '트렌드 리포트':
               with c_sub2:
                 target_group_opt = st.radio(
                     f'분류 기준 선택 (#{chart_idx})',
-                    options=['category4별', '보유 항목별'],
+                    options=target_group_options,
                     horizontal=True,
                     key=f'sub_group_opt_{prefix}_{chart_idx}',
                 )
@@ -2563,7 +2580,7 @@ if menu == '트렌드 리포트':
                     key=f'pos_sub_stack_{prefix}_{chart_idx}',
                 )
 
-            target_col = 'category4' if target_group_opt == 'category4별' else 'item_name'
+            target_col = target_group_columns[target_group_opt]
 
             if selected_filter_items:
               sub_raw = raw_df[raw_df[group_col].isin(selected_filter_items)].copy()
