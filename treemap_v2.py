@@ -2464,11 +2464,18 @@ elif menu == "일별/시점별 보유 현황 분석":
                         showscale=False,
                         line=dict(color="rgba(255,255,255,0.9)", width=2),
                     ),
-                    customdata=list(zip(custom_rates, custom_prices, custom_profits)),
+                    customdata=list(
+                        zip(
+                            custom_rates,
+                            custom_prices,
+                            custom_profits,
+                            [f"{rate:+,.2f}%" for rate in custom_rates],
+                        )
+                    ),
                     texttemplate=(
                         "<b>%{label}</b><br>"
                         "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
-                        "<span style='font-size: 14px;'><b>%{customdata[0]:+.2f}%</b></span>"
+                        "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
                     ),
                     hovertemplate=(
                         "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
@@ -2476,7 +2483,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "• 평가금액: ₩%{value:,.0f}<br>"
                         "• 현재가: %{customdata[1]}<br>"
                         f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
-                        f"• {rate_col_label}: %{{customdata[0]:+.2f}}%<br>"
+                        f"• {rate_col_label}: %{{customdata[3]}}<br>"
                         "• 선택 화면 대비 점유율: %{percentRoot:.2%}<br>"
                         "• 상위 그룹 대비 점유율: %{percentParent:.2%}</span><extra></extra>"
                     ),
