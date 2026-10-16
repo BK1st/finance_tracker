@@ -711,16 +711,10 @@ def render_summary_page(
   ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_ex_fx')
   bj_ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_bj_ex_fx')
   if use_ex_fx:
-    summary_data['_summy_eval'] = regular_eval.where(
-        summary_data['whose'] != 'BJ', ex_fx_eval
-    )
-    summary_data['_summy_eval'] = summary_data['_summy_eval'].where(
+    summary_data['_summy_eval'] = ex_fx_eval.where(
         summary_data['whose'] != 'BJ', bj_ex_fx_eval
     )
-    summary_data['_summy_profit'] = regular_profit.where(
-        summary_data['whose'] != 'BJ', ex_fx_profit
-    )
-    summary_data['_summy_profit'] = summary_data['_summy_profit'].where(
+    summary_data['_summy_profit'] = ex_fx_profit.where(
         summary_data['whose'] != 'BJ', bj_ex_fx_profit
     )
   else:
@@ -923,7 +917,7 @@ def render_summary_page(
   def render_clickable_table(table, label, key, clickable_values=None):
     if table.empty:
       st.info('선택 기간의 비교 데이터가 없습니다.')
-      return None
+      return []
     formatters = {'평가금액 (원)': '{:,.0f}'}
     for period_label, _, _ in period_windows:
       formatters[f'평가손익 ({period_label}) (원)'] = '{:,.0f}'
@@ -934,16 +928,17 @@ def render_summary_page(
         use_container_width=True,
         hide_index=True,
         on_select='rerun',
-        selection_mode='single-row',
+        selection_mode='multi-row',
         key=key,
     )
-    selected_rows = result.selection.rows
-    if not selected_rows or selected_rows[0] >= len(table):
-      return None
-    selected_value = table.iloc[selected_rows[0]][label]
-    if clickable_values is not None and selected_value not in clickable_values:
-      return None
-    return str(selected_value)
+    selected_values = []
+    for row_index in result.selection.rows:
+      if row_index >= len(table):
+        continue
+      selected_value = str(table.iloc[row_index][label])
+      if clickable_values is None or selected_value in clickable_values:
+        selected_values.append(selected_value)
+    return selected_values
 
   run_key = st.session_state.get('summy_calc_id', 'initial')
   root_columns = st.columns(layout_columns)
@@ -963,9 +958,11 @@ def render_summary_page(
         clickable_values=set(summary_data['whose'].unique()),
     )
     if selected_whose:
-      st.markdown(f'#### {selected_whose} > 계좌유형별')
+      st.markdown(
+          f"#### {', '.join(selected_whose)} > 계좌유형별"
+      )
       whose_accounts = account_daily[
-          account_daily['whose'] == selected_whose
+          account_daily['whose'].isin(selected_whose)
       ]
       account_type_table = build_table(
           'account_type', whose_accounts, '계좌유형'
@@ -973,12 +970,15 @@ def render_summary_page(
       selected_type = render_clickable_table(
           account_type_table,
           '계좌유형',
-          f'summy_type_{run_key}_{selected_whose}',
+          f'summy_type_{run_key}_{"_".join(selected_whose)}',
       )
       if selected_type:
-        st.markdown(f'#### {selected_whose} > {selected_type} > 계좌별')
+        st.markdown(
+            f"#### {', '.join(selected_whose)} > "
+            f"{', '.join(selected_type)} > 계좌별"
+        )
         typed_accounts = whose_accounts[
-            whose_accounts['account_type'] == selected_type
+            whose_accounts['account_type'].isin(selected_type)
         ]
         account_table = build_table(
             'account_num', typed_accounts, '계좌'
@@ -986,12 +986,15 @@ def render_summary_page(
         selected_account = render_clickable_table(
             account_table,
             '계좌',
-            f'summy_account_{run_key}_{selected_whose}_{selected_type}',
+            f'summy_account_{run_key}_{"_".join(selected_whose)}_'
+            f'{"_".join(selected_type)}',
         )
         if selected_account:
-          st.markdown(f'#### {selected_account} > 보유종목별')
+          st.markdown(
+              f"#### {', '.join(selected_account)} > 보유종목별"
+          )
           account_holdings = summary_data[
-              summary_data['account_num'] == selected_account
+              summary_data['account_num'].isin(selected_account)
           ]
           holding_table = build_table(
               'item_name', account_holdings, '보유종목'
@@ -999,7 +1002,7 @@ def render_summary_page(
           render_clickable_table(
               holding_table,
               '보유종목',
-              f'summy_holding_{run_key}_{selected_account}',
+              f'summy_holding_{run_key}_{"_".join(selected_account)}',
           )
 
   if layout_columns > 1:
@@ -1016,9 +1019,11 @@ def render_summary_page(
         - {'S&P 500', '나스닥 종합', '나스닥 100'},
     )
     if selected_category4:
-      st.markdown(f'#### {selected_category4} > 보유종목별')
+      st.markdown(
+          f"#### {', '.join(selected_category4)} > 보유종목별"
+      )
       category_holdings = summary_data[
-          summary_data['category4'] == selected_category4
+          summary_data['category4'].isin(selected_category4)
       ]
       holding_table = build_table(
           'item_name', category_holdings, '보유종목'
@@ -1026,7 +1031,8 @@ def render_summary_page(
       render_clickable_table(
           holding_table,
           '보유종목',
-          f'summy_category_holding_{run_key}_{selected_category4}',
+          f'summy_category_holding_{run_key}_'
+          f'{"_".join(selected_category4)}',
       )
 
 
