@@ -974,6 +974,9 @@ def render_summary_page(
         if label == '보유종목'
         else pd.Series(False, index=display_table.index)
     )
+    display_table[return_columns + profit_columns] = display_table[
+        return_columns + profit_columns
+    ].astype(object)
     display_table.loc[cash_rows, return_columns + profit_columns] = ''
 
     return_values = display_table[return_columns].apply(
