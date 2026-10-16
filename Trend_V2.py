@@ -696,9 +696,31 @@ def style_trend_report_table(table):
   numeric_columns = table.select_dtypes(include='number').columns
   styled_table = table.style
   column_config = {}
+  scale_groups = {}
+  group_max_abs = {}
   for column in numeric_columns:
     values = pd.to_numeric(table[column], errors='coerce')
+    column_name = str(column)
+    if '점유율' in column_name:
+      scale_group = 'share'
+    elif '수익률' in column_name:
+      scale_group = 'return'
+    elif '손익' in column_name:
+      scale_group = 'profit'
+    elif '평가금액' in column_name or '평가 금액' in column_name:
+      scale_group = 'evaluation'
+    else:
+      scale_group = ('column', column)
+    scale_groups[column] = scale_group
     max_abs = values.abs().max()
+    if pd.notna(max_abs):
+      group_max_abs[scale_group] = max(
+          group_max_abs.get(scale_group, 0.0),
+          float(max_abs),
+      )
+
+  for column in numeric_columns:
+    column_name = str(column)
 
     def color_value(value):
       number = pd.to_numeric(value, errors='coerce')
@@ -714,23 +736,25 @@ def style_trend_report_table(table):
         lambda cells: [color_value(value) for value in cells],
         subset=[column],
     )
-    column_name = str(column)
     if '%' in column_name or '수익률' in column_name or '점유율' in column_name:
       number_format = '%.2f%%'
     elif '원' in column_name or '손익' in column_name or '금액' in column_name:
       number_format = '%,.0f'
     else:
       number_format = 'localized'
-    bar_limit = (
-        float(max_abs)
-        if pd.notna(max_abs) and max_abs > 0
-        else 1.0
+    scale_group = scale_groups[column]
+    bar_limit = group_max_abs.get(scale_group, 0.0)
+    if bar_limit <= 0:
+      bar_limit = 1.0
+    is_signed = scale_group in ('return', 'profit') or (
+        isinstance(scale_group, tuple) and scale_group[0] == 'column'
     )
+    bar_limit = float(bar_limit)
     column_config[column] = st.column_config.ProgressColumn(
         format=number_format,
-        min_value=-bar_limit,
+        min_value=-bar_limit if is_signed else 0.0,
         max_value=bar_limit,
-        color='auto',
+        color='auto' if is_signed else 'green',
     )
   return styled_table, column_config
 
