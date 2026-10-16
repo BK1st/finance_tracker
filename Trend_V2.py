@@ -1,12 +1,14 @@
 import os
 import sqlite3
 import io
+import html
 from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 
@@ -321,7 +323,7 @@ def resolve_account_whose(account_num, whose, broker, alias_map):
 
 def build_bj_account_performance(
     account_df, market_data, cash_flow_df, baseline_amount, target_dates,
-    end_date, frequency, query_start_date,
+    end_date, frequency, query_start_date, summary_mode=False,
 ):
   cutoff = pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
   end_ts = pd.Timestamp(end_date)
@@ -330,7 +332,9 @@ def build_bj_account_performance(
     return {}
   calendar = pd.date_range(cutoff, end_ts, freq='D')
 
-  if frequency == '일간 (주말 제외)':
+  if summary_mode:
+    scheduled_dates = calendar[:0]
+  elif frequency == '일간 (주말 제외)':
     scheduled_dates = calendar[calendar.dayofweek < 5]
   elif frequency == '주간 (매주 토요일)':
     scheduled_dates = calendar[calendar.dayofweek == 5]
@@ -663,6 +667,153 @@ def get_summary_periods(as_of_date, market_sessions):
   ]
 
 
+def get_summary_calculation_dates(
+    start_date, end_date, portfolio_dates, market_sessions
+):
+  """Limit summary valuation points to holding changes, baselines, and the end date."""
+  start = pd.Timestamp(start_date).normalize()
+  end = pd.Timestamp(end_date).normalize()
+  dates = {end}
+  if start <= end:
+    dates.add(start)
+    portfolio_dates = pd.to_datetime(
+        pd.Series(portfolio_dates), errors='coerce'
+    ).dropna()
+    for value in portfolio_dates:
+      holding_change = pd.Timestamp(value).normalize()
+      if start <= holding_change <= end:
+        dates.add(holding_change)
+        previous_day = holding_change - pd.Timedelta(days=1)
+        if start <= previous_day <= end:
+          dates.add(previous_day)
+    dates.update(
+        period_start - pd.Timedelta(days=1)
+        for _, period_start, _ in get_summary_periods(end, market_sessions)
+        if start <= period_start - pd.Timedelta(days=1) <= end
+    )
+  return pd.DatetimeIndex(sorted(dates))
+
+
+def render_expandable_summary_table(rows, period_windows):
+  period_labels = [period_label for period_label, _, _ in period_windows]
+  return_columns = [
+      f'수익률 ({period_label}) (%)' for period_label in period_labels
+  ]
+  profit_columns = [
+      f'평가손익 ({period_label}) (원)' for period_label in period_labels
+  ]
+  metric_columns = ['평가금액 (원)'] + return_columns + profit_columns
+  display_columns = ['구분'] + metric_columns
+  header_html = ''.join(
+      f'<th>{html.escape(column)}</th>' for column in display_columns
+  )
+
+  body_parts = []
+  for row in rows:
+    depth = int(row['depth'])
+    hidden_class = ' tree-hidden' if depth else ''
+    parent_class = ' tree-parent' if row['has_children'] else ''
+    indent_px = 8 + depth * 18
+    caret = '▶' if row['has_children'] else ''
+    cells = [
+        f'<td class="label-cell" style="padding-left:{indent_px}px;">'
+        f'<span class="caret" data-id="{row["id"]}">{caret}</span> '
+        f'{html.escape(str(row["label"]))}</td>'
+    ]
+    for column in metric_columns:
+      value = row.get(column)
+      if pd.isna(value):
+        text = '—'
+      elif column in return_columns:
+        text = f'{value:+.2f}%'
+      else:
+        text = f'{value:,.0f}'
+      cells.append(f'<td class="num">{html.escape(text)}</td>')
+    parent_id = '' if row['parent_id'] is None else str(row['parent_id'])
+    body_parts.append(
+        f'<tr class="{parent_class}{hidden_class}" data-id="{row["id"]}" '
+        f'data-depth="{depth}" data-parent="{parent_id}" '
+        f'data-has-children="{str(row["has_children"]).lower()}">'
+        f'{"".join(cells)}</tr>'
+    )
+
+  visible_count = sum(1 for row in rows if row['depth'] == 0)
+  height = min(760, 90 + 38 * max(visible_count + 2, 5))
+  html_doc = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  body {{ margin: 0; font-family: "Malgun Gothic", "Segoe UI", sans-serif; color: #17212b; }}
+  .hint {{ font-size: 13px; line-height: 1.5; color: #475569; margin: 0 0 10px; }}
+  .table-wrap {{ width: 100%; overflow-x: auto; border: 1px solid #d7dee8; border-radius: 8px; }}
+  table {{ width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0; font-size: 13px; }}
+  th {{ position: sticky; top: 0; z-index: 1; background: #e8eef6; color: #243247; text-align: right; padding: 10px 9px; border-bottom: 2px solid #c5d0de; white-space: nowrap; }}
+  th:first-child {{ text-align: left; }}
+  td {{ padding: 9px; border-bottom: 1px solid #e3e8ef; white-space: nowrap; }}
+  td.label-cell {{ max-width: 240px; overflow: hidden; text-overflow: ellipsis; }}
+  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  tr:nth-child(even) {{ background: #f8fafc; }}
+  tr[data-depth="0"] {{ background: #edf3fa; font-weight: 700; }}
+  tr.tree-parent {{ cursor: pointer; }}
+  tr.tree-parent:hover {{ background: #e2edff; }}
+  tr.tree-hidden {{ display: none; }}
+  .caret {{ display: inline-block; width: 18px; color: #174ea6; font-size: 11px; font-weight: 700; user-select: none; }}
+</style>
+</head>
+<body>
+  <p class="hint">▶ 를 누르거나 상위 행을 더블클릭하면 하위 항목이 펼쳐집니다.</p>
+  <div class="table-wrap">
+    <table><thead><tr>{header_html}</tr></thead>
+    <tbody>{"".join(body_parts)}</tbody></table>
+  </div>
+  <script>
+    function childrenOf(id) {{
+      return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
+    }}
+    function hideDescendants(id) {{
+      childrenOf(id).forEach(function(child) {{
+        child.classList.add('tree-hidden');
+        var childCaret = child.querySelector('.caret');
+        if (childCaret && child.dataset.hasChildren === 'true') childCaret.textContent = '▶';
+        hideDescendants(child.dataset.id);
+      }});
+    }}
+    function toggleRow(id) {{
+      var kids = childrenOf(id);
+      if (!kids.length) return;
+      var expand = kids[0].classList.contains('tree-hidden');
+      var row = document.querySelector('tr[data-id="' + id + '"]');
+      var caret = row ? row.querySelector('.caret') : null;
+      if (expand) {{
+        kids.forEach(function(child) {{ child.classList.remove('tree-hidden'); }});
+        if (caret) caret.textContent = '▼';
+      }} else {{
+        hideDescendants(id);
+        if (caret) caret.textContent = '▶';
+      }}
+    }}
+    document.querySelectorAll('tr.tree-parent').forEach(function(row) {{
+      row.addEventListener('dblclick', function(event) {{
+        if (event.target.closest('.caret')) return;
+        toggleRow(row.dataset.id);
+      }});
+    }});
+    document.querySelectorAll('.caret').forEach(function(el) {{
+      if (!el.textContent) return;
+      el.addEventListener('click', function(ev) {{
+        ev.stopPropagation();
+        toggleRow(el.dataset.id);
+      }});
+    }});
+  </script>
+</body>
+</html>
+"""
+  components.html(html_doc, height=height, scrolling=True)
+
+
 def render_summary_page(
     calc_df,
     benchmark_data,
@@ -691,16 +842,17 @@ def render_summary_page(
       return pd.Series(np.nan, index=frame.index, dtype=float)
     return pd.to_numeric(frame[column], errors='coerce')
 
-  st.header('📊 SUMMY | 기간별 자산·지수 비교')
+  st.header('📊 SUMMARY | 기간별 자산·지수 비교')
   st.caption(
-      'WHOSE > 계좌유형 > 계좌 > 보유종목 또는 Category4 > 보유종목 순으로 '
-      '표의 행을 클릭해 상세 내용을 확인할 수 있습니다. '
+      'WHOSE > 계좌유형 > 계좌 > 보유종목 표는 화살표 또는 더블클릭으로 '
+      '하위 항목을 펼칠 수 있습니다. Category4 표의 행을 선택하면 보유종목을 '
+      '확인할 수 있습니다. '
       '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말 기준 YTD입니다. '
       '지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다.'
   )
   use_ex_fx = st.toggle(
       '🔀 환차손 제외 결과로 보기',
-      key='summy_ex_fx',
+      key='summary_ex_fx',
       help='USD 보유자산을 고정 환율 기준으로 평가합니다.',
   )
 
@@ -711,23 +863,23 @@ def render_summary_page(
   ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_ex_fx')
   bj_ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_bj_ex_fx')
   if use_ex_fx:
-    summary_data['_summy_eval'] = ex_fx_eval.where(
+    summary_data['_summary_eval'] = ex_fx_eval.where(
         summary_data['whose'] != 'BJ', bj_ex_fx_eval
     )
-    summary_data['_summy_profit'] = ex_fx_profit.where(
+    summary_data['_summary_profit'] = ex_fx_profit.where(
         summary_data['whose'] != 'BJ', bj_ex_fx_profit
     )
   else:
-    summary_data['_summy_eval'] = regular_eval
-    summary_data['_summy_profit'] = regular_profit
-  summary_data['_summy_eval'] = summary_data['_summy_eval'].fillna(0)
+    summary_data['_summary_eval'] = regular_eval
+    summary_data['_summary_profit'] = regular_profit
+  summary_data['_summary_eval'] = summary_data['_summary_eval'].fillna(0)
 
   account_daily = (
       summary_data.groupby(
           ['Date', 'account_num'], dropna=False
       ).agg(
-          _summy_eval=('_summy_eval', 'sum'),
-          _summy_profit=('_summy_profit', lambda values: values.sum(min_count=1)),
+          _summary_eval=('_summary_eval', 'sum'),
+          _summary_profit=('_summary_profit', lambda values: values.sum(min_count=1)),
           whose=('whose', 'first'),
           account_type=('account_type', 'first'),
       )
@@ -753,11 +905,11 @@ def render_summary_page(
       account_metrics, on=['Date', 'account_num'], how='left'
   )
   is_bj = account_daily['whose'] == 'BJ'
-  account_daily.loc[is_bj, '_summy_profit'] = account_daily.loc[
+  account_daily.loc[is_bj, '_summary_profit'] = account_daily.loc[
       is_bj, '_bj_period_profit'
   ].where(
       account_daily.loc[is_bj, '_bj_period_profit'].notna(),
-      account_daily.loc[is_bj, '_summy_profit'],
+      account_daily.loc[is_bj, '_summary_profit'],
   )
 
   def benchmark_return(label, start_date, end_date):
@@ -780,7 +932,7 @@ def render_summary_page(
   layout_columns = st.selectbox(
       '표 Layout 열 수 (조회된 데이터에 적용)',
       options=[1, 2, 3],
-      key='summy_layout_columns',
+      key='summary_layout_columns',
   )
 
   def build_table(group_column, source, label, include_benchmarks=False):
@@ -796,7 +948,7 @@ def render_summary_page(
 
     latest_rows = data[data['Date'] == latest_date]
     current = latest_rows.groupby(group_column, dropna=False)[
-        '_summy_eval'
+        '_summary_eval'
     ].sum()
     table_rows = {
         str(group): {
@@ -814,21 +966,25 @@ def render_summary_page(
       baseline_date = baseline_rows['Date'].max()
       start_values = baseline_rows[
           baseline_rows['Date'] == baseline_date
-      ].groupby(group_column, dropna=False)['_summy_eval'].sum()
+      ].groupby(group_column, dropna=False)['_summary_eval'].sum()
       interval_rows = data[
           (data['Date'] > baseline_date)
           & (data['Date'] <= period_end)
       ]
       profits = interval_rows.groupby(group_column, dropna=False)[
-          '_summy_profit'
+          '_summary_profit'
       ].sum(min_count=1)
 
       is_ytd = period_label == '연간'
-      if is_ytd and group_column in ('whose', 'account_type', 'account_num'):
+      if is_ytd and group_column in (
+          'whose', 'account_type', 'account_num', '_owner_total'
+      ):
         account_end = account_daily[
             account_daily['Date'] <= period_end
         ].sort_values('Date').drop_duplicates('account_num', keep='last')
         bj_end = account_end[account_end['whose'] == 'BJ'].copy()
+        if group_column == '_owner_total':
+          bj_end['_owner_total'] = 'BJ+SH 전체 합산'
         if not bj_end.empty:
           bj_profit_by_group = bj_end.groupby(group_column)[
               '_bj_ytd_profit'
@@ -839,10 +995,10 @@ def render_summary_page(
           non_bj_rows = interval_rows[interval_rows['whose'] != 'BJ']
           non_bj_profit = non_bj_rows.groupby(
               group_column, dropna=False
-          )['_summy_profit'].sum(min_count=1)
+          )['_summary_profit'].sum(min_count=1)
           non_bj_start = baseline_rows[
               baseline_rows['whose'] != 'BJ'
-          ].groupby(group_column, dropna=False)['_summy_eval'].sum()
+          ].groupby(group_column, dropna=False)['_summary_eval'].sum()
           all_groups = (
               set(non_bj_profit.index)
               | set(bj_profit_by_group.index)
@@ -905,11 +1061,14 @@ def render_summary_page(
         if include_benchmarks else ordered_groups
     )
     columns = [label, '평가금액 (원)']
-    for period_label, _, _ in period_windows:
-      columns.extend([
-          f'평가손익 ({period_label}) (원)',
-          f'수익률 ({period_label}) (%)',
-      ])
+    columns.extend(
+        f'수익률 ({period_label}) (%)'
+        for period_label, _, _ in period_windows
+    )
+    columns.extend(
+        f'평가손익 ({period_label}) (원)'
+        for period_label, _, _ in period_windows
+    )
     return pd.DataFrame(
         [table_rows[group] for group in order if group in table_rows]
     ).reindex(columns=columns).reset_index(drop=True)
@@ -940,70 +1099,98 @@ def render_summary_page(
         selected_values.append(selected_value)
     return selected_values
 
-  run_key = st.session_state.get('summy_calc_id', 'initial')
+  run_key = st.session_state.get('summary_calc_id', 'initial')
   root_columns = st.columns(layout_columns)
-  whose_table = build_table(
-      'whose', account_daily, 'WHOSE', include_benchmarks=True
-  )
+  whose_table = build_table('whose', account_daily, 'WHOSE')
+  owner_total_source = account_daily[
+      account_daily['whose'].isin(['BJ', 'SH'])
+  ].copy()
+  if not owner_total_source.empty:
+    owner_total_source['_owner_total'] = 'BJ+SH 전체 합산'
+    owner_total_table = build_table(
+        '_owner_total', owner_total_source, 'WHOSE'
+    )
+    whose_table = pd.concat(
+        [whose_table, owner_total_table], ignore_index=True
+    )
   category4_table = build_table(
       'category4', summary_data, 'Category4', include_benchmarks=True
   )
 
   with root_columns[0]:
     st.subheader('A. WHOSE > 계좌유형 > 계좌 > 보유종목')
-    selected_whose = render_clickable_table(
-        whose_table,
+    tree_rows = []
+
+    def append_hierarchy(table, group_column, label, depth, parent_id, scope):
+      for _, record in table.iterrows():
+        value = str(record[label])
+        node_id = len(tree_rows)
+        current_scope = dict(scope)
+        current_scope[group_column] = value
+        child_table = pd.DataFrame()
+        child_source = pd.DataFrame()
+
+        if depth < 3:
+          child_column, child_label = (
+              ('account_type', '계좌유형')
+              if depth == 0 else
+              ('account_num', '계좌')
+              if depth == 1 else
+              ('item_name', '보유종목')
+          )
+          child_source = (
+              account_daily if depth < 2 else summary_data
+          )
+          for scope_column, scope_value in current_scope.items():
+            child_source = child_source[
+                child_source[scope_column].astype(str) == scope_value
+            ]
+          child_table = build_table(
+              child_column, child_source, child_label
+          )
+
+        tree_rows.append({
+            'id': node_id,
+            'parent_id': parent_id,
+            'depth': depth,
+            'label': value,
+            'has_children': not child_table.empty,
+            **record.to_dict(),
+        })
+        if not child_table.empty:
+          append_hierarchy(
+              child_table,
+              child_column,
+              child_label,
+              depth + 1,
+              node_id,
+              current_scope,
+          )
+
+    append_hierarchy(
+        whose_table[
+            whose_table['WHOSE'].isin(account_daily['whose'].unique())
+        ],
+        'whose',
         'WHOSE',
-        f'summy_whose_{run_key}',
-        clickable_values=set(summary_data['whose'].unique()),
+        0,
+        None,
+        {},
     )
-    if selected_whose:
-      st.markdown(
-          f"#### {', '.join(selected_whose)} > 계좌유형별"
-      )
-      whose_accounts = account_daily[
-          account_daily['whose'].isin(selected_whose)
-      ]
-      account_type_table = build_table(
-          'account_type', whose_accounts, '계좌유형'
-      )
-      selected_type = render_clickable_table(
-          account_type_table,
-          '계좌유형',
-          f'summy_type_{run_key}_{"_".join(selected_whose)}',
-      )
-      if selected_type:
-        st.markdown(
-            f"#### {', '.join(selected_whose)} > "
-            f"{', '.join(selected_type)} > 계좌별"
-        )
-        typed_accounts = whose_accounts[
-            whose_accounts['account_type'].isin(selected_type)
-        ]
-        account_table = build_table(
-            'account_num', typed_accounts, '계좌'
-        )
-        selected_account = render_clickable_table(
-            account_table,
-            '계좌',
-            f'summy_account_{run_key}_{"_".join(selected_whose)}_'
-            f'{"_".join(selected_type)}',
-        )
-        if selected_account:
-          st.markdown(
-              f"#### {', '.join(selected_account)} > 보유종목별"
-          )
-          account_holdings = summary_data[
-              summary_data['account_num'].isin(selected_account)
-          ]
-          holding_table = build_table(
-              'item_name', account_holdings, '보유종목'
-          )
-          render_clickable_table(
-              holding_table,
-              '보유종목',
-              f'summy_holding_{run_key}_{"_".join(selected_account)}',
-          )
+    if not owner_total_source.empty and not owner_total_table.empty:
+      total_record = owner_total_table.iloc[0]
+      tree_rows.append({
+          'id': len(tree_rows),
+          'parent_id': None,
+          'depth': 0,
+          'label': str(total_record['WHOSE']),
+          'has_children': False,
+          **total_record.to_dict(),
+      })
+    if tree_rows:
+      render_expandable_summary_table(tree_rows, period_windows)
+    else:
+      st.info('선택 기간의 비교 데이터가 없습니다.')
 
   if layout_columns > 1:
     category_root = root_columns[1]
@@ -1014,7 +1201,7 @@ def render_summary_page(
     selected_category4 = render_clickable_table(
         category4_table,
         'Category4',
-        f'summy_category4_{run_key}',
+        f'summary_category4_{run_key}',
         clickable_values=set(category4_table['Category4'])
         - {'S&P 500', '나스닥 종합', '나스닥 100'},
     )
@@ -1031,7 +1218,7 @@ def render_summary_page(
       render_clickable_table(
           holding_table,
           '보유종목',
-          f'summy_category_holding_{run_key}_'
+          f'summary_category_holding_{run_key}_'
           f'{"_".join(selected_category4)}',
       )
 
@@ -1046,7 +1233,7 @@ menu = st.sidebar.selectbox(
     '메뉴 선택',
     [
         '트렌드 리포트',
-        'SUMMY',
+        'SUMMARY',
         '계좌 별칭 관리',
         '종목 분류 관리',
         '포트폴리오 업로드',
@@ -1081,10 +1268,10 @@ bm_styles = {
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
 # -----------------------------------------------------------------------------
-if menu in ('트렌드 리포트', 'SUMMY'):
+if menu in ('트렌드 리포트', 'SUMMARY'):
   st.header(
       '📊 기간별 자산·지수 비교'
-      if menu == 'SUMMY' else '📊 원금 vs 평가액 트렌드 분석'
+      if menu == 'SUMMARY' else '📊 원금 vs 평가액 트렌드 분석'
   )
 
   conn = get_connection()
@@ -1283,7 +1470,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
     )
 
     with st.form('trend_control_form'):
-      if menu == 'SUMMY':
+      if menu == 'SUMMARY':
         st.info(
             '비교 지수: S&P 500, 나스닥 종합, 나스닥 100. '
             '지수 수익률은 배당·환율 제외입니다.'
@@ -1332,10 +1519,10 @@ if menu in ('트렌드 리포트', 'SUMMY'):
 
       d_col1, d_col2 = st.columns(2)
       with d_col1:
-        if menu == 'SUMMY':
+        if menu == 'SUMMARY':
           summary_start_default = date(today.year - 1, 12, 31)
           start_default = st.session_state.get(
-              'summy_start_date', summary_start_default
+              'summary_start_date', summary_start_default
           )
           start_label = '조회 시작일 (기본: 전년도 말)'
         else:
@@ -1346,12 +1533,12 @@ if menu in ('트렌드 리포트', 'SUMMY'):
         start_date = st.date_input(
             start_label,
             start_default,
-            key='summy_start_date_input'
-            if menu == 'SUMMY' else 'trend_start_date_input',
+            key='summary_start_date_input'
+            if menu == 'SUMMARY' else 'trend_start_date_input',
         )
       with d_col2:
-        if menu == 'SUMMY':
-          end_default = st.session_state.get('summy_end_date', today)
+        if menu == 'SUMMARY':
+          end_default = st.session_state.get('summary_end_date', today)
         else:
           end_default = st.session_state.get(
               'trend_end_date',
@@ -1360,8 +1547,8 @@ if menu in ('트렌드 리포트', 'SUMMY'):
         end_date = st.date_input(
             '조회 종료일',
             end_default,
-            key='summy_end_date_input'
-            if menu == 'SUMMY' else 'trend_end_date_input',
+            key='summary_end_date_input'
+            if menu == 'SUMMARY' else 'trend_end_date_input',
         )
 
       st.write('---')
@@ -1369,11 +1556,11 @@ if menu in ('트렌드 리포트', 'SUMMY'):
 
     if run_button:
       st.session_state['trend_view_types'] = view_types
-      if menu == 'SUMMY':
-        st.session_state['summy_sel_bm'] = selected_bm
-        st.session_state['summy_start_date'] = start_date
-        st.session_state['summy_end_date'] = end_date
-        st.session_state['summy_calc_id'] = datetime.now().strftime(
+      if menu == 'SUMMARY':
+        st.session_state['summary_sel_bm'] = selected_bm
+        st.session_state['summary_start_date'] = start_date
+        st.session_state['summary_end_date'] = end_date
+        st.session_state['summary_calc_id'] = datetime.now().strftime(
             '%Y%m%d%H%M%S%f'
         )
       else:
@@ -1405,7 +1592,9 @@ if menu in ('트렌드 리포트', 'SUMMY'):
 
       full_date_range = pd.date_range(start=start_date, end=end_date)
 
-      if option_freq == '일간 (매일)':
+      if menu == 'SUMMARY':
+        target_dates = pd.DatetimeIndex([pd.Timestamp(end_date)])
+      elif option_freq == '일간 (매일)':
         target_dates = full_date_range
       elif option_freq == '일간 (주말 제외)':
         target_dates = full_date_range[full_date_range.dayofweek < 5]
@@ -1425,7 +1614,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
       ].copy()
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
-      if menu == 'SUMMY':
+      if menu == 'SUMMARY':
         fetch_tickers.extend(summary_benchmark_map.values())
       selected_bj_accounts = [
           account for account in selected_accounts
@@ -1469,6 +1658,14 @@ if menu in ('트렌드 리포트', 'SUMMY'):
         )
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
+        )
+
+      if menu == 'SUMMARY':
+        target_dates = get_summary_calculation_dates(
+            start_date,
+            end_date,
+            filtered_pf_df['record_date'],
+            market_data.index,
         )
 
       first_t_str = target_dates[0].strftime('%Y-%m-%d')
@@ -1566,6 +1763,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
               end_date,
               option_freq,
               start_date,
+              summary_mode=(menu == 'SUMMARY'),
           )
 
         account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
@@ -1769,7 +1967,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
       for bm_label in selected_bm:
         tk = (
             summary_benchmark_map[bm_label]
-            if menu == 'SUMMY'
+            if menu == 'SUMMARY'
             else bm_ticker_map[bm_label]
         )
         if tk in market_data.columns and not market_data.empty:
@@ -1805,7 +2003,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           )
           bm_calc_dict[bm_label] = bm_df
 
-      result_prefix = 'summy' if menu == 'SUMMY' else 'trend'
+      result_prefix = 'summary' if menu == 'SUMMARY' else 'trend'
       st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
       st.session_state[f'{result_prefix}_bm_calc'] = bm_calc_dict
       st.session_state[f'{result_prefix}_market_sessions'] = [
@@ -1813,18 +2011,18 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           for session in market_data.index
       ]
 
-    if menu == 'SUMMY':
+    if menu == 'SUMMARY':
       if (
-          'summy_calc_df' not in st.session_state
-          or st.session_state['summy_calc_df'].empty
+          'summary_calc_df' not in st.session_state
+          or st.session_state['summary_calc_df'].empty
       ):
         st.info('계좌와 비교 기준을 선택한 뒤 데이터 계산 실행을 눌러주세요.')
       else:
         render_summary_page(
-            st.session_state['summy_calc_df'],
-            st.session_state.get('summy_bm_calc', {}),
-            st.session_state.get('summy_end_date', today),
-            st.session_state.get('summy_market_sessions', []),
+            st.session_state['summary_calc_df'],
+            st.session_state.get('summary_bm_calc', {}),
+            st.session_state.get('summary_end_date', today),
+            st.session_state.get('summary_market_sessions', []),
         )
       st.stop()
 
