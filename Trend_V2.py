@@ -954,10 +954,6 @@ def render_summary_page(
     if table.empty:
       st.info('선택 기간의 비교 데이터가 없습니다.')
       return []
-    formatters = {'평가금액 (원)': '{:,.0f}'}
-    for period_label, _, _ in period_windows:
-      formatters[f'평가손익 ({period_label}) (원)'] = '{:,.0f}'
-      formatters[f'수익률 ({period_label}) (%)'] = '{:.2f}%'
     return_columns = [
         f'수익률 ({period_label}) (%)'
         for period_label, _, _ in period_windows
@@ -966,19 +962,47 @@ def render_summary_page(
         f'평가손익 ({period_label}) (원)'
         for period_label, _, _ in period_windows
     ]
-    styled_table = table.style.format(formatters, na_rep='—')
+    formatters = {'평가금액 (원)': '{:,.0f}'}
+    styled_table = table.style
     for column in return_columns + profit_columns:
       numeric = pd.to_numeric(table[column], errors='coerce')
       max_abs = numeric.abs().max()
-      if pd.notna(max_abs) and max_abs > 0:
-        styled_table = styled_table.bar(
-            subset=[column],
-            axis=0,
-            align='zero',
-            vmin=-max_abs,
-            vmax=max_abs,
-            color=['#f28b82', '#81c995'],
+      scale = float(max_abs) if pd.notna(max_abs) and max_abs > 0 else 0.0
+      is_percent = column in return_columns
+
+      def format_with_bar(value, scale=scale, is_percent=is_percent):
+        if pd.isna(value):
+          return '—'
+        number = float(value)
+        number_text = (
+            f'{number:+.2f}%'
+            if is_percent else f'{number:,.0f}'
         )
+        bar_length = (
+            min(6, max(1, round(abs(number) / scale * 6)))
+            if scale > 0 and number != 0 else 0
+        )
+        if number > 0:
+          return f'{number_text}  │{"█" * bar_length}'
+        if number < 0:
+          return f'{number_text}  {"█" * bar_length}│'
+        return f'{number_text}  │'
+
+      formatters[column] = format_with_bar
+      styled_table = styled_table.apply(
+          lambda values: [
+              (
+                  'color: #137333; font-weight: 600'
+                  if pd.notna(value) and value > 0
+                  else 'color: #b42318; font-weight: 600'
+                  if pd.notna(value) and value < 0
+                  else ''
+              )
+              for value in values
+          ],
+          subset=[column],
+      )
+    styled_table = styled_table.format(formatters, na_rep='—')
     st.caption('체크박스로 행을 선택하면 하위 분류를 확인할 수 있습니다.')
     result = st.dataframe(
         styled_table,
