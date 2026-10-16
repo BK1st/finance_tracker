@@ -645,28 +645,20 @@ def render_resizable_plotly_chart(fig, key):
 def get_summary_periods(as_of_date, market_sessions):
   as_of = pd.Timestamp(as_of_date).normalize()
   year_start = pd.Timestamp(as_of.year, 1, 1)
-  last_month_end = pd.Timestamp(as_of.year, as_of.month, 1) - pd.Timedelta(days=1)
   current_week_start = as_of - pd.Timedelta(days=as_of.weekday())
-  last_week_end = current_week_start - pd.Timedelta(days=1)
-  last_week_start = last_week_end - pd.Timedelta(days=6)
   sessions = pd.DatetimeIndex(
       pd.to_datetime(market_sessions)
   ).normalize().unique().sort_values()
-  if as_of.date() < date.today():
-    completed_sessions = sessions[sessions <= as_of]
-  else:
-    completed_sessions = sessions[sessions < as_of]
-  if len(completed_sessions) >= 2:
+  completed_sessions = sessions[sessions < as_of]
+  if len(completed_sessions):
     last_trading_day = completed_sessions[-1]
-    previous_trading_day = completed_sessions[-2]
   else:
     last_trading_day = as_of - pd.offsets.BDay(1)
-    previous_trading_day = last_trading_day - pd.offsets.BDay(1)
 
   return [
-      ('일간', previous_trading_day + pd.Timedelta(days=1), last_trading_day),
-      ('주간', last_week_start, last_week_end),
-      ('월간', last_month_end.replace(day=1), last_month_end),
+      ('일간', last_trading_day + pd.Timedelta(days=1), as_of),
+      ('주간', current_week_start, as_of),
+      ('월간', pd.Timestamp(as_of.year, as_of.month, 1), as_of),
       ('연간', year_start, as_of),
   ]
 
@@ -1320,9 +1312,11 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           )
 
         with f_col2:
-          saved_freq = st.session_state.get('trend_freq_str', '일간 (매일)')
+          saved_freq = st.session_state.get(
+              'trend_freq_str', '일간 (주말 제외)'
+          )
           if saved_freq not in freq_options:
-            saved_freq = '일간 (매일)'
+            saved_freq = '일간 (주말 제외)'
 
           option_freq = st.selectbox(
               '트렌드 주기 선택',
@@ -1339,9 +1333,16 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           )
           start_label = '조회 시작일 (기본: 전년도 말)'
         else:
-          start_default = st.session_state.get('trend_start_date', prev_month_end)
+          start_default = st.session_state.get(
+              'trend_start_date', prev_month_end
+          )
           start_label = '조회 시작일'
-        start_date = st.date_input(start_label, start_default)
+        start_date = st.date_input(
+            start_label,
+            start_default,
+            key='summy_start_date_input'
+            if menu == 'SUMMY' else 'trend_start_date_input',
+        )
       with d_col2:
         if menu == 'SUMMY':
           end_default = st.session_state.get('summy_end_date', today)
@@ -1350,24 +1351,30 @@ if menu in ('트렌드 리포트', 'SUMMY'):
               'trend_end_date',
               max_rec_date if max_rec_date >= min_rec_date else min_rec_date,
           )
-        end_date = st.date_input('조회 종료일', end_default)
+        end_date = st.date_input(
+            '조회 종료일',
+            end_default,
+            key='summy_end_date_input'
+            if menu == 'SUMMY' else 'trend_end_date_input',
+        )
 
       st.write('---')
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
       st.session_state['trend_view_types'] = view_types
-      st.session_state['trend_sel_bm'] = selected_bm
-      st.session_state['trend_freq_str'] = option_freq
-      st.session_state['trend_start_date'] = start_date
-      st.session_state['trend_end_date'] = end_date
-      st.session_state['_trend_calc_mode'] = menu
       if menu == 'SUMMY':
+        st.session_state['summy_sel_bm'] = selected_bm
         st.session_state['summy_start_date'] = start_date
         st.session_state['summy_end_date'] = end_date
         st.session_state['summy_calc_id'] = datetime.now().strftime(
             '%Y%m%d%H%M%S%f'
         )
+      else:
+        st.session_state['trend_sel_bm'] = selected_bm
+        st.session_state['trend_freq_str'] = option_freq
+        st.session_state['trend_start_date'] = start_date
+        st.session_state['trend_end_date'] = end_date
 
       selected_accounts = []
       for lbl in selected_acc_labels:
@@ -1792,26 +1799,26 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           )
           bm_calc_dict[bm_label] = bm_df
 
-      st.session_state['trend_calc_df'] = pd.DataFrame(base_records)
-      st.session_state['trend_bm_calc'] = bm_calc_dict
-      st.session_state['trend_market_sessions'] = [
+      result_prefix = 'summy' if menu == 'SUMMY' else 'trend'
+      st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
+      st.session_state[f'{result_prefix}_bm_calc'] = bm_calc_dict
+      st.session_state[f'{result_prefix}_market_sessions'] = [
           pd.Timestamp(session).strftime('%Y-%m-%d')
           for session in market_data.index
       ]
 
     if menu == 'SUMMY':
       if (
-          st.session_state.get('_trend_calc_mode') != 'SUMMY'
-          or 'trend_calc_df' not in st.session_state
-          or st.session_state['trend_calc_df'].empty
+          'summy_calc_df' not in st.session_state
+          or st.session_state['summy_calc_df'].empty
       ):
         st.info('계좌와 비교 기준을 선택한 뒤 데이터 계산 실행을 눌러주세요.')
       else:
         render_summary_page(
-            st.session_state['trend_calc_df'],
-            st.session_state.get('trend_bm_calc', {}),
+            st.session_state['summy_calc_df'],
+            st.session_state.get('summy_bm_calc', {}),
             st.session_state.get('summy_end_date', today),
-            st.session_state.get('trend_market_sessions', []),
+            st.session_state.get('summy_market_sessions', []),
         )
       st.stop()
 
