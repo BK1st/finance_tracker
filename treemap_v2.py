@@ -744,7 +744,7 @@ def regular_only_for_ticker(ticker):
 
 
 @st.cache_data(ttl=300)
-def fetch_live_ticker_price(ticker, regular_only=False):
+def fetch_live_ticker_price(ticker, regular_only=False, refresh_key=None):
     """단일 티커의 최신 시세 가져오기 (regular_only=False 시 프리/애프터마켓 최신가 정확 추적)"""
     if not ticker:
         return None
@@ -779,10 +779,6 @@ def fetch_live_ticker_price(ticker, regular_only=False):
             reg_price = reg_price or info.get("regularMarketPrice")
             if reg_price and not pd.isna(reg_price) and float(reg_price) > 0:
                 return round(float(reg_price), 2)
-            
-            hist = tk.history(period="5d", prepost=False)
-            if not hist.empty and not pd.isna(hist["Close"].iloc[-1]):
-                return round(float(hist["Close"].iloc[-1]), 2)
             return None
 
         fast_info = tk.fast_info
@@ -813,7 +809,12 @@ def fetch_live_ticker_price(ticker, regular_only=False):
         except Exception:
             pass
 
-        for p in [post_price, pre_price, reg_price, fast_info.get("previousClose"), info.get("previousClose")]:
+        fallback_prices = (
+            [post_price, reg_price]
+            if market_state == "CLOSED"
+            else []
+        )
+        for p in fallback_prices:
             if p is not None and not pd.isna(p) and float(p) > 0:
                 return round(float(p), 2)
 
@@ -879,15 +880,30 @@ def _extract_ticker_series(market_data, ticker):
         return None
 
 
-def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular_only=None):
+def get_price_from_batch_data(
+    market_data,
+    ticker,
+    target_date_str=None,
+    regular_only=None,
+    refresh_key=None,
+    require_live=False,
+):
     """배치 수집된 데이터프레임에서 종가를 찾고, 필요 시 개별 실시간 시세로 fallback"""
     if not ticker:
         return None
     if regular_only is None:
         regular_only = regular_only_for_ticker(ticker)
 
+    if require_live:
+        live_p = fetch_live_ticker_price(
+            ticker, regular_only=regular_only, refresh_key=refresh_key
+        )
+        return live_p
+
     if not regular_only and not target_date_str:
-        live_p = fetch_live_ticker_price(ticker, regular_only=False)
+        live_p = fetch_live_ticker_price(
+            ticker, regular_only=False, refresh_key=refresh_key
+        )
         if live_p is not None:
             return live_p
 
@@ -901,7 +917,9 @@ def get_price_from_batch_data(market_data, ticker, target_date_str=None, regular
         else:
             return round(float(series.iloc[-1]), 2)
 
-    return fetch_live_ticker_price(ticker, regular_only=regular_only)
+    return fetch_live_ticker_price(
+        ticker, regular_only=regular_only, refresh_key=refresh_key
+    )
 
 
 def _get_last_trading_day_before(m_data, ticker, target_date_dt):
@@ -1033,7 +1051,11 @@ def update_all_prices_and_rate_batch(curr_rate):
             conn,
         )
         if df.empty:
-            return 0
+            return {
+                "updated_rows": 0,
+                "failed_tickers": [],
+                "skipped_tickers": [],
+            }
 
         df["formatted_ticker"] = df.apply(
             lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
@@ -1055,6 +1077,7 @@ def update_all_prices_and_rate_batch(curr_rate):
         )
 
         price_cache = {}
+        skipped_tickers = sorted(account_value_tickers.intersection(valid_tickers))
         for f_ticker in valid_tickers:
             if f_ticker in account_value_tickers:
                 continue
@@ -1062,16 +1085,19 @@ def update_all_prices_and_rate_batch(curr_rate):
             is_kr = is_korean_ticker(f_ticker)
             if not is_kr:
                 live_p = fetch_live_ticker_price(f_ticker, regular_only=ticker_regular_only)
-                if live_p is not None:
-                    price_cache[f_ticker] = live_p
-                else:
-                    price_cache[f_ticker] = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=ticker_regular_only)
+                price_cache[f_ticker] = live_p
             else:
                 batch_p = get_price_from_batch_data(market_data, f_ticker, today.strftime("%Y-%m-%d"), regular_only=ticker_regular_only)
                 price_cache[f_ticker] = batch_p if batch_p is not None else fetch_live_ticker_price(f_ticker, regular_only=ticker_regular_only)
 
         cursor = conn.cursor()
         updated_count = 0
+        failed_tickers = sorted(
+            ticker
+            for ticker in valid_tickers
+            if ticker not in account_value_tickers
+            and price_cache.get(ticker) is None
+        )
         
         for _, row in df.iterrows():
             p_id = row["id"]
@@ -1094,9 +1120,33 @@ def update_all_prices_and_rate_batch(curr_rate):
 
         conn.commit()
         export_backup_json()
-        return updated_count
+        return {
+            "updated_rows": updated_count,
+            "failed_tickers": failed_tickers,
+            "skipped_tickers": skipped_tickers,
+        }
     finally:
         conn.close()
+
+
+def format_price_update_summary(result):
+    """가격 업데이트 결과에서 성공, 조회 실패, 갱신 제외 항목을 구분해 안내."""
+    message = (
+        "Yahoo Finance 최근 제공 시세 반영 행 "
+        f"(실시간 가격 보장 아님): {result['updated_rows']}개"
+    )
+    for label, key in [
+        ("조회 실패", "failed_tickers"),
+        ("갱신 제외(계좌별 저장 가격)", "skipped_tickers"),
+    ]:
+        tickers = result[key]
+        if tickers:
+            shown_tickers = ", ".join(tickers[:10])
+            remaining = len(tickers) - 10
+            if remaining > 0:
+                shown_tickers += f" 외 {remaining}개"
+            message += f"\n{label}: {len(tickers)}개 ({shown_tickers})"
+    return message
 
 
 # ---------------------------------------------------------
@@ -1284,20 +1334,28 @@ st.sidebar.checkbox(
     help="한국 종목의 장중 최신 시세 대신 최근 정규장 일봉 종가를 사용합니다.",
 )
 
-if st.sidebar.button("🔄 시세 캐시 초기화 & 갱신"):
+if st.sidebar.button("🧹 시세 캐시 비우기"):
     st.cache_data.clear()
     st.session_state.live_rate_store = fetch_live_exchange_rate()
-    st.sidebar.success("시세 캐시가 초기화되고 최신 환율이 반영되었습니다!")
-    st.rerun()
+    st.sidebar.success(
+        "캐시를 비우고 환율을 조회했습니다. 저장된 주식 가격은 "
+        "'실시간 환율 및 전체 최신 시세 일괄 업데이트'를 눌러 갱신하세요."
+    )
 
 if st.sidebar.button("⚡ 실시간 환율 및 전체 최신 시세 일괄 업데이트"):
     with st.spinner("실시간 환율 조회 및 전체 종목 최신 시세 업데이트 중..."):
         st.cache_data.clear()
         target_rate = fetch_live_exchange_rate()
         st.session_state.live_rate_store = target_rate
-        cnt = update_all_prices_and_rate_batch(target_rate)
-        st.sidebar.success(f"업데이트 완료! (적용 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
-        st.rerun()
+        update_result = update_all_prices_and_rate_batch(target_rate)
+        summary = (
+            f"환율: {target_rate}원\n"
+            f"{format_price_update_summary(update_result)}"
+        )
+        if update_result["failed_tickers"] or update_result["skipped_tickers"]:
+            st.sidebar.warning(summary)
+        else:
+            st.sidebar.success(summary)
 
 # 메뉴 항목 정의 (관리자인 경우 '관리자 페이지' 추가)
 menu_options = [
@@ -1343,9 +1401,15 @@ if menu == "자산 입력 및 관리":
             else:
                 target_rate = current_rate
 
-            cnt = update_all_prices_and_rate_batch(target_rate)
-            st.success(f"업데이트 완료! (적용된 환율: {target_rate}원 / 총 {cnt}개 항목 최신화)")
-            st.rerun()
+            update_result = update_all_prices_and_rate_batch(target_rate)
+            summary = (
+                f"적용 환율: {target_rate}원\n"
+                f"{format_price_update_summary(update_result)}"
+            )
+            if update_result["failed_tickers"] or update_result["skipped_tickers"]:
+                st.warning(summary)
+            else:
+                st.success(summary)
 
     st.markdown("---")
     mode = st.radio(
@@ -1746,10 +1810,15 @@ elif menu == "일별/시점별 보유 현황 분석":
                     key="treemap_use_hist",
                 )
                 live_tracking = st.toggle(
-                    "⏱ 실시간 시세 Tracking (5분마다 갱신)",
+                    "⏱ 최신 시세 Tracking (5분마다 조회)",
                     key="treemap_live_tracking",
                     disabled=use_historical_price,
-                    help="켜두면 최신 시세와 트리맵을 5분마다 다시 조회합니다. 과거 시세 조회와는 함께 사용할 수 없습니다.",
+                    help=(
+                        "켜두면 최신 시세와 트리맵을 5분마다 다시 조회합니다. "
+                        "Yahoo Finance 제공 시세는 지연될 수 있으며, 조회 실패 종목은 "
+                        "기존 표시 가격을 유지하고 실패 목록을 표시합니다. "
+                        "과거 시세 조회와는 함께 사용할 수 없습니다."
+                    ),
                 )
                 if live_tracking and not use_historical_price:
                     live_refresh_count = st_autorefresh(
@@ -1842,7 +1911,10 @@ elif menu == "일별/시점별 보유 현황 분석":
                     if ticker in account_value_tickers:
                         continue
                     live_price = get_price_from_batch_data(
-                        live_market_data, ticker
+                        live_market_data,
+                        ticker,
+                        refresh_key=live_refresh_count,
+                        require_live=True,
                     )
                     if live_price is not None and live_price > 0:
                         live_price_map[ticker] = live_price
@@ -1862,7 +1934,16 @@ elif menu == "일별/시점별 보유 현황 분석":
                 if failed_tickers:
                     st.warning(
                         f"{len(failed_tickers)}개 종목의 최신 시세를 가져오지 못해 "
-                        "기존 표시 가격을 유지했습니다."
+                        "기존 표시 가격을 유지했습니다: "
+                        + ", ".join(failed_tickers[:10])
+                    )
+                skipped_live_tickers = sorted(
+                    account_value_tickers.intersection(tickers)
+                )
+                if skipped_live_tickers:
+                    st.info(
+                        "계좌별 저장 가격을 유지해 시세 갱신에서 제외한 종목: "
+                        + ", ".join(skipped_live_tickers[:10])
                     )
 
             sub_df["rate_multiplier"] = sub_df.apply(
