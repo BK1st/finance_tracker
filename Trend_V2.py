@@ -642,6 +642,171 @@ def render_resizable_plotly_chart(fig, key):
   )
 
 
+def get_summary_periods(as_of_date, market_sessions):
+  as_of = pd.Timestamp(as_of_date).normalize()
+  last_year_end = pd.Timestamp(as_of.year - 1, 12, 31)
+  last_month_end = pd.Timestamp(as_of.year, as_of.month, 1) - pd.Timedelta(days=1)
+  current_week_start = as_of - pd.Timedelta(days=as_of.weekday())
+  last_week_end = current_week_start - pd.Timedelta(days=1)
+  last_week_start = last_week_end - pd.Timedelta(days=6)
+  sessions = pd.DatetimeIndex(
+      pd.to_datetime(market_sessions)
+  ).normalize().unique().sort_values()
+  completed_sessions = sessions[sessions < as_of]
+  if len(completed_sessions) >= 2:
+    last_trading_day = completed_sessions[-1]
+    previous_trading_day = completed_sessions[-2]
+  else:
+    last_trading_day = as_of - pd.offsets.BDay(1)
+    previous_trading_day = last_trading_day - pd.offsets.BDay(1)
+
+  return [
+      ('연간', last_year_end.replace(month=1, day=1), last_year_end),
+      (
+          '월간',
+          last_month_end.replace(day=1),
+          last_month_end,
+      ),
+      ('주간', last_week_start, last_week_end),
+      ('일간', previous_trading_day + pd.Timedelta(days=1), last_trading_day),
+  ]
+
+
+def render_summary_page(
+    calc_df,
+    benchmark_data,
+    selected_groups,
+    layout_columns,
+    as_of_date,
+    market_sessions,
+):
+  group_options = {
+      'WHOSE별': 'whose',
+      '계좌별': 'account_num',
+      'Category2별': 'category2',
+      'Category4별': 'category4',
+      '보유종목별': 'item_name',
+      '계좌유형별': 'account_type',
+  }
+  period_windows = get_summary_periods(as_of_date, market_sessions)
+  summary_data = calc_df.copy()
+  summary_data['Date'] = pd.to_datetime(summary_data['Date']).dt.normalize()
+  summary_data['평가손익_기간증감'] = pd.to_numeric(
+      summary_data['주기별 평가손익'], errors='coerce'
+  ).fillna(0)
+  summary_data['총평가금액'] = pd.to_numeric(
+      summary_data['총평가금액'], errors='coerce'
+  ).fillna(0)
+
+  def benchmark_return(label, start_date, end_date):
+    prices = benchmark_data.get(label)
+    if prices is None or prices.empty:
+      return np.nan
+    price_series = prices.copy()
+    price_series['Date'] = pd.to_datetime(price_series['Date_str']).dt.normalize()
+    price_series['Close'] = pd.to_numeric(price_series['Close'], errors='coerce')
+    price_series = price_series.dropna(subset=['Close']).sort_values('Date')
+    baseline_date = start_date - pd.Timedelta(days=1)
+    start_prices = price_series[price_series['Date'] <= baseline_date]
+    end_prices = price_series[price_series['Date'] <= end_date]
+    if start_prices.empty or end_prices.empty:
+      return np.nan
+    start_price = float(start_prices.iloc[-1]['Close'])
+    end_price = float(end_prices.iloc[-1]['Close'])
+    return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
+
+  tables = {}
+  for display_group in selected_groups:
+    group_column = group_options[display_group]
+    grouped = summary_data.copy()
+    grouped[group_column] = grouped[group_column].fillna('미지정').astype(str)
+    table_rows = []
+
+    for period_label, period_start, period_end in period_windows:
+      baseline_cutoff = period_start - pd.Timedelta(days=1)
+      baseline_data = grouped[grouped['Date'] <= baseline_cutoff]
+      end_data = grouped[grouped['Date'] <= period_end]
+      period_data = grouped[
+          (grouped['Date'] > baseline_cutoff)
+          & (grouped['Date'] <= period_end)
+      ]
+      if baseline_data.empty or end_data.empty:
+        continue
+
+      baseline_date = baseline_data['Date'].max()
+      final_date = end_data['Date'].max()
+      start_values = (
+          baseline_data[baseline_data['Date'] == baseline_date]
+          .groupby(group_column, dropna=False)['총평가금액']
+          .sum()
+      )
+      final_values = (
+          end_data[end_data['Date'] == final_date]
+          .groupby(group_column, dropna=False)['총평가금액']
+          .sum()
+      )
+      period_profits = period_data.groupby(
+          group_column, dropna=False
+      )['평가손익_기간증감'].sum()
+
+      group_values = (
+          set(start_values.index)
+          | set(final_values.index)
+          | set(period_profits.index)
+      )
+      for group_value in sorted(group_values):
+        starting_eval = float(start_values.get(group_value, 0))
+        ending_eval = float(final_values.get(group_value, 0))
+        profit = float(period_profits.get(group_value, 0))
+        table_rows.append({
+            display_group: group_value,
+            '기간': (
+                f'{period_label} '
+                f'({period_start:%Y-%m-%d}~{period_end:%Y-%m-%d})'
+            ),
+            '기간 평가손익 (원)': profit,
+            '기말 평가금액 (원)': ending_eval,
+            '수익률 (%)': profit / starting_eval * 100 if starting_eval > 0 else np.nan,
+            'S&P 500 (%)': benchmark_return('S&P 500', period_start, period_end),
+            '나스닥 종합 (%)': benchmark_return('나스닥 종합', period_start, period_end),
+        })
+
+    tables[display_group] = pd.DataFrame(table_rows)
+
+  st.header('📊 SUMMY | 기간별 자산·지수 비교')
+  st.caption(
+      '직전 완료 구간 기준: 연간(직전 연도), 월간(직전 월), 주간(직전 주 월~일), '
+      '일간(직전 영업일). 지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다. '
+      '자산 손익은 선택한 계좌의 기간별 평가손익 합계입니다.'
+  )
+  if not selected_groups:
+    st.info('표시할 비교 기준을 하나 이상 선택하세요.')
+    return
+
+  for offset in range(0, len(selected_groups), layout_columns):
+    columns = st.columns(layout_columns)
+    for column, display_group in zip(
+        columns, selected_groups[offset:offset + layout_columns]
+    ):
+      with column:
+        st.subheader(display_group)
+        table = tables[display_group]
+        if table.empty:
+          st.info('선택 기간의 비교 데이터가 없습니다.')
+          continue
+        st.dataframe(
+            table.style.format({
+                '기간 평가손익 (원)': '{:,.0f}',
+                '기말 평가금액 (원)': '{:,.0f}',
+                '수익률 (%)': '{:.2f}%',
+                'S&P 500 (%)': '{:.2f}%',
+                '나스닥 종합 (%)': '{:.2f}%',
+            }, na_rep='—'),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 # -----------------------------------------------------------------------------
 # 4. Streamlit 대시보드 메인
 # -----------------------------------------------------------------------------
@@ -652,6 +817,7 @@ menu = st.sidebar.selectbox(
     '메뉴 선택',
     [
         '트렌드 리포트',
+        'SUMMY',
         '계좌 별칭 관리',
         '종목 분류 관리',
         '포트폴리오 업로드',
@@ -670,6 +836,11 @@ bm_ticker_map = {
     'KRW/USD 환율': 'KRW=X',
 }
 
+summary_benchmark_map = {
+    'S&P 500': '^GSPC',
+    '나스닥 종합': '^IXIC',
+}
+
 bm_styles = {
     '미국 SPY': dict(color='#7f7f7f', dash='dash'),
     '미국 QQQ': dict(color='#17becf', dash='dash'),
@@ -680,8 +851,11 @@ bm_styles = {
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
 # -----------------------------------------------------------------------------
-if menu == '트렌드 리포트':
-  st.header('📊 원금 vs 평가액 트렌드 분석')
+if menu in ('트렌드 리포트', 'SUMMY'):
+  st.header(
+      '📊 기간별 자산·지수 비교'
+      if menu == 'SUMMY' else '📊 원금 vs 평가액 트렌드 분석'
+  )
 
   conn = get_connection()
   pf_df = pd.read_sql('SELECT * FROM portfolio', conn)
@@ -879,46 +1053,81 @@ if menu == '트렌드 리포트':
     )
 
     with st.form('trend_control_form'):
-      f_col1, f_col2 = st.columns([3, 3])
-
-      with f_col1:
-        view_types = st.multiselect(
-            '표시할 트렌드 관점 선택',
-            options=all_view_types,
-            default=st.session_state.get('trend_view_types', all_view_types),
+      if menu == 'SUMMY':
+        summary_group_options = [
+            'WHOSE별',
+            '계좌별',
+            'Category2별',
+            'Category4별',
+            '보유종목별',
+            '계좌유형별',
+        ]
+        selected_summary_groups = st.multiselect(
+            '비교 기준 선택 (복수 선택 가능)',
+            options=summary_group_options,
+            default=st.session_state.get(
+                'summy_groups', ['WHOSE별']
+            ),
         )
-        selected_bm = st.multiselect(
-            '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
-            options=bm_options,
-            default=st.session_state.get('trend_sel_bm', bm_options),
-            help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
+        summary_layout_columns = st.selectbox(
+            '표 Layout 열 수',
+            options=[1, 2, 3],
+            index=[1, 2, 3].index(
+                st.session_state.get('summy_layout_columns', 1)
+            ),
         )
+        st.info('비교 지수: S&P 500 및 나스닥 종합. 지수 수익률은 배당·환율 제외입니다.')
+        view_types = st.session_state.get('trend_view_types', all_view_types)
+        selected_bm = ['S&P 500', '나스닥 종합']
+        option_freq = '일간 (매일)'
+      else:
+        f_col1, f_col2 = st.columns([3, 3])
 
-      with f_col2:
-        saved_freq = st.session_state.get('trend_freq_str', '일간 (매일)')
-        if saved_freq not in freq_options:
-          saved_freq = '일간 (매일)'
-
-        option_freq = st.selectbox(
-            '트렌드 주기 선택',
-            options=freq_options,
-            index=freq_options.index(saved_freq),
-        )
-
-        d_col1, d_col2 = st.columns(2)
-        with d_col1:
-          start_date = st.date_input(
-              '조회 시작일',
-              st.session_state.get('trend_start_date', prev_month_end),
+        with f_col1:
+          view_types = st.multiselect(
+              '표시할 트렌드 관점 선택',
+              options=all_view_types,
+              default=st.session_state.get('trend_view_types', all_view_types),
           )
-        with d_col2:
-          end_date = st.date_input(
-              '조회 종료일',
-              st.session_state.get(
-                  'trend_end_date',
-                  max_rec_date if max_rec_date >= min_rec_date else min_rec_date,
-              ),
+          selected_bm = st.multiselect(
+              '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
+              options=bm_options,
+              default=st.session_state.get('trend_sel_bm', bm_options),
+              help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
           )
+
+        with f_col2:
+          saved_freq = st.session_state.get('trend_freq_str', '일간 (매일)')
+          if saved_freq not in freq_options:
+            saved_freq = '일간 (매일)'
+
+          option_freq = st.selectbox(
+              '트렌드 주기 선택',
+              options=freq_options,
+              index=freq_options.index(saved_freq),
+          )
+
+      d_col1, d_col2 = st.columns(2)
+      with d_col1:
+        if menu == 'SUMMY':
+          summary_start_default = date(today.year - 2, 1, 1)
+          start_default = st.session_state.get(
+              'summy_start_date', summary_start_default
+          )
+          start_label = '계산 시작일 (직전 연간 비교를 위해 충분한 과거 날짜 권장)'
+        else:
+          start_default = st.session_state.get('trend_start_date', prev_month_end)
+          start_label = '조회 시작일'
+        start_date = st.date_input(start_label, start_default)
+      with d_col2:
+        if menu == 'SUMMY':
+          end_default = st.session_state.get('summy_end_date', today)
+        else:
+          end_default = st.session_state.get(
+              'trend_end_date',
+              max_rec_date if max_rec_date >= min_rec_date else min_rec_date,
+          )
+        end_date = st.date_input('조회 종료일', end_default)
 
       st.write('---')
       run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
@@ -929,6 +1138,12 @@ if menu == '트렌드 리포트':
       st.session_state['trend_freq_str'] = option_freq
       st.session_state['trend_start_date'] = start_date
       st.session_state['trend_end_date'] = end_date
+      st.session_state['_trend_calc_mode'] = menu
+      if menu == 'SUMMY':
+        st.session_state['summy_groups'] = selected_summary_groups
+        st.session_state['summy_layout_columns'] = summary_layout_columns
+        st.session_state['summy_start_date'] = start_date
+        st.session_state['summy_end_date'] = end_date
 
       selected_accounts = []
       for lbl in selected_acc_labels:
@@ -973,6 +1188,8 @@ if menu == '트렌드 리포트':
       ].copy()
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
+      if menu == 'SUMMY':
+        fetch_tickers.extend(summary_benchmark_map.values())
       selected_bj_accounts = [
           account for account in selected_accounts
           if whose_mapping.get(account) == 'BJ'
@@ -1313,7 +1530,11 @@ if menu == '트렌드 리포트':
 
       bm_calc_dict = {}
       for bm_label in selected_bm:
-        tk = bm_ticker_map[bm_label]
+        tk = (
+            summary_benchmark_map[bm_label]
+            if menu == 'SUMMY'
+            else bm_ticker_map[bm_label]
+        )
         if tk in market_data.columns and not market_data.empty:
           prices = []
           dates_str = []
@@ -1349,6 +1570,28 @@ if menu == '트렌드 리포트':
 
       st.session_state['trend_calc_df'] = pd.DataFrame(base_records)
       st.session_state['trend_bm_calc'] = bm_calc_dict
+      st.session_state['trend_market_sessions'] = [
+          pd.Timestamp(session).strftime('%Y-%m-%d')
+          for session in market_data.index
+      ]
+
+    if menu == 'SUMMY':
+      if (
+          st.session_state.get('_trend_calc_mode') != 'SUMMY'
+          or 'trend_calc_df' not in st.session_state
+          or st.session_state['trend_calc_df'].empty
+      ):
+        st.info('계좌와 비교 기준을 선택한 뒤 데이터 계산 실행을 눌러주세요.')
+      else:
+        render_summary_page(
+            st.session_state['trend_calc_df'],
+            st.session_state.get('trend_bm_calc', {}),
+            st.session_state.get('summy_groups', []),
+            st.session_state.get('summy_layout_columns', 1),
+            st.session_state.get('summy_end_date', today),
+            st.session_state.get('trend_market_sessions', []),
+        )
+      st.stop()
 
     if (
         'trend_calc_df' in st.session_state
@@ -1361,7 +1604,7 @@ if menu == '트렌드 리포트':
       st.write('---')
       st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
-      disp_col1, disp_col2, disp_col3, disp_col4 = st.columns([2.5, 2.5, 2, 3])
+      disp_col1, disp_col2 = st.columns([2.5, 2.5])
 
       with disp_col1:
         layout_setting = st.selectbox(
@@ -1407,53 +1650,11 @@ if menu == '트렌드 리포트':
             help='기본 범례 위치를 선택합니다. 각 차트별로 개별 변경도 가능합니다.',
         )
 
-      with disp_col3:
-        y_range_mode = st.radio(
-            '🎯 Y축 Range(범위) 지정',
-            options=['자동 (Auto)', '수동 지정 (Manual)'],
-            horizontal=True,
-            key='live_y_range_mode',
-        )
-
-      y_min_val, y_max_val = None, None
-      with disp_col4:
-        if y_range_mode == '수동 지정 (Manual)':
-          r_c1, r_c2 = st.columns(2)
-          with r_c1:
-            y_min_val = st.number_input(
-                'Y축 최소값 (원)', value=0.0, step=1000000.0, key='live_ymin'
-            )
-          with r_c2:
-            y_max_val = st.number_input(
-                'Y축 최대값 (원)',
-                value=100000000.0,
-                step=1000000.0,
-                key='live_ymax',
-            )
-
       num_cols = 1
       if '2열' in layout_setting:
         num_cols = 2
       elif '3열' in layout_setting:
         num_cols = 3
-
-      def apply_y_axis_config(fig, axis_name='yaxis', is_money=True):
-        kwargs = dict(type='linear', zeroline=True)
-        if (
-            is_money
-            and y_range_mode == '수동 지정 (Manual)'
-            and y_min_val is not None
-            and y_max_val is not None
-        ):
-          kwargs['range'] = [y_min_val, y_max_val]
-          kwargs['autorange'] = False
-        else:
-          kwargs['autorange'] = True
-
-        if axis_name == 'yaxis':
-          fig.update_yaxes(**kwargs)
-        elif axis_name == 'yaxis2':
-          fig.update_yaxes(secondary_y=True, **kwargs)
 
       # -------------------------------------------------------------------------
       # 그룹 요약 차트 (계좌별, 증권사별, 계좌유형별, Category 4별, 보유항목별)
@@ -2145,23 +2346,6 @@ if menu == '트렌드 리포트':
                     use_container_width=True,
                     hide_index=True,
                 )
-        elif group_col == 'item_name':
-          item_summary_columns = [
-              prefix,
-              '선택구간 누적 평가 손익 (원)',
-              '최종 기말 평가 금액 (원)',
-              '선택구간 누적 수익률 (%)',
-          ]
-          item_summary_df = summary_df[item_summary_columns]
-          st.dataframe(
-              item_summary_df.style.format({
-                  '선택구간 누적 평가 손익 (원)': '{:,.0f}',
-                  '최종 기말 평가 금액 (원)': '{:,.0f}',
-                  '선택구간 누적 수익률 (%)': '{:.2f}%',
-              }),
-              use_container_width=True,
-              hide_index=True,
-          )
         else:
           st.dataframe(summary_table, use_container_width=True)
         st.write('---')
@@ -2240,7 +2424,6 @@ if menu == '트렌드 리포트':
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        apply_y_axis_config(fig_sel_p, axis_name='yaxis', is_money=True)
         fig_sel_p.update_yaxes(
             title_text='선택구간 누적손익 (원)', tickformat=',.0f'
         )
@@ -2283,7 +2466,6 @@ if menu == '트렌드 리포트':
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        apply_y_axis_config(fig_period_p, is_money=True)
         fig_period_p.update_yaxes(title_text='손익금액 (원)', tickformat=',.0f')
 
         grp_agg_g3 = get_grp_agg(ex_g3)
@@ -2425,7 +2607,6 @@ if menu == '트렌드 리포트':
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        apply_y_axis_config(fig_cum_ret, axis_name='yaxis', is_money=False)
         fig_cum_ret.update_yaxes(
             title_text='누적 수익률 (%)',
             tickformat=',.2f',
@@ -2653,7 +2834,6 @@ if menu == '트렌드 리포트':
                   legend=leg_cfg_sub
               )
               fig_sub_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
-              apply_y_axis_config(fig_sub_stack, is_money=True)
               fig_sub_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
 
               render_resizable_plotly_chart(fig_sub_stack, key=f'fig_sub_stack_{prefix}_{chart_idx}')
@@ -3095,8 +3275,6 @@ if menu == '트렌드 리포트':
             categoryorder='array',
             categoryarray=date_order_list,
         )
-        apply_y_axis_config(fig1, axis_name='yaxis', is_money=True)
-        apply_y_axis_config(fig1, axis_name='yaxis2', is_money=True)
         fig1.update_yaxes(
             title_text='개별 평가금액 (원)', tickformat=',.0f', secondary_y=False
         )
@@ -3400,7 +3578,6 @@ if menu == '트렌드 리포트':
             legend=leg_cfg_tot
         )
         fig_total_stack.update_xaxes(type='category', categoryorder='array', categoryarray=date_order)
-        apply_y_axis_config(fig_total_stack, is_money=True)
         fig_total_stack.update_yaxes(title_text='총 평가금액 (원)', tickformat=',.0f')
 
         render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
