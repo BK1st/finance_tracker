@@ -1,14 +1,12 @@
 import os
 import sqlite3
 import io
-import html
 from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 
@@ -694,126 +692,6 @@ def get_summary_calculation_dates(
   return pd.DatetimeIndex(sorted(dates))
 
 
-def render_expandable_summary_table(rows, period_windows):
-  period_labels = [period_label for period_label, _, _ in period_windows]
-  return_columns = [
-      f'수익률 ({period_label}) (%)' for period_label in period_labels
-  ]
-  profit_columns = [
-      f'평가손익 ({period_label}) (원)' for period_label in period_labels
-  ]
-  metric_columns = ['평가금액 (원)'] + return_columns + profit_columns
-  display_columns = ['구분'] + metric_columns
-  header_html = ''.join(
-      f'<th>{html.escape(column)}</th>' for column in display_columns
-  )
-
-  body_parts = []
-  for row in rows:
-    depth = int(row['depth'])
-    hidden_class = ' tree-hidden' if depth else ''
-    parent_class = ' tree-parent' if row['has_children'] else ''
-    indent_px = 8 + depth * 18
-    caret = '▶' if row['has_children'] else ''
-    cells = [
-        f'<td class="label-cell" style="padding-left:{indent_px}px;">'
-        f'<span class="caret" data-id="{row["id"]}">{caret}</span> '
-        f'{html.escape(str(row["label"]))}</td>'
-    ]
-    for column in metric_columns:
-      value = row.get(column)
-      if pd.isna(value):
-        text = '—'
-      elif column in return_columns:
-        text = f'{value:+.2f}%'
-      else:
-        text = f'{value:,.0f}'
-      cells.append(f'<td class="num">{html.escape(text)}</td>')
-    parent_id = '' if row['parent_id'] is None else str(row['parent_id'])
-    body_parts.append(
-        f'<tr class="{parent_class}{hidden_class}" data-id="{row["id"]}" '
-        f'data-depth="{depth}" data-parent="{parent_id}" '
-        f'data-has-children="{str(row["has_children"]).lower()}">'
-        f'{"".join(cells)}</tr>'
-    )
-
-  visible_count = sum(1 for row in rows if row['depth'] == 0)
-  height = min(760, 90 + 38 * max(visible_count + 2, 5))
-  html_doc = f"""
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<style>
-  body {{ margin: 0; font-family: "Malgun Gothic", "Segoe UI", sans-serif; color: #17212b; }}
-  .hint {{ font-size: 13px; line-height: 1.5; color: #475569; margin: 0 0 10px; }}
-  .table-wrap {{ width: 100%; overflow-x: auto; border: 1px solid #d7dee8; border-radius: 8px; }}
-  table {{ width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0; font-size: 13px; }}
-  th {{ position: sticky; top: 0; z-index: 1; background: #e8eef6; color: #243247; text-align: right; padding: 10px 9px; border-bottom: 2px solid #c5d0de; white-space: nowrap; }}
-  th:first-child {{ text-align: left; }}
-  td {{ padding: 9px; border-bottom: 1px solid #e3e8ef; white-space: nowrap; }}
-  td.label-cell {{ max-width: 240px; overflow: hidden; text-overflow: ellipsis; }}
-  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  tr:nth-child(even) {{ background: #f8fafc; }}
-  tr[data-depth="0"] {{ background: #edf3fa; font-weight: 700; }}
-  tr.tree-parent {{ cursor: pointer; }}
-  tr.tree-parent:hover {{ background: #e2edff; }}
-  tr.tree-hidden {{ display: none; }}
-  .caret {{ display: inline-block; width: 18px; color: #174ea6; font-size: 11px; font-weight: 700; user-select: none; }}
-</style>
-</head>
-<body>
-  <p class="hint">▶ 를 누르거나 상위 행을 더블클릭하면 하위 항목이 펼쳐집니다.</p>
-  <div class="table-wrap">
-    <table><thead><tr>{header_html}</tr></thead>
-    <tbody>{"".join(body_parts)}</tbody></table>
-  </div>
-  <script>
-    function childrenOf(id) {{
-      return Array.from(document.querySelectorAll('tr[data-parent="' + id + '"]'));
-    }}
-    function hideDescendants(id) {{
-      childrenOf(id).forEach(function(child) {{
-        child.classList.add('tree-hidden');
-        var childCaret = child.querySelector('.caret');
-        if (childCaret && child.dataset.hasChildren === 'true') childCaret.textContent = '▶';
-        hideDescendants(child.dataset.id);
-      }});
-    }}
-    function toggleRow(id) {{
-      var kids = childrenOf(id);
-      if (!kids.length) return;
-      var expand = kids[0].classList.contains('tree-hidden');
-      var row = document.querySelector('tr[data-id="' + id + '"]');
-      var caret = row ? row.querySelector('.caret') : null;
-      if (expand) {{
-        kids.forEach(function(child) {{ child.classList.remove('tree-hidden'); }});
-        if (caret) caret.textContent = '▼';
-      }} else {{
-        hideDescendants(id);
-        if (caret) caret.textContent = '▶';
-      }}
-    }}
-    document.querySelectorAll('tr.tree-parent').forEach(function(row) {{
-      row.addEventListener('dblclick', function(event) {{
-        if (event.target.closest('.caret')) return;
-        toggleRow(row.dataset.id);
-      }});
-    }});
-    document.querySelectorAll('.caret').forEach(function(el) {{
-      if (!el.textContent) return;
-      el.addEventListener('click', function(ev) {{
-        ev.stopPropagation();
-        toggleRow(el.dataset.id);
-      }});
-    }});
-  </script>
-</body>
-</html>
-"""
-  components.html(html_doc, height=height, scrolling=True)
-
-
 def render_summary_page(
     calc_df,
     benchmark_data,
@@ -844,11 +722,10 @@ def render_summary_page(
 
   st.header('📊 SUMMARY | 기간별 자산·지수 비교')
   st.caption(
-      'WHOSE > 계좌유형 > 계좌 > 보유종목 표는 화살표 또는 더블클릭으로 '
-      '하위 항목을 펼칠 수 있습니다. Category4 표의 행을 선택하면 보유종목을 '
-      '확인할 수 있습니다. '
+      '표의 체크박스로 WHOSE 또는 지수를 선택하면 하위 내용을 확인할 수 있습니다. '
       '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말 기준 YTD입니다. '
-      '지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다.'
+      '지수는 수익률 기준 참조값이며 가격 수익률만 표시하고 배당·환율은 제외합니다. '
+      '수익률·손익 막대는 0 기준으로 양수는 녹색, 음수는 적색으로 표시합니다.'
   )
   use_ex_fx = st.toggle(
       '🔀 환차손 제외 결과로 보기',
@@ -1038,7 +915,7 @@ def render_summary_page(
             else np.nan
         )
 
-    benchmark_names = ('S&P 500', '나스닥 종합', '나스닥 100')
+    benchmark_names = tuple(summary_benchmark_map)
     if include_benchmarks:
       for benchmark_label in benchmark_names:
         row = {
@@ -1081,9 +958,30 @@ def render_summary_page(
     for period_label, _, _ in period_windows:
       formatters[f'평가손익 ({period_label}) (원)'] = '{:,.0f}'
       formatters[f'수익률 ({period_label}) (%)'] = '{:.2f}%'
-    st.caption('행을 클릭하면 하위 분류를 확인할 수 있습니다.')
+    return_columns = [
+        f'수익률 ({period_label}) (%)'
+        for period_label, _, _ in period_windows
+    ]
+    profit_columns = [
+        f'평가손익 ({period_label}) (원)'
+        for period_label, _, _ in period_windows
+    ]
+    styled_table = table.style.format(formatters, na_rep='—')
+    for column in return_columns + profit_columns:
+      numeric = pd.to_numeric(table[column], errors='coerce')
+      max_abs = numeric.abs().max()
+      if pd.notna(max_abs) and max_abs > 0:
+        styled_table = styled_table.bar(
+            subset=[column],
+            axis=0,
+            align='zero',
+            vmin=-max_abs,
+            vmax=max_abs,
+            color=['#f28b82', '#81c995'],
+        )
+    st.caption('체크박스로 행을 선택하면 하위 분류를 확인할 수 있습니다.')
     result = st.dataframe(
-        table.style.format(formatters, na_rep='—'),
+        styled_table,
         use_container_width=True,
         hide_index=True,
         on_select='rerun',
@@ -1101,7 +999,9 @@ def render_summary_page(
 
   run_key = st.session_state.get('summary_calc_id', 'initial')
   root_columns = st.columns(layout_columns)
-  whose_table = build_table('whose', account_daily, 'WHOSE')
+  whose_table = build_table(
+      'whose', account_daily, 'WHOSE', include_benchmarks=True
+  )
   owner_total_source = account_daily[
       account_daily['whose'].isin(['BJ', 'SH'])
   ].copy()
@@ -1119,78 +1019,64 @@ def render_summary_page(
 
   with root_columns[0]:
     st.subheader('A. WHOSE > 계좌유형 > 계좌 > 보유종목')
-    tree_rows = []
-
-    def append_hierarchy(table, group_column, label, depth, parent_id, scope):
-      for _, record in table.iterrows():
-        value = str(record[label])
-        node_id = len(tree_rows)
-        current_scope = dict(scope)
-        current_scope[group_column] = value
-        child_table = pd.DataFrame()
-        child_source = pd.DataFrame()
-
-        if depth < 3:
-          child_column, child_label = (
-              ('account_type', '계좌유형')
-              if depth == 0 else
-              ('account_num', '계좌')
-              if depth == 1 else
-              ('item_name', '보유종목')
-          )
-          child_source = (
-              account_daily if depth < 2 else summary_data
-          )
-          for scope_column, scope_value in current_scope.items():
-            child_source = child_source[
-                child_source[scope_column].astype(str) == scope_value
-            ]
-          child_table = build_table(
-              child_column, child_source, child_label
-          )
-
-        tree_rows.append({
-            'id': node_id,
-            'parent_id': parent_id,
-            'depth': depth,
-            'label': value,
-            'has_children': not child_table.empty,
-            **record.to_dict(),
-        })
-        if not child_table.empty:
-          append_hierarchy(
-              child_table,
-              child_column,
-              child_label,
-              depth + 1,
-              node_id,
-              current_scope,
-          )
-
-    append_hierarchy(
-        whose_table[
-            whose_table['WHOSE'].isin(account_daily['whose'].unique())
-        ],
-        'whose',
+    selectable_whose = set(account_daily['whose'].unique())
+    selectable_whose.add('BJ+SH 전체 합산')
+    selected_whose = render_clickable_table(
+        whose_table,
         'WHOSE',
-        0,
-        None,
-        {},
+        f'summary_whose_{run_key}',
+        clickable_values=selectable_whose,
     )
-    if not owner_total_source.empty and not owner_total_table.empty:
-      total_record = owner_total_table.iloc[0]
-      tree_rows.append({
-          'id': len(tree_rows),
-          'parent_id': None,
-          'depth': 0,
-          'label': str(total_record['WHOSE']),
-          'has_children': False,
-          **total_record.to_dict(),
-      })
-    if tree_rows:
-      render_expandable_summary_table(tree_rows, period_windows)
-    else:
-      st.info('선택 기간의 비교 데이터가 없습니다.')
+    if selected_whose:
+      selected_account_owners = (
+          {'BJ', 'SH'}
+          if 'BJ+SH 전체 합산' in selected_whose
+          else set(selected_whose)
+      )
+      st.markdown(f"#### {', '.join(selected_whose)} > 계좌유형별")
+      whose_accounts = account_daily[
+          account_daily['whose'].isin(selected_account_owners)
+      ]
+      account_type_table = build_table(
+          'account_type', whose_accounts, '계좌유형'
+      )
+      selected_type = render_clickable_table(
+          account_type_table,
+          '계좌유형',
+          f'summary_type_{run_key}_{"_".join(selected_whose)}',
+      )
+      if selected_type:
+        st.markdown(
+            f"#### {', '.join(selected_whose)} > "
+            f"{', '.join(selected_type)} > 계좌별"
+        )
+        typed_accounts = whose_accounts[
+            whose_accounts['account_type'].isin(selected_type)
+        ]
+        account_table = build_table(
+            'account_num', typed_accounts, '계좌'
+        )
+        selected_account = render_clickable_table(
+            account_table,
+            '계좌',
+            f'summary_account_{run_key}_{"_".join(selected_whose)}_'
+            f'{"_".join(selected_type)}',
+        )
+        if selected_account:
+          st.markdown(
+              f"#### {', '.join(selected_account)} > 보유종목별"
+          )
+          account_holdings = summary_data[
+              summary_data['account_num'].isin(selected_account)
+          ]
+          holding_table = build_table(
+              'item_name', account_holdings, '보유종목'
+          )
+          render_clickable_table(
+              holding_table,
+              '보유종목',
+              f'summary_holding_{run_key}_{"_".join(selected_account)}',
+          )
 
   if layout_columns > 1:
     category_root = root_columns[1]
@@ -1203,7 +1089,7 @@ def render_summary_page(
         'Category4',
         f'summary_category4_{run_key}',
         clickable_values=set(category4_table['Category4'])
-        - {'S&P 500', '나스닥 종합', '나스닥 100'},
+        - set(summary_benchmark_map),
     )
     if selected_category4:
       st.markdown(
@@ -1256,6 +1142,7 @@ summary_benchmark_map = {
     'S&P 500': '^GSPC',
     '나스닥 종합': '^IXIC',
     '나스닥 100': '^NDX',
+    '다우 존스': '^DJI',
 }
 
 bm_styles = {
@@ -1472,11 +1359,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
     with st.form('trend_control_form'):
       if menu == 'SUMMARY':
         st.info(
-            '비교 지수: S&P 500, 나스닥 종합, 나스닥 100. '
+            '비교 지수: S&P 500, 나스닥 종합, 나스닥 100, 다우 존스. '
             '지수 수익률은 배당·환율 제외입니다.'
         )
         view_types = st.session_state.get('trend_view_types', all_view_types)
-        selected_bm = ['S&P 500', '나스닥 종합', '나스닥 100']
+        selected_bm = list(summary_benchmark_map)
         option_freq = '일간 (매일)'
       else:
         saved_benchmarks = st.session_state.get(
