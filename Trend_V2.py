@@ -674,27 +674,105 @@ def get_summary_periods(as_of_date, market_sessions):
 def render_summary_page(
     calc_df,
     benchmark_data,
-    selected_groups,
     as_of_date,
     market_sessions,
 ):
-  group_options = {
-      'WHOSE별': 'whose',
-      '계좌별': 'account_num',
-      'Category2별': 'category2',
-      'Category4별': 'category4',
-      '보유종목별': 'item_name',
-      '계좌유형별': 'account_type',
-  }
   period_windows = get_summary_periods(as_of_date, market_sessions)
   summary_data = calc_df.copy()
   summary_data['Date'] = pd.to_datetime(summary_data['Date']).dt.normalize()
-  summary_data['평가손익_기간증감'] = pd.to_numeric(
-      summary_data['주기별 평가손익'], errors='coerce'
-  ).fillna(0)
-  summary_data['총평가금액'] = pd.to_numeric(
-      summary_data['총평가금액'], errors='coerce'
-  ).fillna(0)
+  summary_data['whose'] = summary_data['whose'].fillna('미지정').astype(str)
+  summary_data['account_type'] = summary_data['account_type'].fillna(
+      '미지정'
+  ).astype(str)
+  summary_data['account_num'] = summary_data['account_num'].fillna(
+      '미지정'
+  ).astype(str)
+  summary_data['category4'] = summary_data['category4'].fillna(
+      '미지정'
+  ).astype(str)
+  summary_data['item_name'] = summary_data['item_name'].fillna(
+      '미지정'
+  ).astype(str)
+
+  def numeric_column(frame, column):
+    if column not in frame.columns:
+      return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors='coerce')
+
+  st.header('📊 SUMMY | 기간별 자산·지수 비교')
+  st.caption(
+      'WHOSE > 계좌유형 > 계좌 > 보유종목 또는 Category4 > 보유종목 순으로 '
+      '표의 행을 클릭해 상세 내용을 확인할 수 있습니다. '
+      '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말 기준 YTD입니다. '
+      '지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다.'
+  )
+  use_ex_fx = st.toggle(
+      '🔀 환차손 제외 결과로 보기',
+      key='summy_ex_fx',
+      help='USD 보유자산을 고정 환율 기준으로 평가합니다.',
+  )
+
+  regular_eval = numeric_column(summary_data, '총평가금액')
+  ex_fx_eval = numeric_column(summary_data, '총평가금액_ex_fx')
+  bj_ex_fx_eval = numeric_column(summary_data, '총평가금액_bj_ex_fx')
+  regular_profit = numeric_column(summary_data, '주기별 평가손익')
+  ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_ex_fx')
+  bj_ex_fx_profit = numeric_column(summary_data, '주기별 평가손익_bj_ex_fx')
+  if use_ex_fx:
+    summary_data['_summy_eval'] = regular_eval.where(
+        summary_data['whose'] != 'BJ', ex_fx_eval
+    )
+    summary_data['_summy_eval'] = summary_data['_summy_eval'].where(
+        summary_data['whose'] != 'BJ', bj_ex_fx_eval
+    )
+    summary_data['_summy_profit'] = regular_profit.where(
+        summary_data['whose'] != 'BJ', ex_fx_profit
+    )
+    summary_data['_summy_profit'] = summary_data['_summy_profit'].where(
+        summary_data['whose'] != 'BJ', bj_ex_fx_profit
+    )
+  else:
+    summary_data['_summy_eval'] = regular_eval
+    summary_data['_summy_profit'] = regular_profit
+  summary_data['_summy_eval'] = summary_data['_summy_eval'].fillna(0)
+
+  account_daily = (
+      summary_data.groupby(
+          ['Date', 'account_num'], dropna=False
+      ).agg(
+          _summy_eval=('_summy_eval', 'sum'),
+          _summy_profit=('_summy_profit', lambda values: values.sum(min_count=1)),
+          whose=('whose', 'first'),
+          account_type=('account_type', 'first'),
+      )
+      .reset_index()
+  )
+  account_metric_suffix = '_ex_fx' if use_ex_fx else ''
+  account_period_col = f'계좌기준_주기손익{account_metric_suffix}'
+  account_ytd_profit_col = f'계좌기준_누적손익{account_metric_suffix}'
+  account_ytd_base_col = f'계좌기준_누적기준액{account_metric_suffix}'
+  account_metrics = summary_data.drop_duplicates(
+      ['Date', 'account_num']
+  )[['Date', 'account_num']].copy()
+  for target_column, source_column in (
+      ('_bj_period_profit', account_period_col),
+      ('_bj_ytd_profit', account_ytd_profit_col),
+      ('_bj_ytd_base', account_ytd_base_col),
+  ):
+    account_metrics[target_column] = numeric_column(
+        summary_data.drop_duplicates(['Date', 'account_num']),
+        source_column,
+    ).to_numpy()
+  account_daily = account_daily.merge(
+      account_metrics, on=['Date', 'account_num'], how='left'
+  )
+  is_bj = account_daily['whose'] == 'BJ'
+  account_daily.loc[is_bj, '_summy_profit'] = account_daily.loc[
+      is_bj, '_bj_period_profit'
+  ].where(
+      account_daily.loc[is_bj, '_bj_period_profit'].notna(),
+      account_daily.loc[is_bj, '_summy_profit'],
+  )
 
   def benchmark_return(label, start_date, end_date):
     prices = benchmark_data.get(label)
@@ -713,153 +791,251 @@ def render_summary_page(
     end_price = float(end_prices.iloc[-1]['Close'])
     return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
 
-  st.header('📊 SUMMY | 기간별 자산·지수 비교')
-  st.caption(
-      '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말부터 선택 종료일까지의 YTD 기준입니다. '
-      '지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다. '
-      '표의 평가금액은 선택 종료일 기준이며, 선택한 계좌와 분류 필터가 적용됩니다.'
-  )
-  if not selected_groups:
-    st.info('표시할 비교 기준을 하나 이상 선택하세요.')
-    return
-
   layout_columns = st.selectbox(
       '표 Layout 열 수 (조회된 데이터에 적용)',
       options=[1, 2, 3],
       key='summy_layout_columns',
   )
 
-  tables = {}
-  for display_group in selected_groups:
-    group_column = group_options[display_group]
-    grouped = summary_data.copy()
-    grouped[group_column] = grouped[group_column].fillna('미지정').astype(str)
-    current_date = grouped[grouped['Date'] <= pd.Timestamp(as_of_date).normalize()]['Date'].max()
-    current_data = grouped[grouped['Date'] == current_date]
-    current_values = (
-        current_data.groupby(group_column, dropna=False)['총평가금액'].sum()
-        if not current_data.empty else pd.Series(dtype=float)
-    )
-    table_by_group = {
-        group_value: {
-            group_column: group_value,
+  def build_table(group_column, source, label, include_benchmarks=False):
+    if source.empty:
+      return pd.DataFrame()
+    data = source.copy()
+    data[group_column] = data[group_column].fillna('미지정').astype(str)
+    data['Date'] = pd.to_datetime(data['Date']).dt.normalize()
+    as_of = pd.Timestamp(as_of_date).normalize()
+    latest_date = data.loc[data['Date'] <= as_of, 'Date'].max()
+    if pd.isna(latest_date):
+      return pd.DataFrame()
+
+    latest_rows = data[data['Date'] == latest_date]
+    current = latest_rows.groupby(group_column, dropna=False)[
+        '_summy_eval'
+    ].sum()
+    table_rows = {
+        str(group): {
+            label: str(group),
             '평가금액 (원)': float(value),
         }
-        for group_value, value in current_values.items()
+        for group, value in current.items()
     }
 
     for period_label, period_start, period_end in period_windows:
-      baseline_cutoff = period_start - pd.Timedelta(days=1)
-      baseline_data = grouped[grouped['Date'] <= baseline_cutoff]
-      end_data = grouped[grouped['Date'] <= period_end]
-      period_data = grouped[
-          (grouped['Date'] > baseline_cutoff)
-          & (grouped['Date'] <= period_end)
-      ]
-      if baseline_data.empty or end_data.empty:
+      cutoff = period_start - pd.Timedelta(days=1)
+      baseline_rows = data[data['Date'] <= cutoff]
+      if baseline_rows.empty:
         continue
+      baseline_date = baseline_rows['Date'].max()
+      start_values = baseline_rows[
+          baseline_rows['Date'] == baseline_date
+      ].groupby(group_column, dropna=False)['_summy_eval'].sum()
+      interval_rows = data[
+          (data['Date'] > baseline_date)
+          & (data['Date'] <= period_end)
+      ]
+      profits = interval_rows.groupby(group_column, dropna=False)[
+          '_summy_profit'
+      ].sum(min_count=1)
 
-      baseline_date = baseline_data['Date'].max()
-      final_date = end_data['Date'].max()
-      start_values = (
-          baseline_data[baseline_data['Date'] == baseline_date]
-          .groupby(group_column, dropna=False)['총평가금액']
-          .sum()
-      )
-      final_values = (
-          end_data[end_data['Date'] == final_date]
-          .groupby(group_column, dropna=False)['총평가금액']
-          .sum()
-      )
-      period_profits = period_data.groupby(
-          group_column, dropna=False
-      )['평가손익_기간증감'].sum()
+      is_ytd = period_label == '연간'
+      if is_ytd and group_column in ('whose', 'account_type', 'account_num'):
+        account_end = account_daily[
+            account_daily['Date'] <= period_end
+        ].sort_values('Date').drop_duplicates('account_num', keep='last')
+        bj_end = account_end[account_end['whose'] == 'BJ'].copy()
+        if not bj_end.empty:
+          bj_profit_by_group = bj_end.groupby(group_column)[
+              '_bj_ytd_profit'
+          ].sum(min_count=1)
+          bj_base_by_group = bj_end.groupby(group_column)[
+              '_bj_ytd_base'
+          ].sum(min_count=1)
+          non_bj_rows = interval_rows[interval_rows['whose'] != 'BJ']
+          non_bj_profit = non_bj_rows.groupby(
+              group_column, dropna=False
+          )['_summy_profit'].sum(min_count=1)
+          non_bj_start = baseline_rows[
+              baseline_rows['whose'] != 'BJ'
+          ].groupby(group_column, dropna=False)['_summy_eval'].sum()
+          all_groups = (
+              set(non_bj_profit.index)
+              | set(bj_profit_by_group.index)
+              | set(start_values.index)
+              | set(table_rows)
+          )
+          profits = pd.Series({
+              group: (
+                  non_bj_profit.get(group, 0)
+                  + bj_profit_by_group.get(group, 0)
+              )
+              for group in all_groups
+          })
+          start_values = pd.Series({
+              group: (
+                  non_bj_start.get(group, 0)
+                  + bj_base_by_group.get(group, 0)
+              )
+              for group in all_groups
+          })
 
-      group_values = (
-          set(start_values.index)
-          | set(final_values.index)
-          | set(period_profits.index)
-          | set(table_by_group)
-      )
-      for group_value in group_values:
-        starting_eval = float(start_values.get(group_value, 0))
-        profit = float(period_profits.get(group_value, 0))
-        row = table_by_group.setdefault(
-            group_value,
-            {group_column: group_value, '평가금액 (원)': np.nan},
+      for group in set(start_values.index) | set(profits.index) | set(table_rows):
+        start_value = pd.to_numeric(
+            pd.Series([start_values.get(group, 0)]), errors='coerce'
+        ).iloc[0]
+        profit = pd.to_numeric(
+            pd.Series([profits.get(group, np.nan)]), errors='coerce'
+        ).iloc[0]
+        row = table_rows.setdefault(
+            str(group),
+            {label: str(group), '평가금액 (원)': np.nan},
         )
         row[f'평가손익 ({period_label}) (원)'] = profit
         row[f'수익률 ({period_label}) (%)'] = (
-            profit / starting_eval * 100 if starting_eval > 0 else np.nan
+            profit / start_value * 100
+            if pd.notna(profit) and pd.notna(start_value) and start_value > 0
+            else np.nan
         )
 
-    for period_label, period_start, period_end in period_windows:
-      for benchmark_label in ('S&P 500', '나스닥 종합', '나스닥 100'):
-        row = table_by_group.setdefault(
-            benchmark_label,
-            {group_column: benchmark_label, '평가금액 (원)': np.nan},
-        )
-        row[f'수익률 ({period_label}) (%)'] = benchmark_return(
-            benchmark_label, period_start, period_end
-        )
+    benchmark_names = ('S&P 500', '나스닥 종합', '나스닥 100')
+    if include_benchmarks:
+      for benchmark_label in benchmark_names:
+        row = {
+            label: benchmark_label,
+            '평가금액 (원)': np.nan,
+        }
+        for period_label, period_start, period_end in period_windows:
+          row[f'평가손익 ({period_label}) (원)'] = np.nan
+          row[f'수익률 ({period_label}) (%)'] = benchmark_return(
+              benchmark_label, period_start, period_end
+          )
+        table_rows[benchmark_label] = row
 
-    benchmark_order = ['S&P 500', '나스닥 종합', '나스닥 100']
-    group_order = sorted(
-        (key for key in table_by_group if key not in benchmark_order),
+    ordered_groups = sorted(
+        (group for group in table_rows if group not in benchmark_names),
         key=str,
     )
-    table_rows = [
-        table_by_group[key]
-        for key in benchmark_order + group_order
-        if key in table_by_group
-    ]
-    column_order = [group_column, '평가금액 (원)']
+    order = (
+        list(benchmark_names) + ordered_groups
+        if include_benchmarks else ordered_groups
+    )
+    columns = [label, '평가금액 (원)']
     for period_label, _, _ in period_windows:
-      column_order.extend([
+      columns.extend([
           f'평가손익 ({period_label}) (원)',
           f'수익률 ({period_label}) (%)',
       ])
-    tables[display_group] = pd.DataFrame(table_rows).reindex(columns=column_order)
+    return pd.DataFrame(
+        [table_rows[group] for group in order if group in table_rows]
+    ).reindex(columns=columns).reset_index(drop=True)
 
-  for offset in range(0, len(selected_groups), layout_columns):
-    columns = st.columns(layout_columns)
-    for column, display_group in zip(
-        columns, selected_groups[offset:offset + layout_columns]
-    ):
-      with column:
-        st.subheader(display_group)
-        table = tables[display_group]
-        if table.empty:
-          st.info('선택 기간의 비교 데이터가 없습니다.')
-          continue
-        first_column_labels = {
-            'WHOSE별': 'whose',
-            '계좌별': '계좌별',
-            'Category2별': '분류별 (Category2)',
-            'Category4별': '분류별 (Category4)',
-            '보유종목별': '종목별',
-            '계좌유형별': '계좌유형별',
-        }
-        column_labels = {
-            group_options[display_group]: first_column_labels[display_group],
-            '평가금액 (원)': '평가금액',
-        }
-        formatters = {'평가금액': '{:,.0f}'}
-        for period_label, _, _ in period_windows:
-          column_labels[f'평가손익 ({period_label}) (원)'] = (
-              f'평가손익 ({period_label})'
-          )
-          column_labels[f'수익률 ({period_label}) (%)'] = (
-              f'수익률 ({period_label})'
-          )
-          formatters[f'평가손익 ({period_label})'] = '{:,.0f}'
-          formatters[f'수익률 ({period_label})'] = '{:.2f}%'
-        table = table.rename(columns=column_labels)
-        st.dataframe(
-            table.style.format(formatters, na_rep='—'),
-            use_container_width=True,
-            hide_index=True,
+  def render_clickable_table(table, label, key, clickable_values=None):
+    if table.empty:
+      st.info('선택 기간의 비교 데이터가 없습니다.')
+      return None
+    formatters = {'평가금액 (원)': '{:,.0f}'}
+    for period_label, _, _ in period_windows:
+      formatters[f'평가손익 ({period_label}) (원)'] = '{:,.0f}'
+      formatters[f'수익률 ({period_label}) (%)'] = '{:.2f}%'
+    st.caption('행을 클릭하면 하위 분류를 확인할 수 있습니다.')
+    result = st.dataframe(
+        table.style.format(formatters, na_rep='—'),
+        use_container_width=True,
+        hide_index=True,
+        on_select='rerun',
+        selection_mode='single-row',
+        key=key,
+    )
+    selected_rows = result.selection.rows
+    if not selected_rows or selected_rows[0] >= len(table):
+      return None
+    selected_value = table.iloc[selected_rows[0]][label]
+    if clickable_values is not None and selected_value not in clickable_values:
+      return None
+    return str(selected_value)
+
+  run_key = st.session_state.get('summy_calc_id', 'initial')
+  root_columns = st.columns(layout_columns)
+  whose_table = build_table(
+      'whose', account_daily, 'WHOSE', include_benchmarks=True
+  )
+  category4_table = build_table(
+      'category4', summary_data, 'Category4', include_benchmarks=True
+  )
+
+  with root_columns[0]:
+    st.subheader('A. WHOSE > 계좌유형 > 계좌 > 보유종목')
+    selected_whose = render_clickable_table(
+        whose_table,
+        'WHOSE',
+        f'summy_whose_{run_key}',
+        clickable_values=set(summary_data['whose'].unique()),
+    )
+    if selected_whose:
+      st.markdown(f'#### {selected_whose} > 계좌유형별')
+      whose_accounts = account_daily[
+          account_daily['whose'] == selected_whose
+      ]
+      account_type_table = build_table(
+          'account_type', whose_accounts, '계좌유형'
+      )
+      selected_type = render_clickable_table(
+          account_type_table,
+          '계좌유형',
+          f'summy_type_{run_key}_{selected_whose}',
+      )
+      if selected_type:
+        st.markdown(f'#### {selected_whose} > {selected_type} > 계좌별')
+        typed_accounts = whose_accounts[
+            whose_accounts['account_type'] == selected_type
+        ]
+        account_table = build_table(
+            'account_num', typed_accounts, '계좌'
         )
+        selected_account = render_clickable_table(
+            account_table,
+            '계좌',
+            f'summy_account_{run_key}_{selected_whose}_{selected_type}',
+        )
+        if selected_account:
+          st.markdown(f'#### {selected_account} > 보유종목별')
+          account_holdings = summary_data[
+              summary_data['account_num'] == selected_account
+          ]
+          holding_table = build_table(
+              'item_name', account_holdings, '보유종목'
+          )
+          render_clickable_table(
+              holding_table,
+              '보유종목',
+              f'summy_holding_{run_key}_{selected_account}',
+          )
+
+  if layout_columns > 1:
+    category_root = root_columns[1]
+  else:
+    category_root = st.container()
+  with category_root:
+    st.subheader('B. Category4 > 보유종목')
+    selected_category4 = render_clickable_table(
+        category4_table,
+        'Category4',
+        f'summy_category4_{run_key}',
+        clickable_values=set(category4_table['Category4'])
+        - {'S&P 500', '나스닥 종합', '나스닥 100'},
+    )
+    if selected_category4:
+      st.markdown(f'#### {selected_category4} > 보유종목별')
+      category_holdings = summary_data[
+          summary_data['category4'] == selected_category4
+      ]
+      holding_table = build_table(
+          'item_name', category_holdings, '보유종목'
+      )
+      render_clickable_table(
+          holding_table,
+          '보유종목',
+          f'summy_category_holding_{run_key}_{selected_category4}',
+      )
 
 
 # -----------------------------------------------------------------------------
@@ -1110,21 +1286,6 @@ if menu in ('트렌드 리포트', 'SUMMY'):
 
     with st.form('trend_control_form'):
       if menu == 'SUMMY':
-        summary_group_options = [
-            'WHOSE별',
-            '계좌별',
-            'Category2별',
-            'Category4별',
-            '보유종목별',
-            '계좌유형별',
-        ]
-        selected_summary_groups = st.multiselect(
-            '비교 기준 선택 (복수 선택 가능)',
-            options=summary_group_options,
-            default=st.session_state.get(
-                'summy_groups', ['WHOSE별']
-            ),
-        )
         st.info(
             '비교 지수: S&P 500, 나스닥 종합, 나스닥 100. '
             '지수 수익률은 배당·환율 제외입니다.'
@@ -1133,6 +1294,16 @@ if menu in ('트렌드 리포트', 'SUMMY'):
         selected_bm = ['S&P 500', '나스닥 종합', '나스닥 100']
         option_freq = '일간 (매일)'
       else:
+        saved_benchmarks = st.session_state.get(
+            'trend_sel_bm', bm_options
+        )
+        trend_benchmark_default = [
+            benchmark
+            for benchmark in saved_benchmarks
+            if benchmark in bm_options
+        ]
+        if not trend_benchmark_default:
+          trend_benchmark_default = bm_options
         f_col1, f_col2 = st.columns([3, 3])
 
         with f_col1:
@@ -1144,7 +1315,7 @@ if menu in ('트렌드 리포트', 'SUMMY'):
           selected_bm = st.multiselect(
               '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
               options=bm_options,
-              default=st.session_state.get('trend_sel_bm', bm_options),
+              default=trend_benchmark_default,
               help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
           )
 
@@ -1192,9 +1363,11 @@ if menu in ('트렌드 리포트', 'SUMMY'):
       st.session_state['trend_end_date'] = end_date
       st.session_state['_trend_calc_mode'] = menu
       if menu == 'SUMMY':
-        st.session_state['summy_groups'] = selected_summary_groups
         st.session_state['summy_start_date'] = start_date
         st.session_state['summy_end_date'] = end_date
+        st.session_state['summy_calc_id'] = datetime.now().strftime(
+            '%Y%m%d%H%M%S%f'
+        )
 
       selected_accounts = []
       for lbl in selected_acc_labels:
@@ -1637,7 +1810,6 @@ if menu in ('트렌드 리포트', 'SUMMY'):
         render_summary_page(
             st.session_state['trend_calc_df'],
             st.session_state.get('trend_bm_calc', {}),
-            st.session_state.get('summy_groups', []),
             st.session_state.get('summy_end_date', today),
             st.session_state.get('trend_market_sessions', []),
         )
