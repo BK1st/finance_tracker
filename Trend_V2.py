@@ -725,7 +725,9 @@ def render_summary_page(
       '표의 체크박스로 WHOSE 또는 지수를 선택하면 하위 내용을 확인할 수 있습니다. '
       '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말 기준 YTD입니다. '
       '지수는 수익률 기준 참조값이며 가격 수익률만 표시하고 배당·환율은 제외합니다. '
-      '수익률·손익 막대는 0 기준으로 양수는 녹색, 음수는 적색으로 표시합니다.'
+      '한 표 안의 수익률 막대와 손익 막대는 각각 모든 기간·항목에 공통된 기준으로 '
+      '비교하며, 양수는 녹색·음수는 적색으로 표시합니다. '
+      '현금성 자산의 수익률·평가손익은 표시하지 않습니다.'
   )
   use_ex_fx = st.toggle(
       '🔀 환차손 제외 결과로 보기',
@@ -749,6 +751,8 @@ def render_summary_page(
   else:
     summary_data['_summary_eval'] = regular_eval
     summary_data['_summary_profit'] = regular_profit
+  cash_asset_mask = summary_data['item_name'].str.contains('현금', na=False)
+  summary_data.loc[cash_asset_mask, '_summary_profit'] = np.nan
   summary_data['_summary_eval'] = summary_data['_summary_eval'].fillna(0)
 
   account_daily = (
@@ -954,6 +958,7 @@ def render_summary_page(
     if table.empty:
       st.info('선택 기간의 비교 데이터가 없습니다.')
       return []
+    display_table = table.copy()
     return_columns = [
         f'수익률 ({period_label}) (%)'
         for period_label, _, _ in period_windows
@@ -962,15 +967,43 @@ def render_summary_page(
         f'평가손익 ({period_label}) (원)'
         for period_label, _, _ in period_windows
     ]
+    cash_rows = (
+        display_table[label].astype(str).eq('현금')
+        if label == 'Category4'
+        else display_table[label].astype(str).str.contains('현금', na=False)
+        if label == '보유종목'
+        else pd.Series(False, index=display_table.index)
+    )
+    display_table.loc[cash_rows, return_columns + profit_columns] = ''
+
+    return_values = display_table[return_columns].apply(
+        pd.to_numeric, errors='coerce'
+    )
+    profit_values = display_table[profit_columns].apply(
+        pd.to_numeric, errors='coerce'
+    )
+    return_max = return_values.abs().max().max()
+    profit_max = profit_values.abs().max().max()
+    return_max_abs = (
+        float(return_max) if pd.notna(return_max) and return_max > 0 else 0.0
+    )
+    profit_max_abs = (
+        float(profit_max) if pd.notna(profit_max) and profit_max > 0 else 0.0
+    )
+
     formatters = {'평가금액 (원)': '{:,.0f}'}
-    styled_table = table.style
+    styled_table = display_table.style
     for column in return_columns + profit_columns:
-      numeric = pd.to_numeric(table[column], errors='coerce')
-      max_abs = numeric.abs().max()
-      scale = float(max_abs) if pd.notna(max_abs) and max_abs > 0 else 0.0
+      scale = (
+          float(return_max_abs)
+          if column in return_columns
+          else float(profit_max_abs)
+      )
       is_percent = column in return_columns
 
       def format_with_bar(value, scale=scale, is_percent=is_percent):
+        if isinstance(value, str) and value == '':
+          return ''
         if pd.isna(value):
           return '—'
         number = float(value)
@@ -987,19 +1020,19 @@ def render_summary_page(
         if number < 0:
           return f'{number_text}  {"█" * bar_length}│'
         return f'{number_text}  │'
-
       formatters[column] = format_with_bar
+      def color_value(value):
+        number = pd.to_numeric(value, errors='coerce')
+        if pd.isna(number):
+          return ''
+        if number > 0:
+          return 'color: #137333; font-weight: 600'
+        if number < 0:
+          return 'color: #b42318; font-weight: 600'
+        return ''
+
       styled_table = styled_table.apply(
-          lambda values: [
-              (
-                  'color: #137333; font-weight: 600'
-                  if pd.notna(value) and value > 0
-                  else 'color: #b42318; font-weight: 600'
-                  if pd.notna(value) and value < 0
-                  else ''
-              )
-              for value in values
-          ],
+          lambda values: [color_value(value) for value in values],
           subset=[column],
       )
     styled_table = styled_table.format(formatters, na_rep='—')
