@@ -694,7 +694,7 @@ def get_summary_calculation_dates(
 
 def style_trend_report_table(table):
   numeric_columns = table.select_dtypes(include='number').columns
-  styled_table = table.style
+  display_table = table.copy()
   column_config = {}
   scale_groups = {}
   group_max_abs = {}
@@ -719,6 +719,61 @@ def style_trend_report_table(table):
           float(max_abs),
       )
 
+  bar_columns = {}
+  bar_slots = 8
+  for column in numeric_columns:
+    column_name = str(column)
+    scale_group = scale_groups[column]
+    bar_limit = group_max_abs.get(scale_group, 0.0)
+    bar_column = f'{column_name} | 막대'
+    bar_columns[column] = bar_column
+
+    def format_bar(value, bar_limit=bar_limit, scale_group=scale_group):
+      number = pd.to_numeric(value, errors='coerce')
+      if pd.isna(number):
+        return ''
+      if scale_group in ('return', 'profit') or (
+          isinstance(scale_group, tuple) and scale_group[0] == 'column'
+      ):
+        slot_count = (
+            min(bar_slots, max(1, round(abs(number) / bar_limit * bar_slots)))
+            if bar_limit > 0 and number != 0
+            else 0
+        )
+        left_bar = '█' * slot_count if number < 0 else ''
+        right_bar = '█' * slot_count if number > 0 else ''
+        left_empty = '·' * (bar_slots - len(left_bar))
+        right_empty = '·' * (bar_slots - len(right_bar))
+        return f'{left_empty}{left_bar}│{right_bar}{right_empty}'
+      slot_count = (
+          min(bar_slots, max(1, round(number / bar_limit * bar_slots)))
+          if bar_limit > 0 and number > 0
+          else 0
+      )
+      return f'{"█" * slot_count}{"░" * (bar_slots - slot_count)}'
+
+    display_table[bar_column] = table[column].map(format_bar)
+
+  display_columns = []
+  for column in table.columns:
+    display_columns.append(column)
+    if column in bar_columns:
+      display_columns.append(bar_columns[column])
+  display_table = display_table[display_columns]
+  styled_table = display_table.style
+
+  def color_bar(value, is_signed):
+    number = pd.to_numeric(value, errors='coerce')
+    if pd.isna(number):
+      return ''
+    if is_signed and number < 0:
+      return 'color: #b42318; font-weight: 600'
+    if is_signed and number > 0:
+      return 'color: #137333; font-weight: 600'
+    if number == 0:
+      return 'color: #8a8a8a'
+    return 'color: #2563a6'
+
   for column in numeric_columns:
     column_name = str(column)
 
@@ -736,27 +791,32 @@ def style_trend_report_table(table):
         lambda cells: [color_value(value) for value in cells],
         subset=[column],
     )
+    bar_column = bar_columns[column]
+    scale_group = scale_groups[column]
+    is_signed = scale_group in ('return', 'profit') or (
+        isinstance(scale_group, tuple) and scale_group[0] == 'column'
+    )
+    styled_table = styled_table.apply(
+        lambda cells, values=table[column], signed=is_signed: [
+            color_bar(value, signed) for value in values
+        ],
+        subset=[bar_column],
+    )
     if '%' in column_name or '수익률' in column_name or '점유율' in column_name:
       number_format = '%.2f%%'
     elif '원' in column_name or '손익' in column_name or '금액' in column_name:
       number_format = '%,.0f'
     else:
       number_format = 'localized'
-    scale_group = scale_groups[column]
-    bar_limit = group_max_abs.get(scale_group, 0.0)
-    if bar_limit <= 0:
-      bar_limit = 1.0
-    is_signed = scale_group in ('return', 'profit') or (
-        isinstance(scale_group, tuple) and scale_group[0] == 'column'
-    )
-    bar_limit = float(bar_limit)
-    column_config[column] = st.column_config.ProgressColumn(
+    column_config[column] = st.column_config.NumberColumn(
         format=number_format,
-        min_value=-bar_limit if is_signed else 0.0,
-        max_value=bar_limit,
-        color='auto' if is_signed else 'green',
+        width='medium',
     )
-  return styled_table, column_config
+    column_config[bar_column] = st.column_config.TextColumn(
+        label='막대',
+        width=150,
+    )
+  return styled_table, column_config, display_columns
 
 
 def render_summary_page(
@@ -793,7 +853,8 @@ def render_summary_page(
       '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말 기준 YTD입니다. '
       '지수는 수익률 기준 참조값이며 가격 수익률만 표시하고 배당·환율은 제외합니다. '
       '한 표 안의 수익률 막대와 손익 막대는 각각 모든 기간·항목에 공통된 기준으로 '
-      '비교하며, 양수는 녹색·음수는 적색으로 표시합니다. '
+      '비교합니다. 막대 열은 0을 가운데 두고 양수는 오른쪽 녹색, 음수는 왼쪽 적색으로, '
+      '평가금액·점유율은 단색 길이로 비교합니다. '
       '현금성 자산의 수익률·평가손익은 표시하지 않습니다.'
   )
   use_ex_fx = st.toggle(
@@ -1042,11 +1103,14 @@ def render_summary_page(
         else pd.Series(False, index=display_table.index)
     )
     display_table.loc[cash_rows, return_columns + profit_columns] = np.nan
-    styled_table, column_config = style_trend_report_table(display_table)
+    styled_table, column_config, display_columns = (
+        style_trend_report_table(display_table)
+    )
     st.caption('체크박스로 행을 선택하면 하위 분류를 확인할 수 있습니다.')
     result = st.dataframe(
         styled_table,
         column_config=column_config,
+        column_order=display_columns,
         use_container_width=True,
         hide_index=True,
         on_select='rerun',
@@ -2506,6 +2570,10 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         groups = group_order + [g for g in all_groups if g not in group_order]
 
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
+        st.caption(
+            '수익률·손익 막대는 가운데 0 기준으로 양수는 오른쪽, 음수는 왼쪽에 '
+            '표시합니다. 평가금액·점유율은 단색 막대이며, 숫자 열은 실제 값으로 정렬됩니다.'
+        )
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         show_bj_ex_fx_estimate = ex_summary
         bj_year_profit_label = (
@@ -2621,14 +2689,17 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        summary_table, summary_column_config = style_trend_report_table(
-            summary_df
-        )
+        (
+            summary_table,
+            summary_column_config,
+            summary_display_columns,
+        ) = style_trend_report_table(summary_df)
         if group_col == 'category4':
           st.caption('Category 4 행을 선택하면 아래에 해당 보유종목별 내역이 표시됩니다.')
           summary_selection = st.dataframe(
               summary_table,
               column_config=summary_column_config,
+              column_order=summary_display_columns,
               use_container_width=True,
               on_select='rerun',
               selection_mode='single-row',
@@ -2717,12 +2788,17 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                         '선택구간 누적 수익률 (%)',
                     ]
                 ]
-                holdings_summary_table, holdings_column_config = (
+                (
+                    holdings_summary_table,
+                    holdings_column_config,
+                    holdings_display_columns,
+                ) = (
                     style_trend_report_table(holdings_summary)
                 )
                 st.dataframe(
                     holdings_summary_table,
                     column_config=holdings_column_config,
+                    column_order=holdings_display_columns,
                     use_container_width=True,
                     hide_index=True,
                 )
@@ -2730,6 +2806,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           st.dataframe(
               summary_table,
               column_config=summary_column_config,
+              column_order=summary_display_columns,
               use_container_width=True,
           )
         st.write('---')
@@ -3550,12 +3627,15 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         ]
         whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
-        whose_summary_table, whose_column_config = style_trend_report_table(
-            whose_summary_df
-        )
+        (
+            whose_summary_table,
+            whose_column_config,
+            whose_display_columns,
+        ) = style_trend_report_table(whose_summary_df)
         st.dataframe(
             whose_summary_table,
             column_config=whose_column_config,
+            column_order=whose_display_columns,
             use_container_width=True,
         )
         st.write('---')
