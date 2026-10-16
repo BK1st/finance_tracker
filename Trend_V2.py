@@ -644,7 +644,7 @@ def render_resizable_plotly_chart(fig, key):
 
 def get_summary_periods(as_of_date, market_sessions):
   as_of = pd.Timestamp(as_of_date).normalize()
-  last_year_end = pd.Timestamp(as_of.year - 1, 12, 31)
+  year_start = pd.Timestamp(as_of.year, 1, 1)
   last_month_end = pd.Timestamp(as_of.year, as_of.month, 1) - pd.Timedelta(days=1)
   current_week_start = as_of - pd.Timedelta(days=as_of.weekday())
   last_week_end = current_week_start - pd.Timedelta(days=1)
@@ -652,7 +652,10 @@ def get_summary_periods(as_of_date, market_sessions):
   sessions = pd.DatetimeIndex(
       pd.to_datetime(market_sessions)
   ).normalize().unique().sort_values()
-  completed_sessions = sessions[sessions < as_of]
+  if as_of.date() < date.today():
+    completed_sessions = sessions[sessions <= as_of]
+  else:
+    completed_sessions = sessions[sessions < as_of]
   if len(completed_sessions) >= 2:
     last_trading_day = completed_sessions[-1]
     previous_trading_day = completed_sessions[-2]
@@ -661,14 +664,10 @@ def get_summary_periods(as_of_date, market_sessions):
     previous_trading_day = last_trading_day - pd.offsets.BDay(1)
 
   return [
-      ('연간', last_year_end.replace(month=1, day=1), last_year_end),
-      (
-          '월간',
-          last_month_end.replace(day=1),
-          last_month_end,
-      ),
-      ('주간', last_week_start, last_week_end),
       ('일간', previous_trading_day + pd.Timedelta(days=1), last_trading_day),
+      ('주간', last_week_start, last_week_end),
+      ('월간', last_month_end.replace(day=1), last_month_end),
+      ('연간', year_start, as_of),
   ]
 
 
@@ -676,7 +675,6 @@ def render_summary_page(
     calc_df,
     benchmark_data,
     selected_groups,
-    layout_columns,
     as_of_date,
     market_sessions,
 ):
@@ -715,12 +713,40 @@ def render_summary_page(
     end_price = float(end_prices.iloc[-1]['Close'])
     return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
 
+  st.header('📊 SUMMY | 기간별 자산·지수 비교')
+  st.caption(
+      '일간·주간·월간은 직전 완료 구간, 연간은 전년도 말부터 선택 종료일까지의 YTD 기준입니다. '
+      '지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다. '
+      '표의 평가금액은 선택 종료일 기준이며, 선택한 계좌와 분류 필터가 적용됩니다.'
+  )
+  if not selected_groups:
+    st.info('표시할 비교 기준을 하나 이상 선택하세요.')
+    return
+
+  layout_columns = st.selectbox(
+      '표 Layout 열 수 (조회된 데이터에 적용)',
+      options=[1, 2, 3],
+      key='summy_layout_columns',
+  )
+
   tables = {}
   for display_group in selected_groups:
     group_column = group_options[display_group]
     grouped = summary_data.copy()
     grouped[group_column] = grouped[group_column].fillna('미지정').astype(str)
-    table_rows = []
+    current_date = grouped[grouped['Date'] <= pd.Timestamp(as_of_date).normalize()]['Date'].max()
+    current_data = grouped[grouped['Date'] == current_date]
+    current_values = (
+        current_data.groupby(group_column, dropna=False)['총평가금액'].sum()
+        if not current_data.empty else pd.Series(dtype=float)
+    )
+    table_by_group = {
+        group_value: {
+            group_column: group_value,
+            '평가금액 (원)': float(value),
+        }
+        for group_value, value in current_values.items()
+    }
 
     for period_label, period_start, period_end in period_windows:
       baseline_cutoff = period_start - pd.Timedelta(days=1)
@@ -753,35 +779,47 @@ def render_summary_page(
           set(start_values.index)
           | set(final_values.index)
           | set(period_profits.index)
+          | set(table_by_group)
       )
-      for group_value in sorted(group_values):
+      for group_value in group_values:
         starting_eval = float(start_values.get(group_value, 0))
-        ending_eval = float(final_values.get(group_value, 0))
         profit = float(period_profits.get(group_value, 0))
-        table_rows.append({
-            display_group: group_value,
-            '기간': (
-                f'{period_label} '
-                f'({period_start:%Y-%m-%d}~{period_end:%Y-%m-%d})'
-            ),
-            '기간 평가손익 (원)': profit,
-            '기말 평가금액 (원)': ending_eval,
-            '수익률 (%)': profit / starting_eval * 100 if starting_eval > 0 else np.nan,
-            'S&P 500 (%)': benchmark_return('S&P 500', period_start, period_end),
-            '나스닥 종합 (%)': benchmark_return('나스닥 종합', period_start, period_end),
-        })
+        row = table_by_group.setdefault(
+            group_value,
+            {group_column: group_value, '평가금액 (원)': np.nan},
+        )
+        row[f'평가손익 ({period_label}) (원)'] = profit
+        row[f'수익률 ({period_label}) (%)'] = (
+            profit / starting_eval * 100 if starting_eval > 0 else np.nan
+        )
 
-    tables[display_group] = pd.DataFrame(table_rows)
+    for period_label, period_start, period_end in period_windows:
+      for benchmark_label in ('S&P 500', '나스닥 종합', '나스닥 100'):
+        row = table_by_group.setdefault(
+            benchmark_label,
+            {group_column: benchmark_label, '평가금액 (원)': np.nan},
+        )
+        row[f'수익률 ({period_label}) (%)'] = benchmark_return(
+            benchmark_label, period_start, period_end
+        )
 
-  st.header('📊 SUMMY | 기간별 자산·지수 비교')
-  st.caption(
-      '직전 완료 구간 기준: 연간(직전 연도), 월간(직전 월), 주간(직전 주 월~일), '
-      '일간(직전 영업일). 지수는 가격 수익률만 표시하며 배당 및 환율은 제외합니다. '
-      '자산 손익은 선택한 계좌의 기간별 평가손익 합계입니다.'
-  )
-  if not selected_groups:
-    st.info('표시할 비교 기준을 하나 이상 선택하세요.')
-    return
+    benchmark_order = ['S&P 500', '나스닥 종합', '나스닥 100']
+    group_order = sorted(
+        (key for key in table_by_group if key not in benchmark_order),
+        key=str,
+    )
+    table_rows = [
+        table_by_group[key]
+        for key in benchmark_order + group_order
+        if key in table_by_group
+    ]
+    column_order = [group_column, '평가금액 (원)']
+    for period_label, _, _ in period_windows:
+      column_order.extend([
+          f'평가손익 ({period_label}) (원)',
+          f'수익률 ({period_label}) (%)',
+      ])
+    tables[display_group] = pd.DataFrame(table_rows).reindex(columns=column_order)
 
   for offset in range(0, len(selected_groups), layout_columns):
     columns = st.columns(layout_columns)
@@ -794,14 +832,31 @@ def render_summary_page(
         if table.empty:
           st.info('선택 기간의 비교 데이터가 없습니다.')
           continue
+        first_column_labels = {
+            'WHOSE별': 'whose',
+            '계좌별': '계좌별',
+            'Category2별': '분류별 (Category2)',
+            'Category4별': '분류별 (Category4)',
+            '보유종목별': '종목별',
+            '계좌유형별': '계좌유형별',
+        }
+        column_labels = {
+            group_options[display_group]: first_column_labels[display_group],
+            '평가금액 (원)': '평가금액',
+        }
+        formatters = {'평가금액': '{:,.0f}'}
+        for period_label, _, _ in period_windows:
+          column_labels[f'평가손익 ({period_label}) (원)'] = (
+              f'평가손익 ({period_label})'
+          )
+          column_labels[f'수익률 ({period_label}) (%)'] = (
+              f'수익률 ({period_label})'
+          )
+          formatters[f'평가손익 ({period_label})'] = '{:,.0f}'
+          formatters[f'수익률 ({period_label})'] = '{:.2f}%'
+        table = table.rename(columns=column_labels)
         st.dataframe(
-            table.style.format({
-                '기간 평가손익 (원)': '{:,.0f}',
-                '기말 평가금액 (원)': '{:,.0f}',
-                '수익률 (%)': '{:.2f}%',
-                'S&P 500 (%)': '{:.2f}%',
-                '나스닥 종합 (%)': '{:.2f}%',
-            }, na_rep='—'),
+            table.style.format(formatters, na_rep='—'),
             use_container_width=True,
             hide_index=True,
         )
@@ -839,6 +894,7 @@ bm_ticker_map = {
 summary_benchmark_map = {
     'S&P 500': '^GSPC',
     '나스닥 종합': '^IXIC',
+    '나스닥 100': '^NDX',
 }
 
 bm_styles = {
@@ -1069,16 +1125,12 @@ if menu in ('트렌드 리포트', 'SUMMY'):
                 'summy_groups', ['WHOSE별']
             ),
         )
-        summary_layout_columns = st.selectbox(
-            '표 Layout 열 수',
-            options=[1, 2, 3],
-            index=[1, 2, 3].index(
-                st.session_state.get('summy_layout_columns', 1)
-            ),
+        st.info(
+            '비교 지수: S&P 500, 나스닥 종합, 나스닥 100. '
+            '지수 수익률은 배당·환율 제외입니다.'
         )
-        st.info('비교 지수: S&P 500 및 나스닥 종합. 지수 수익률은 배당·환율 제외입니다.')
         view_types = st.session_state.get('trend_view_types', all_view_types)
-        selected_bm = ['S&P 500', '나스닥 종합']
+        selected_bm = ['S&P 500', '나스닥 종합', '나스닥 100']
         option_freq = '일간 (매일)'
       else:
         f_col1, f_col2 = st.columns([3, 3])
@@ -1110,11 +1162,11 @@ if menu in ('트렌드 리포트', 'SUMMY'):
       d_col1, d_col2 = st.columns(2)
       with d_col1:
         if menu == 'SUMMY':
-          summary_start_default = date(today.year - 2, 1, 1)
+          summary_start_default = date(today.year - 1, 12, 31)
           start_default = st.session_state.get(
               'summy_start_date', summary_start_default
           )
-          start_label = '계산 시작일 (직전 연간 비교를 위해 충분한 과거 날짜 권장)'
+          start_label = '조회 시작일 (기본: 전년도 말)'
         else:
           start_default = st.session_state.get('trend_start_date', prev_month_end)
           start_label = '조회 시작일'
@@ -1141,7 +1193,6 @@ if menu in ('트렌드 리포트', 'SUMMY'):
       st.session_state['_trend_calc_mode'] = menu
       if menu == 'SUMMY':
         st.session_state['summy_groups'] = selected_summary_groups
-        st.session_state['summy_layout_columns'] = summary_layout_columns
         st.session_state['summy_start_date'] = start_date
         st.session_state['summy_end_date'] = end_date
 
@@ -1587,7 +1638,6 @@ if menu in ('트렌드 리포트', 'SUMMY'):
             st.session_state['trend_calc_df'],
             st.session_state.get('trend_bm_calc', {}),
             st.session_state.get('summy_groups', []),
-            st.session_state.get('summy_layout_columns', 1),
             st.session_state.get('summy_end_date', today),
             st.session_state.get('trend_market_sessions', []),
         )
