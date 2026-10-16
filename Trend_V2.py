@@ -692,6 +692,54 @@ def get_summary_calculation_dates(
   return pd.DatetimeIndex(sorted(dates))
 
 
+def style_trend_report_table(table):
+  numeric_columns = table.select_dtypes(include='number').columns
+  styled_table = table.style
+  column_config = {}
+  for column in numeric_columns:
+    values = pd.to_numeric(table[column], errors='coerce')
+    minimum = values.min()
+    maximum = values.max()
+    if pd.notna(minimum) and pd.notna(maximum):
+      minimum = min(float(minimum), 0.0)
+      maximum = max(float(maximum), 0.0)
+      if minimum < maximum:
+        styled_table = styled_table.bar(
+            subset=[column],
+            align='zero',
+            vmin=minimum,
+            vmax=maximum,
+            color=['#f2b8b5', '#a8d5ba'],
+            props='width: 100%;',
+        )
+
+    def color_value(value):
+      number = pd.to_numeric(value, errors='coerce')
+      if pd.isna(number):
+        return ''
+      if number > 0:
+        return 'color: #137333; font-weight: 600'
+      if number < 0:
+        return 'color: #b42318; font-weight: 600'
+      return ''
+
+    styled_table = styled_table.apply(
+        lambda cells: [color_value(value) for value in cells],
+        subset=[column],
+    )
+    column_name = str(column)
+    if '%' in column_name or '수익률' in column_name or '점유율' in column_name:
+      number_format = '%.2f%%'
+    elif '원' in column_name or '손익' in column_name or '금액' in column_name:
+      number_format = '%,.0f'
+    else:
+      number_format = 'localized'
+    column_config[column] = st.column_config.NumberColumn(
+        format=number_format
+    )
+  return styled_table, column_config
+
+
 def render_summary_page(
     calc_df,
     benchmark_data,
@@ -974,74 +1022,12 @@ def render_summary_page(
         if label == '보유종목'
         else pd.Series(False, index=display_table.index)
     )
-    display_table[return_columns + profit_columns] = display_table[
-        return_columns + profit_columns
-    ].astype(object)
-    display_table.loc[cash_rows, return_columns + profit_columns] = ''
-
-    return_values = display_table[return_columns].apply(
-        pd.to_numeric, errors='coerce'
-    )
-    profit_values = display_table[profit_columns].apply(
-        pd.to_numeric, errors='coerce'
-    )
-    return_max = return_values.abs().max().max()
-    profit_max = profit_values.abs().max().max()
-    return_max_abs = (
-        float(return_max) if pd.notna(return_max) and return_max > 0 else 0.0
-    )
-    profit_max_abs = (
-        float(profit_max) if pd.notna(profit_max) and profit_max > 0 else 0.0
-    )
-
-    formatters = {'평가금액 (원)': '{:,.0f}'}
-    styled_table = display_table.style
-    for column in return_columns + profit_columns:
-      scale = (
-          float(return_max_abs)
-          if column in return_columns
-          else float(profit_max_abs)
-      )
-      is_percent = column in return_columns
-
-      def format_with_bar(value, scale=scale, is_percent=is_percent):
-        if isinstance(value, str) and value == '':
-          return ''
-        if pd.isna(value):
-          return '—'
-        number = float(value)
-        number_text = (
-            f'{number:+.2f}%'
-            if is_percent else f'{number:,.0f}'
-        )
-        bar_length = (
-            min(6, max(1, round(abs(number) / scale * 6)))
-            if scale > 0 and number != 0 else 0
-        )
-        if number > 0:
-          return f'{number_text}  │{"█" * bar_length}'
-        if number < 0:
-          return f'{number_text}  {"█" * bar_length}│'
-        return f'{number_text}  │'
-      formatters[column] = format_with_bar
-      def color_value(value):
-        number = pd.to_numeric(value, errors='coerce')
-        if pd.isna(number):
-          return ''
-        if number > 0:
-          return 'color: #137333; font-weight: 600'
-        if number < 0:
-          return 'color: #b42318; font-weight: 600'
-        return ''
-
-      styled_table = styled_table.apply(
-          lambda values: [color_value(value) for value in values],
-          subset=[column],
-      )
-    styled_table = styled_table.format(formatters, na_rep='—')
+    display_table.loc[cash_rows, return_columns + profit_columns] = np.nan
+    styled_table, column_config = style_trend_report_table(display_table)
     st.caption('체크박스로 행을 선택하면 하위 분류를 확인할 수 있습니다.')
     result = st.dataframe(
         styled_table,
+        column_config=column_config,
         use_container_width=True,
         hide_index=True,
         on_select='rerun',
@@ -2616,18 +2602,14 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         ]
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
-        summary_table = summary_df.style.format({
-            '선택구간 누적 평가 손익 (원)': '{:,.0f}',
-            '최종 기말 평가 금액 (원)': '{:,.0f}',
-            '점유율 (%)': '{:.2f}%',
-            '선택구간 누적 수익률 (%)': '{:.2f}%',
-            bj_year_profit_label: '{:,.0f}',
-            bj_year_return_label: '{:.2f}%',
-        })
+        summary_table, summary_column_config = style_trend_report_table(
+            summary_df
+        )
         if group_col == 'category4':
           st.caption('Category 4 행을 선택하면 아래에 해당 보유종목별 내역이 표시됩니다.')
           summary_selection = st.dataframe(
               summary_table,
+              column_config=summary_column_config,
               use_container_width=True,
               on_select='rerun',
               selection_mode='single-row',
@@ -2716,18 +2698,21 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                         '선택구간 누적 수익률 (%)',
                     ]
                 ]
+                holdings_summary_table, holdings_column_config = (
+                    style_trend_report_table(holdings_summary)
+                )
                 st.dataframe(
-                    holdings_summary.style.format({
-                        '선택구간 누적 평가 손익 (원)': '{:,.0f}',
-                        '최종 기말 평가 금액 (원)': '{:,.0f}',
-                        '점유율 (%)': '{:.2f}%',
-                        '선택구간 누적 수익률 (%)': '{:.2f}%',
-                    }),
+                    holdings_summary_table,
+                    column_config=holdings_column_config,
                     use_container_width=True,
                     hide_index=True,
                 )
         else:
-          st.dataframe(summary_table, use_container_width=True)
+          st.dataframe(
+              summary_table,
+              column_config=summary_column_config,
+              use_container_width=True,
+          )
         st.write('---')
 
         st.markdown(f'##### ⚙️ [{prefix}] 종합 차트별 범주 및 환율 옵션 설정')
@@ -3546,15 +3531,12 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         ]
         whose_summary_df = whose_summary_df[[c for c in cols_w if c in whose_summary_df.columns]]
 
+        whose_summary_table, whose_column_config = style_trend_report_table(
+            whose_summary_df
+        )
         st.dataframe(
-            whose_summary_df.style.format({
-                '선택구간 누적 평가 손익 (원)': '{:,.0f}',
-                '최종 기말 평가 금액 (원)': '{:,.0f}',
-                '점유율 (%)': '{:.2f}%',
-                '선택구간 누적 수익률 (%)': '{:.2f}%',
-                bj_year_profit_label: '{:,.0f}',
-                bj_year_return_label: '{:.2f}%',
-            }),
+            whose_summary_table,
+            column_config=whose_column_config,
             use_container_width=True,
         )
         st.write('---')
