@@ -2145,6 +2145,23 @@ if menu == '트렌드 리포트':
                     use_container_width=True,
                     hide_index=True,
                 )
+        elif group_col == 'item_name':
+          item_summary_columns = [
+              prefix,
+              '선택구간 누적 평가 손익 (원)',
+              '최종 기말 평가 금액 (원)',
+              '선택구간 누적 수익률 (%)',
+          ]
+          item_summary_df = summary_df[item_summary_columns]
+          st.dataframe(
+              item_summary_df.style.format({
+                  '선택구간 누적 평가 손익 (원)': '{:,.0f}',
+                  '최종 기말 평가 금액 (원)': '{:,.0f}',
+                  '선택구간 누적 수익률 (%)': '{:.2f}%',
+              }),
+              use_container_width=True,
+              hide_index=True,
+          )
         else:
           st.dataframe(summary_table, use_container_width=True)
         st.write('---')

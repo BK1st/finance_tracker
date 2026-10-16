@@ -1,5 +1,4 @@
 import html
-import io
 import json
 import os
 import re
@@ -8,7 +7,6 @@ import urllib.request
 from urllib.parse import quote
 from datetime import date, datetime, timedelta
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
@@ -1149,156 +1147,6 @@ def format_price_update_summary(result):
     return message
 
 
-# ---------------------------------------------------------
-# 매매(트레이딩) 전용 다이얼로그
-# ---------------------------------------------------------
-@st.dialog("📈 매매(트레이딩) 입력 - 신규 매수 / 추가 매수 / 매도")
-def open_trading_dialog():
-    conn = get_connection()
-    try:
-        df = pd.read_sql("SELECT * FROM portfolio", conn)
-    finally:
-        conn.close()
-
-    # --- [권한 제어 필터링] 관리자가 아니면 본인 데이터만 수정 가능 ---
-    if not is_current_user_admin:
-        df = df[df["whose"] == logged_in_user].copy()
-
-    trade_type = st.radio("거래 종류 선택", ["신규 매수", "기존 종목 추가 매수 (물타기/불타기)", "기존 종목 매도 (부분/전량)"], horizontal=True)
-
-    if trade_type == "신규 매수":
-        st.caption("새로운 종목이나 계좌를 포트폴리오에 신규 추가합니다.")
-        with st.form("dialog_new_buy_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                t_date = st.date_input("거래일", datetime.now()).strftime("%Y-%m-%d")
-                t_whose = st.text_input("소유자", value=logged_in_user, disabled=not is_current_user_admin)
-                t_broker = st.text_input("증권사/금융사", value="키움증권")
-                t_acc_num = st.text_input("계좌번호")
-                t_acc_type = st.selectbox("계좌구분", ["일반", "연금", "ISA", "IRP", "기타"])
-            with c2:
-                t_item = st.text_input("보유항목명 (예: 삼성전자, Apple)")
-                t_ticker = st.text_input("티커/종목코드")
-                t_curr = st.selectbox("통화", ["KRW", "USD"])
-                t_price = st.number_input("매수 단가", min_value=0.0, step=1.0)
-                t_qty = st.number_input("매수 수량", min_value=0.0, step=1.0)
-
-            submitted = st.form_submit_button("🚀 신규 매수 반영")
-            if submitted:
-                if not t_item or t_price <= 0 or t_qty <= 0:
-                    st.error("보유항목명, 단가, 수량을 정확히 입력해 주세요.")
-                else:
-                    conn = get_connection()
-                    try:
-                        cursor = conn.cursor()
-                        ex_r = st.session_state.get("live_rate_store", 1350.0) if t_curr == "USD" else 1.0
-                        cursor.execute("""
-                            INSERT INTO portfolio (record_date, whose, broker, account_num, account_type, item_name, ticker, buy_price, quantity, current_price, currency, exchange_rate)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (t_date, t_whose, t_broker, t_acc_num, t_acc_type, t_item, t_ticker, t_price, t_qty, t_price, t_curr, ex_r))
-                        conn.commit()
-                        export_backup_json()
-                        st.success(f"🎉 '{t_item}' 신규 매수가 성공적으로 반영되었습니다!")
-                        st.rerun()
-                    finally:
-                        conn.close()
-
-    else:
-        if df.empty:
-            st.warning("수정/매도 가능한 본인의 보유 포트폴리오 항목이 없습니다.")
-            return
-
-        df["record_date"] = df["record_date"].fillna("미지정").replace("", "미지정")
-        df["broker"] = df["broker"].fillna("미지정").replace("", "미지정")
-        df["account_num"] = df["account_num"].fillna("미지정").replace("", "미지정")
-        df["item_name"] = df["item_name"].fillna("미지정").replace("", "미지정")
-        df["whose"] = df["whose"].fillna("본인").replace("", "본인")
-
-        st.markdown("#### 🎯 거래 대상 종목 선택 (기준날짜 ➔ 증권사 ➔ 계좌번호 ➔ 종목)")
-
-        available_dates = sorted(df["record_date"].unique(), reverse=True)
-        selected_date = st.selectbox("1️⃣ 기준날짜 선택", available_dates, key="tr_sel_date")
-
-        df_filtered_date = df[df["record_date"] == selected_date]
-        available_brokers = sorted(df_filtered_date["broker"].unique())
-        selected_broker = st.selectbox("2️⃣ 증권사 선택", available_brokers, key="tr_sel_broker")
-
-        df_filtered_broker = df_filtered_date[df_filtered_date["broker"] == selected_broker]
-        available_accounts = sorted(df_filtered_broker["account_num"].unique())
-        selected_account = st.selectbox("3️⃣ 계좌번호 선택", available_accounts, key="tr_sel_acc")
-
-        df_filtered_account = df_filtered_broker[df_filtered_broker["account_num"] == selected_account].copy()
-
-        df_filtered_account["item_label"] = df_filtered_account.apply(
-            lambda r: f"[{r['id']}] {r['item_name']} ({r['ticker'] if r['ticker'] else '티커없음'}) | 소유: {r['whose']} | 수량: {r['quantity']:,.2f}개 | 평단가: {r['buy_price']:,.2f}",
-            axis=1
-        )
-
-        selected_item_label = st.selectbox("4️⃣ 종목 선택", df_filtered_account["item_label"].tolist(), key="tr_sel_item")
-
-        target_row = df_filtered_account[df_filtered_account["item_label"] == selected_item_label].iloc[0]
-
-        target_id = int(target_row["id"])
-        old_qty = float(target_row["quantity"])
-        old_buy_price = float(target_row["buy_price"])
-        item_name = target_row["item_name"]
-
-        st.markdown("---")
-        st.markdown(f"📌 **선택 종목 정보**: `{item_name}` | **기존 수량**: `{old_qty:,.2f}` | **기존 평단가**: `{old_buy_price:,.2f}`")
-
-        with st.form("dialog_trade_edit_form"):
-            t_date = st.date_input("거래일자", datetime.now()).strftime("%Y-%m-%d")
-            c1, c2 = st.columns(2)
-            with c1:
-                trade_price = st.number_input("거래 단가", min_value=0.0, step=1.0)
-            with c2:
-                trade_qty = st.number_input("거래 수량", min_value=0.0, step=1.0)
-
-            btn_label = "➕ 추가 매수(평단가 가중 재계산) 반영" if "추가 매수" in trade_type else "➖ 매도(수량 감축/삭제) 반영"
-            submitted = st.form_submit_button(btn_label)
-
-            if submitted:
-                if trade_price <= 0 or trade_qty <= 0:
-                    st.error("단가와 수량을 0보다 크게 입력해 주세요.")
-                elif "기존 종목 매도" in trade_type and trade_qty > old_qty:
-                    st.error(f"매도 수량({trade_qty:,.2f})이 현재 보유 수량({old_qty:,.2f})보다 많을 수 없습니다.")
-                else:
-                    conn = get_connection()
-                    try:
-                        cursor = conn.cursor()
-
-                        if "추가 매수" in trade_type:
-                            new_qty = old_qty + trade_qty
-                            new_buy_price = ((old_qty * old_buy_price) + (trade_qty * trade_price)) / new_qty
-                            cursor.execute("""
-                                UPDATE portfolio 
-                                SET quantity = ?, buy_price = ?, record_date = ? 
-                                WHERE id = ?
-                            """, (new_qty, new_buy_price, t_date, target_id))
-                            st.success(f"🎉 '{item_name}' 추가 매수가 완료되었습니다! (신규 수량: {new_qty:,.2f}, 신규 평단가: {new_buy_price:,.2f})")
-
-                        else:
-                            if trade_qty == old_qty:
-                                cursor.execute("DELETE FROM portfolio WHERE id = ?", (target_id,))
-                                realized_profit = (trade_price - old_buy_price) * old_qty
-                                st.success(f"🎉 '{item_name}' 전량 매도가 완료되어 해당 항목이 포트폴리오에서 삭제되었습니다. (실현손익: {realized_profit:+,.0f})")
-                            else:
-                                new_qty = old_qty - trade_qty
-                                cursor.execute("""
-                                    UPDATE portfolio 
-                                    SET quantity = ?, record_date = ? 
-                                    WHERE id = ?
-                                """, (new_qty, t_date, target_id))
-                                realized_profit = (trade_price - old_buy_price) * trade_qty
-                                st.success(f"🎉 '{item_name}' 부분 매도가 완료되었습니다! (잔여 수량: {new_qty:,.2f}, 실현손익: {realized_profit:+,.0f})")
-
-                        conn.commit()
-                        export_backup_json()
-                        st.rerun()
-                    finally:
-                        conn.close()
-
-
 st.markdown(
     """
     <style>
@@ -1426,9 +1274,6 @@ if menu == "자산 입력 및 관리":
     if mode == "🖥️ 웹 화면 직접 수정/편집 (추천)":
         st.subheader("🖥 웹 스프레드시트 편집기 (직접 수정/행 추가/선택 삭제)")
         
-        if st.button("⚡ 매매(트레이딩) 입력 다이얼로그 열기", type="primary"):
-            open_trading_dialog()
-
         st.info("💡 **사용 방법**: 아래 표에서 셀을 직접 수정하거나, 체크박스로 삭제할 행을 선택하고, 하단 버튼으로 저장 및 삭제를 수행할 수 있습니다.")
 
         required_cols = [
