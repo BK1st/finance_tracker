@@ -643,15 +643,13 @@ def build_bj_account_performance(
 
 
 def ensure_bj_selection_metrics(data, cumulative_profit_column, start_date):
-  required_columns = {
-      'BJ 선택구간_누적손익',
-      'BJ 선택구간_기준액',
-  }
-  missing_columns = required_columns.difference(data.columns)
-  if not missing_columns:
-    return data
-
   data = data.copy()
+  selection_eval_column = (
+      '총평가금액_bj_ex_fx'
+      if cumulative_profit_column.endswith('_ex_fx')
+      and '총평가금액_bj_ex_fx' in data.columns
+      else '총평가금액'
+  )
   account_rows = data[data['whose'] == 'BJ'].drop_duplicates(
       ['Date', 'account_num']
   ).copy()
@@ -674,7 +672,7 @@ def ensure_bj_selection_metrics(data, cumulative_profit_column, start_date):
     start_profit = pd.to_numeric(
         start_row[cumulative_profit_column], errors='coerce'
     )
-    start_eval = pd.to_numeric(start_row['총평가금액'], errors='coerce')
+    start_eval = pd.to_numeric(start_row[selection_eval_column], errors='coerce')
     if pd.isna(start_profit) or pd.isna(start_eval):
       continue
     base_by_account[account_num] = float(start_eval)
@@ -688,18 +686,16 @@ def ensure_bj_selection_metrics(data, cumulative_profit_column, start_date):
             current_profit - start_profit
         )
 
-  if 'BJ 선택구간_누적손익' in missing_columns:
-    data['BJ 선택구간_누적손익'] = [
-        profit_by_key.get((row['Date'], row['account_num']), np.nan)
-        if row['whose'] == 'BJ' else np.nan
-        for _, row in data.iterrows()
-    ]
-  if 'BJ 선택구간_기준액' in missing_columns:
-    data['BJ 선택구간_기준액'] = data.apply(
-        lambda row: base_by_account.get(row['account_num'], np.nan)
-        if row['whose'] == 'BJ' else np.nan,
-        axis=1,
-    )
+  data['BJ 선택구간_누적손익'] = [
+      profit_by_key.get((row['Date'], row['account_num']), np.nan)
+      if row['whose'] == 'BJ' else np.nan
+      for _, row in data.iterrows()
+  ]
+  data['BJ 선택구간_기준액'] = data.apply(
+      lambda row: base_by_account.get(row['account_num'], np.nan)
+      if row['whose'] == 'BJ' else np.nan,
+      axis=1,
+  )
   return data
 
 
