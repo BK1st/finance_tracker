@@ -340,6 +340,25 @@ def normalize_cash_flow_type(flow_type):
   )
 
 
+def get_display_item_name(item_name, currency, category1='', category4=''):
+  """현금성 자산의 경우 통화(USD/KRW)가 명시되지 않았으면 통화명을 부가하여 구분"""
+  name_str = str(item_name).strip() if pd.notna(item_name) else '현금'
+  curr_norm = normalize_currency(currency)
+  is_cash = (
+      any(k in name_str for k in ['현금', '예수금', 'CASH', 'Cash', 'cash'])
+      or str(category1).strip() in ['현금', 'CASH', '단기자금', '예수금']
+      or str(category4).strip() in ['현금', 'CASH', '단기자금', '예수금']
+  )
+  if is_cash:
+    has_usd = any(k in name_str.upper() for k in ['USD', '달러', '$'])
+    has_krw = any(k in name_str for k in ['KRW', '원화', '₩', '원'])
+    if curr_norm == 'USD' and not has_usd:
+      return f'{name_str} (USD)'
+    elif curr_norm == 'KRW' and not has_krw:
+      return f'{name_str} (KRW)'
+  return name_str
+
+
 def normalize_currency(currency):
   if pd.isna(currency):
     return 'KRW'
@@ -1505,9 +1524,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         return empty_label
       return str(value).strip()
 
+    if 'currency' in pf_df.columns:
+      pf_df['currency'] = pf_df['currency'].map(normalize_currency)
     item_inventory_df = (
         pf_df.sort_values('record_date', ascending=False)
-        .drop_duplicates(subset=['account_num', 'item_name', 'ticker'])
+        .drop_duplicates(subset=['account_num', 'item_name', 'ticker', 'currency'])
         .copy()
     )
     item_inventory_df['account_num'] = item_inventory_df['account_num'].astype(str)
@@ -1988,7 +2009,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           )
 
         account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
-        unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker'])
+        if 'currency' in account_pf_all_sorted.columns:
+          account_pf_all_sorted['currency'] = account_pf_all_sorted['currency'].map(normalize_currency)
+        unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker', 'currency'])
         all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
 
         for t_date in target_dates:
@@ -2056,7 +2079,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
           current_pf_dict = {}
           for _, row in current_pf.iterrows():
-            key = (str(row.get('item_name')), str(row.get('ticker')))
+            row_curr = normalize_currency(row.get('currency'))
+            key = (str(row.get('item_name')), str(row.get('ticker')), row_curr)
             current_pf_dict[key] = row
 
           for item_info in all_account_items:
@@ -2065,7 +2089,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             cat2 = normalize_filter_value(item_info.get('category2'), '미분류')
             cat4 = normalize_filter_value(item_info.get('category4'), '미분류')
             curr = normalize_currency(item_info['currency'])
-            key = (str(iname), str(tk))
+            key = (str(iname), str(tk), curr)
+            display_iname = get_display_item_name(iname, curr, item_info.get('category1'), cat4)
             item_bj_ex_fx_rate = (
                 bj_fixed_fx_rate
                 if whose_val == 'BJ'
@@ -2133,7 +2158,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
             if qty > 0 or abs(cum_pl) > 1e-5:
               item_eval_list.append((
-                  iname, cat2, cat4, item_eval, item_eval_ex,
+                  display_iname, cat2, cat4, item_eval, item_eval_ex,
                   item_eval_bj_ex_fx, cum_pl, cum_pl_ex, period_pl,
                   period_pl_bj_ex_fx, item_return, qty,
               ))
@@ -4519,70 +4544,94 @@ elif menu == '원금 및 입출금 관리':
           st.rerun()
 
   with tab2:
-    st.subheader('계좌별 입출금 내역')
+    st.subheader('💸 계좌별 입출금 내역 등록 및 관리')
     st.caption(
-        '계좌, 거래일, 입금·출금, 원화 금액을 기록합니다. '
-        '기존 입출금 내역은 유지되며, 거래일이 조회 구간의 시작일과 종료일 '
-        '사이에 포함되면 평가손익과 BJ 올해 누적손익에 반영됩니다. '
-        '수익률은 Modified Dietz 방식으로 외부 입출금 시점과 금액을 중립화합니다.'
+        '계좌, 거래일, 구분(입금/출금), 금액(원), 비고를 등록하고 관리합니다. '
+        '거래일이 조회 구간의 시작일과 종료일 사이에 포함되면 평가손익과 올해 누적손익에 반영됩니다. '
+        '하단의 다중 필터링(WHOSE, 계좌유형, 계좌, 연도, 월)을 통해 원하는 내역만 모아볼 수 있으며, '
+        '필터를 선택하지 않으면 모든 내역이 기본 표시됩니다. '
+        '웹 테이블(Data Editor) 내에서 거래일, 계좌번호, 구분, 금액, 비고를 직접 수정/추가/삭제할 수 있습니다.'
     )
     conn = get_connection()
     pf_accs = pd.read_sql(
-        'SELECT DISTINCT broker, account_num FROM portfolio', conn
+        'SELECT DISTINCT broker, account_num, account_type, whose FROM portfolio', conn
     )
     cf_df = pd.read_sql(
         'SELECT * FROM cash_flow ORDER BY trans_date DESC, id DESC', conn
     )
     conn.close()
 
-    if pf_accs.empty:
-      st.info('포트폴리오에 등록된 계좌가 없습니다.')
-    else:
-      account_options = []
-      account_by_label = {}
-      for _, account_row in pf_accs.iterrows():
-        broker = (
-            str(account_row['broker'])
-            if pd.notna(account_row['broker']) else '증권사 미지정'
-        )
-        account_num = str(account_row['account_num'])
-        alias = alias_map.get(account_num, '')
-        label = (
-            f'[{broker}] {account_num} ({alias})'
-            if alias else f'[{broker}] {account_num}'
-        )
-        account_options.append(label)
-        account_by_label[label] = account_num
+    # 계좌 메타데이터 생성 및 연금/일반 유형 분류
+    def get_acc_type_group(atype):
+      atype_str = str(atype).strip() if pd.notna(atype) else ''
+      if any(k in atype_str for k in ['연금', 'IRP', '퇴직', 'DC', 'DB', '개인연금']):
+        return '연금'
+      return '일반'
 
-      selected_account_label = st.selectbox(
-          '입출금 내역을 입력하거나 조회할 계좌',
-          options=account_options,
-          key='cash_flow_account_selector',
+    acc_meta_map = {}
+    account_options = []
+    account_by_label = {}
+    registered_acc_nums = []
+
+    for _, account_row in pf_accs.iterrows():
+      acc_num = str(account_row['account_num'])
+      norm_acc = normalize_account_num(acc_num)
+      broker = str(account_row['broker']) if pd.notna(account_row['broker']) else '증권사 미지정'
+      raw_acc_type = str(account_row['account_type']) if pd.notna(account_row['account_type']) else '일반'
+      type_group = get_acc_type_group(raw_acc_type)
+      whose_val = resolve_account_whose(acc_num, account_row.get('whose'), broker, alias_map)
+      alias = alias_map.get(acc_num, '')
+      label = (
+          f'[{broker}] {acc_num} ({alias}) [{type_group}|{whose_val}]'
+          if alias else f'[{broker}] {acc_num} [{type_group}|{whose_val}]'
       )
-      selected_account_num = account_by_label[selected_account_label]
+      if norm_acc not in acc_meta_map:
+        acc_meta_map[norm_acc] = {
+            'account_num': acc_num,
+            'broker': broker,
+            'account_type': raw_acc_type,
+            'account_type_group': type_group,
+            'whose': whose_val,
+            'alias': alias,
+            'label': label,
+        }
+        account_options.append(label)
+        account_by_label[label] = acc_num
+      if acc_num not in registered_acc_nums:
+        registered_acc_nums.append(acc_num)
 
+    # 신규 등록 폼
+    with st.expander('➕ 신규 입출금 내역 간편 등록', expanded=False):
       with st.form('add_cash_flow_form'):
-        col_cf1, col_cf2, col_cf3 = st.columns(3)
+        col_cf1, col_cf2, col_cf3 = st.columns([2, 1, 1])
         with col_cf1:
+          selected_account_label = st.selectbox(
+              '계좌 선택',
+              options=account_options if account_options else ['등록된 계좌 없음'],
+              key='cash_flow_account_selector',
+          )
+          cf_note = st.text_input(
+              '비고 (예: 추가 시드 입금, 생활비 출금 등)'
+          )
+        with col_cf2:
           cf_date = st.date_input('거래 일자', value=date.today())
           flow_type = st.radio(
               '구분', options=['입금', '출금'], horizontal=True
           )
-        with col_cf2:
+        with col_cf3:
           cf_amount = st.number_input(
               '금액 (원)', min_value=0.0, value=0.0,
               step=100000.0, format='%.0f',
           )
-        with col_cf3:
-          cf_note = st.text_input(
-              '비고 (예: 추가 시드 입금, 생활비 출금 등)'
-          )
+          save_cash_flow = st.form_submit_button('➕ 입출금 내역 저장')
 
-        save_cash_flow = st.form_submit_button('➕ 선택 계좌에 입출금 저장')
         if save_cash_flow:
-          if cf_amount <= 0:
+          if not account_options or selected_account_label not in account_by_label:
+            st.warning('유효한 계좌를 선택해 주세요.')
+          elif cf_amount <= 0:
             st.warning('입출금 금액은 0보다 커야 합니다.')
           else:
+            target_acc_num = account_by_label[selected_account_label]
             conn = get_connection()
             cursor = conn.cursor()
             cursor.execute(
@@ -4591,7 +4640,7 @@ elif menu == '원금 및 입출금 관리':
                 'VALUES (?, ?, ?, ?, ?)',
                 (
                     cf_date.strftime('%Y-%m-%d'),
-                    selected_account_num,
+                    target_acc_num,
                     flow_type,
                     cf_amount,
                     cf_note.strip(),
@@ -4599,69 +4648,166 @@ elif menu == '원금 및 입출금 관리':
             )
             conn.commit()
             conn.close()
-            st.success('선택 계좌의 입출금 내역을 저장했습니다.')
+            st.success('입출금 내역이 성공적으로 저장되었습니다.')
             st.rerun()
 
-      account_cash_flow_df = cf_df[
-          cf_df['account_num'].map(normalize_account_num)
-          == normalize_account_num(selected_account_num)
-      ].copy()
-      st.markdown(f'##### 📋 {selected_account_label} 입출금 내역')
-      if not account_cash_flow_df.empty:
-        account_cash_flow_df['amount'] = account_cash_flow_df[
-            'amount'
-        ].map(parse_cash_flow_amount)
-        deposits = account_cash_flow_df.loc[
-            account_cash_flow_df['flow_type'].map(normalize_cash_flow_type)
-            == '입금', 'amount'
-        ].sum()
-        withdrawals = account_cash_flow_df.loc[
-            account_cash_flow_df['flow_type'].map(normalize_cash_flow_type)
-            == '출금', 'amount'
-        ].sum()
-        st.metric('누적 순입금 (원)', f'{deposits - withdrawals:,.0f}')
-        display_columns = [
-            column for column in (
-                'id', 'trans_date', 'flow_type', 'amount', 'note'
-            )
-            if column in account_cash_flow_df.columns
-        ]
-        st.dataframe(
-            account_cash_flow_df[display_columns].rename(columns={
-                'id': 'ID',
-                'trans_date': '거래일',
-                'flow_type': '구분',
-                'amount': '금액 (원)',
-                'note': '비고',
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-        delete_options = account_cash_flow_df['id'].astype(int).tolist()
-        delete_id = st.selectbox(
-            '삭제할 내역 ID',
-            options=delete_options,
-            format_func=lambda row_id: (
-                f"ID {row_id} | "
-                f"{account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'trans_date'].iloc[0]} | "
-                f"{account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'flow_type'].iloc[0]} | "
-                f"{parse_cash_flow_amount(account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'amount'].iloc[0]):,.0f}원"
-            ),
-            key='cash_flow_delete_id',
-        )
-        if st.button('🗑️ 선택 계좌의 내역 삭제'):
+    st.write('---')
+
+    if cf_df.empty:
+      st.info('등록된 입출금 내역이 없습니다.')
+    else:
+      # cash_flow 데이터에 메타데이터 결합
+      cf_df['_acc_norm'] = cf_df['account_num'].map(normalize_account_num)
+      cf_df['whose'] = cf_df['_acc_norm'].map(lambda x: acc_meta_map.get(x, {}).get('whose', '미지정'))
+      cf_df['broker'] = cf_df['_acc_norm'].map(lambda x: acc_meta_map.get(x, {}).get('broker', '증권사미지정'))
+      cf_df['account_type_detail'] = cf_df['_acc_norm'].map(lambda x: acc_meta_map.get(x, {}).get('account_type', '일반'))
+      cf_df['account_type_group'] = cf_df['_acc_norm'].map(lambda x: acc_meta_map.get(x, {}).get('account_type_group', '일반'))
+      cf_df['account_label'] = cf_df['_acc_norm'].map(lambda x: acc_meta_map.get(x, {}).get('label', str(x)))
+
+      cf_df['dt'] = pd.to_datetime(cf_df['trans_date'], errors='coerce')
+      cf_df['year'] = cf_df['dt'].dt.year
+      cf_df['month'] = cf_df['dt'].dt.month
+      cf_df['amount_clean'] = cf_df['amount'].map(parse_cash_flow_amount)
+
+      # 필터 옵션 생성
+      whose_filter_opts = sorted([w for w in cf_df['whose'].dropna().unique() if w != '미지정'])
+      if '미지정' in cf_df['whose'].values:
+        whose_filter_opts.append('미지정')
+      type_filter_opts = ['연금', '일반']
+      acc_filter_opts = sorted(list(set(cf_df['account_label'].dropna().unique())))
+      year_filter_opts = sorted([int(y) for y in cf_df['year'].dropna().unique() if pd.notna(y)], reverse=True)
+      month_filter_opts = list(range(1, 13))
+
+      st.markdown('##### 🔍 입출금 내역 다중 필터링 (필터 미선택 시 전체 표시)')
+      flt_c1, flt_c2, flt_c3, flt_c4, flt_c5 = st.columns(5)
+      with flt_c1:
+        sel_cf_whose = st.multiselect('👤 WHOSE별', options=whose_filter_opts, default=[], key='cf_flt_whose', help='미선택 시 전체 대상')
+      with flt_c2:
+        sel_cf_type = st.multiselect('📋 계좌유형별 (연금/일반)', options=type_filter_opts, default=[], key='cf_flt_type', help='미선택 시 전체 대상')
+      with flt_c3:
+        sel_cf_accs = st.multiselect('🏦 계좌별', options=acc_filter_opts, default=[], key='cf_flt_accs', help='미선택 시 전체 대상')
+      with flt_c4:
+        sel_cf_years = st.multiselect('📅 연도별', options=year_filter_opts, default=[], key='cf_flt_years', help='미선택 시 전체 대상')
+      with flt_c5:
+        sel_cf_months = st.multiselect('🗓️ 월별', options=month_filter_opts, format_func=lambda m: f'{m}월', default=[], key='cf_flt_months', help='미선택 시 전체 대상')
+
+      # 필터 적용 (미선택 시 전체 통과)
+      filtered_cf = cf_df.copy()
+      if sel_cf_whose:
+        filtered_cf = filtered_cf[filtered_cf['whose'].isin(sel_cf_whose)]
+      if sel_cf_type:
+        filtered_cf = filtered_cf[filtered_cf['account_type_group'].isin(sel_cf_type)]
+      if sel_cf_accs:
+        filtered_cf = filtered_cf[filtered_cf['account_label'].isin(sel_cf_accs)]
+      if sel_cf_years:
+        filtered_cf = filtered_cf[filtered_cf['year'].isin(sel_cf_years)]
+      if sel_cf_months:
+        filtered_cf = filtered_cf[filtered_cf['month'].isin(sel_cf_months)]
+
+      # 요약 메트릭
+      dep_sum = filtered_cf.loc[filtered_cf['flow_type'].map(normalize_cash_flow_type) == '입금', 'amount_clean'].sum()
+      wth_sum = filtered_cf.loc[filtered_cf['flow_type'].map(normalize_cash_flow_type) == '출금', 'amount_clean'].sum()
+      net_sum = dep_sum - wth_sum
+
+      sm1, sm2, sm3, sm4 = st.columns(4)
+      sm1.metric('조회 내역', f'{len(filtered_cf):,}건')
+      sm2.metric('총 입금액', f'{dep_sum:,.0f}원')
+      sm3.metric('총 출금액', f'{wth_sum:,.0f}원')
+      sm4.metric('순입금액 (입금-출금)', f'{net_sum:,.0f}원', delta=f'{net_sum:,.0f}원' if net_sum != 0 else None)
+
+      st.write('---')
+      st.markdown('##### 📝 입출금 내역 웹 직접 수정 (Data Editor)')
+      st.caption(
+          '💡 테이블 셀을 더블클릭하여 **거래일자, 계좌번호, 구분(입금/출금), 금액, 비고**를 웹에서 직접 수정할 수 있습니다. '
+          '하단 빈 행에 입력하여 신규 추가하거나, 행을 선택(체크) 후 Delete 키로 삭제할 수 있습니다. '
+          '수정 후 아래 **[💾 웹 수정사항 데이터베이스에 일괄 반영]** 버튼을 반드시 클릭해 주세요.'
+      )
+
+      editor_df = filtered_cf[['id', 'trans_date', 'whose', 'account_type_group', 'broker', 'account_num', 'flow_type', 'amount_clean', 'note']].copy()
+      editor_df = editor_df.rename(columns={
+          'amount_clean': 'amount',
+          'account_type_group': '계좌유형'
+      })
+
+      # 선택 가능한 모든 계좌번호 목록
+      all_possible_acc_nums = sorted(list(set(registered_acc_nums).union(set(cf_df['account_num'].astype(str)))))
+
+      edited_cf = st.data_editor(
+          editor_df,
+          key='cash_flow_data_editor',
+          use_container_width=True,
+          num_rows='dynamic',
+          disabled=['id', 'whose', '계좌유형', 'broker'],
+          column_config={
+              'id': st.column_config.NumberColumn('ID', help='고유 식별자 (수정 불가)', disabled=True),
+              'trans_date': st.column_config.TextColumn('거래일자 (YYYY-MM-DD)', required=True),
+              'whose': st.column_config.TextColumn('WHOSE (참조)'),
+              '계좌유형': st.column_config.TextColumn('계좌유형 (참조)'),
+              'broker': st.column_config.TextColumn('증권사 (참조)'),
+              'account_num': st.column_config.SelectboxColumn('계좌번호', options=all_possible_acc_nums, required=True),
+              'flow_type': st.column_config.SelectboxColumn('구분', options=['입금', '출금'], required=True),
+              'amount': st.column_config.NumberColumn('금액 (원)', format='%,.0f', required=True),
+              'note': st.column_config.TextColumn('비고'),
+          }
+      )
+
+      btn_cf_col1, btn_cf_col2 = st.columns([3, 2])
+      with btn_cf_col1:
+        if st.button('💾 웹 수정사항 데이터베이스에 일괄 반영', type='primary'):
+          orig_cf_ids = set(filtered_cf['id'].dropna().astype(int))
+          current_cf_ids = set(pd.to_numeric(edited_cf['id'], errors='coerce').dropna().astype(int))
+          deleted_cf_ids = orig_cf_ids - current_cf_ids
+
           conn = get_connection()
-          cursor = conn.cursor()
-          cursor.execute(
-              'DELETE FROM cash_flow WHERE id = ? AND account_num = ?',
-              (int(delete_id), selected_account_num),
-          )
+          c = conn.cursor()
+          # 삭제된 행 처리
+          for del_id in deleted_cf_ids:
+            c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
+
+          # 수정 및 추가 행 처리
+          for _, e_row in edited_cf.iterrows():
+            raw_id = e_row.get('id')
+            row_id = int(raw_id) if pd.notna(raw_id) and str(raw_id).strip() != '' and str(raw_id).strip().isdigit() else None
+            t_date = str(e_row.get('trans_date', '')).strip()
+            acc = str(e_row.get('account_num', '')).strip()
+            f_type = normalize_cash_flow_type(e_row.get('flow_type', ''))
+            amt = parse_cash_flow_amount(e_row.get('amount', 0))
+            note = str(e_row.get('note', '')).strip() if pd.notna(e_row.get('note')) else ''
+
+            if not t_date or not acc or not f_type or pd.isna(amt):
+              continue
+
+            if row_id and row_id in orig_cf_ids:
+              c.execute(
+                  'UPDATE cash_flow SET trans_date=?, account_num=?, flow_type=?, amount=?, note=? WHERE id=?',
+                  (t_date, acc, f_type, amt, note, row_id)
+              )
+            else:
+              c.execute(
+                  'INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note) VALUES (?, ?, ?, ?, ?)',
+                  (t_date, acc, f_type, amt, note)
+              )
           conn.commit()
           conn.close()
-          st.success(f'ID {delete_id} 입출금 내역을 삭제했습니다.')
+          st.success('✅ 모든 입출금 내역 수정/추가/삭제 사항이 데이터베이스에 저장되었습니다!')
           st.rerun()
-      else:
-        st.info('선택 계좌에 등록된 입출금 내역이 없습니다.')
+
+      with btn_cf_col2:
+        if not filtered_cf.empty:
+          del_target_id = st.selectbox(
+              '특정 ID 내역 바로 삭제',
+              options=filtered_cf['id'].astype(int).tolist(),
+              format_func=lambda rid: f"ID {rid} | {filtered_cf.loc[filtered_cf['id']==rid, 'trans_date'].iloc[0]} | {filtered_cf.loc[filtered_cf['id']==rid, 'flow_type'].iloc[0]} | {filtered_cf.loc[filtered_cf['id']==rid, 'amount_clean'].iloc[0]:,.0f}원 ({filtered_cf.loc[filtered_cf['id']==rid, 'account_num'].iloc[0]})",
+              key='cf_direct_del_selector'
+          )
+          if st.button('🗑️ 선택한 ID 삭제'):
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute('DELETE FROM cash_flow WHERE id = ?', (int(del_target_id),))
+            conn.commit()
+            conn.close()
+            st.success(f'ID {del_target_id} 입출금 내역이 삭제되었습니다.')
+            st.rerun()
 
   with tab3:
     st.subheader('BJ 계좌별 2025년 12월 31일 최종 평가금액')
