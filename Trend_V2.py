@@ -520,6 +520,67 @@ def build_bj_account_performance(
   return performance
 
 
+def ensure_bj_selection_metrics(data, cumulative_profit_column, start_date):
+  required_columns = {
+      'BJ 선택구간_누적손익',
+      'BJ 선택구간_기준액',
+  }
+  missing_columns = required_columns.difference(data.columns)
+  if not missing_columns:
+    return data
+
+  data = data.copy()
+  account_rows = data[data['whose'] == 'BJ'].drop_duplicates(
+      ['Date', 'account_num']
+  ).copy()
+  account_rows['_metric_date'] = pd.to_datetime(
+      account_rows['Date'], errors='coerce'
+  )
+  selection_start = max(
+      pd.Timestamp(start_date), pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+  )
+  profit_by_key = {}
+  base_by_account = {}
+
+  for account_num, rows in account_rows.groupby('account_num', dropna=False):
+    rows = rows.sort_values('_metric_date')
+    start_rows = rows[rows['_metric_date'] >= selection_start]
+    if start_rows.empty:
+      continue
+
+    start_row = start_rows.iloc[0]
+    start_profit = pd.to_numeric(
+        start_row[cumulative_profit_column], errors='coerce'
+    )
+    start_eval = pd.to_numeric(start_row['총평가금액'], errors='coerce')
+    if pd.isna(start_profit) or pd.isna(start_eval):
+      continue
+    base_by_account[account_num] = float(start_eval)
+
+    for _, row in rows.iterrows():
+      current_profit = pd.to_numeric(
+          row[cumulative_profit_column], errors='coerce'
+      )
+      if pd.notna(current_profit):
+        profit_by_key[(row['Date'], account_num)] = float(
+            current_profit - start_profit
+        )
+
+  if 'BJ 선택구간_누적손익' in missing_columns:
+    data['BJ 선택구간_누적손익'] = [
+        profit_by_key.get((row['Date'], row['account_num']), np.nan)
+        if row['whose'] == 'BJ' else np.nan
+        for _, row in data.iterrows()
+    ]
+  if 'BJ 선택구간_기준액' in missing_columns:
+    data['BJ 선택구간_기준액'] = data.apply(
+        lambda row: base_by_account.get(row['account_num'], np.nan)
+        if row['whose'] == 'BJ' else np.nan,
+        axis=1,
+    )
+  return data
+
+
 # -----------------------------------------------------------------------------
 # 2. 티커 포맷팅 및 개선된 시세 수집 함수
 # -----------------------------------------------------------------------------
@@ -2274,6 +2335,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 + (sh_agg['원금'] - sh_agg['sh_prev_principal']).fillna(0)
             )
 
+            df_curr = ensure_bj_selection_metrics(
+                df_curr, bj_cumulative_col, start_date
+            )
             bj_rows = df_curr[
                 (df_curr['whose'] == 'BJ')
                 & df_curr[bj_cumulative_col].notna()
@@ -3367,6 +3431,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           grp_agg['누적_성장지수'] = grp_agg.groupby('whose')['growth_factor'].cumprod()
           grp_agg['구간별 누적수익률'] = (grp_agg['누적_성장지수'] - 1) * 100
 
+          df_curr = ensure_bj_selection_metrics(
+              df_curr, bj_cumulative_col, start_date
+          )
           bj_rows = df_curr[
               (df_curr['whose'] == 'BJ')
               & df_curr[bj_cumulative_col].notna()
