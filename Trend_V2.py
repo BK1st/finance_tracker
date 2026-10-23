@@ -1,6 +1,8 @@
 import os
 import sqlite3
 import io
+import re
+import unicodedata
 from datetime import date, datetime, timedelta
 
 import numpy as np
@@ -322,7 +324,20 @@ def resolve_account_whose(account_num, whose, broker, alias_map):
 def normalize_account_num(account_num):
   if pd.isna(account_num):
     return ''
-  return str(account_num).strip()
+  value = unicodedata.normalize('NFKC', str(account_num)).strip()
+  if value.endswith('.0') and value[:-2].isdigit():
+    value = value[:-2]
+  return re.sub(r'[^0-9A-Za-z가-힣]', '', value)
+
+
+def normalize_cash_flow_type(flow_type):
+  if pd.isna(flow_type):
+    return ''
+  value = unicodedata.normalize('NFKC', str(flow_type))
+  return ''.join(
+      char for char in value
+      if not char.isspace() and unicodedata.category(char) != 'Cf'
+  )
 
 
 def build_bj_account_performance(
@@ -374,6 +389,12 @@ def build_bj_account_performance(
     account_cash_flows['amount'] = pd.to_numeric(
         account_cash_flows['amount'], errors='coerce'
     )
+    account_cash_flows = account_cash_flows.dropna(
+        subset=['trans_date', 'amount']
+    )
+    account_cash_flows['_flow_type'] = account_cash_flows[
+        'flow_type'
+    ].map(normalize_cash_flow_type)
 
   def market_price(ticker, target_date):
     if ticker not in market_data.columns:
@@ -393,12 +414,8 @@ def build_bj_account_performance(
         (account_cash_flows['trans_date'] > start_date)
         & (account_cash_flows['trans_date'] <= finish_date)
     ]
-    deposits = flows.loc[
-        flows['flow_type'].astype(str).str.strip() == '입금', 'amount'
-    ].sum()
-    withdrawals = flows.loc[
-        flows['flow_type'].astype(str).str.strip() == '출금', 'amount'
-    ].sum()
+    deposits = flows.loc[flows['_flow_type'] == '입금', 'amount'].sum()
+    withdrawals = flows.loc[flows['_flow_type'] == '출금', 'amount'].sum()
     return float(deposits - withdrawals)
 
   def cumulative_net_flow(finish_date):
@@ -408,12 +425,8 @@ def build_bj_account_performance(
         (account_cash_flows['trans_date'] > pd.Timestamp(BJ_YEAR_END_BASELINE_DATE))
         & (account_cash_flows['trans_date'] <= finish_date)
     ]
-    deposits = flows.loc[
-        flows['flow_type'].astype(str).str.strip() == '입금', 'amount'
-    ].sum()
-    withdrawals = flows.loc[
-        flows['flow_type'].astype(str).str.strip() == '출금', 'amount'
-    ].sum()
+    deposits = flows.loc[flows['_flow_type'] == '입금', 'amount'].sum()
+    withdrawals = flows.loc[flows['_flow_type'] == '출금', 'amount'].sum()
     return float(deposits - withdrawals)
 
   fixed_fx_date = max(query_start, cutoff)
