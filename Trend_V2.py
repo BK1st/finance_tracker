@@ -340,14 +340,49 @@ def normalize_cash_flow_type(flow_type):
   )
 
 
+def normalize_currency(currency):
+  if pd.isna(currency):
+    return 'KRW'
+  value = unicodedata.normalize('NFKC', str(currency)).strip().upper()
+  compact_value = re.sub(r'\s+', '', value)
+  if compact_value in {
+      'USD', 'US$', '$', 'DOLLAR', 'USDOLLAR',
+      'UNITEDSTATESDOLLAR', '달러', '미국달러',
+  }:
+    return 'USD'
+  if compact_value in {'KRW', '₩', '원', '원화', '한국원'}:
+    return 'KRW'
+  return value
+
+
+def parse_cash_flow_amount(amount):
+  if pd.isna(amount):
+    return np.nan
+  if isinstance(amount, (int, float, np.number)):
+    return float(amount)
+  value = unicodedata.normalize('NFKC', str(amount)).strip()
+  is_negative = value.startswith('(') and value.endswith(')')
+  value = re.sub(r'(?i)KRW|[,\s₩원]', '', value)
+  if is_negative:
+    value = value[1:-1]
+  parsed_amount = pd.to_numeric(value, errors='coerce')
+  if pd.isna(parsed_amount):
+    return np.nan
+  return -float(parsed_amount) if is_negative else float(parsed_amount)
+
+
 def build_bj_account_performance(
     account_df, market_data, cash_flow_df, baseline_amount, target_dates,
     end_date, frequency, query_start_date, summary_mode=False,
+    selection_only=False,
 ):
-  cutoff = pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-  end_ts = pd.Timestamp(end_date)
   query_start = pd.Timestamp(query_start_date)
-  if end_ts < cutoff:
+  cutoff = (
+      query_start - pd.Timedelta(days=1)
+      if selection_only else pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
+  )
+  end_ts = pd.Timestamp(end_date)
+  if not selection_only and end_ts < cutoff:
     return {}
   calendar = pd.date_range(cutoff, end_ts, freq='D')
 
@@ -372,6 +407,7 @@ def build_bj_account_performance(
   )
   if query_start >= cutoff:
     calc_dates.add(query_start)
+    calc_dates.add(query_start - pd.Timedelta(days=1))
   calc_dates.add(cutoff)
   calc_dates = sorted(calc_dates)
 
@@ -386,11 +422,11 @@ def build_bj_account_performance(
     account_cash_flows['trans_date'] = pd.to_datetime(
         account_cash_flows['trans_date'], errors='coerce'
     )
-    account_cash_flows['amount'] = pd.to_numeric(
-        account_cash_flows['amount'], errors='coerce'
-    )
+    account_cash_flows['_amount_krw'] = account_cash_flows[
+        'amount'
+    ].map(parse_cash_flow_amount)
     account_cash_flows = account_cash_flows.dropna(
-        subset=['trans_date', 'amount']
+        subset=['trans_date', '_amount_krw']
     )
     account_cash_flows['_flow_type'] = account_cash_flows[
         'flow_type'
@@ -407,27 +443,50 @@ def build_bj_account_performance(
       return None
     return float(prices.iloc[-1])
 
-  def net_flow_between(start_date, finish_date):
+  def cash_flows_between(start_date, finish_date):
     if account_cash_flows.empty:
-      return 0.0
-    flows = account_cash_flows[
+      return pd.DataFrame()
+    return account_cash_flows[
         (account_cash_flows['trans_date'] > start_date)
         & (account_cash_flows['trans_date'] <= finish_date)
-    ]
-    deposits = flows.loc[flows['_flow_type'] == '입금', 'amount'].sum()
-    withdrawals = flows.loc[flows['_flow_type'] == '출금', 'amount'].sum()
-    return float(deposits - withdrawals)
+        & account_cash_flows['_flow_type'].isin(['입금', '출금'])
+    ].copy()
+
+  def signed_net_flow(flows):
+    if flows.empty:
+      return 0.0
+    signed_amounts = np.where(
+        flows['_flow_type'] == '입금',
+        flows['_amount_krw'],
+        -flows['_amount_krw'],
+    )
+    return float(np.sum(signed_amounts))
+
+  def weighted_net_flow(start_date, finish_date):
+    flows = cash_flows_between(start_date, finish_date)
+    if flows.empty:
+      return 0.0
+    duration_days = (finish_date - start_date).total_seconds() / 86400
+    if duration_days <= 0:
+      return 0.0
+    weights = (
+        (finish_date - flows['trans_date']).dt.total_seconds()
+        / (duration_days * 86400)
+    ).clip(0, 1)
+    signed_amounts = np.where(
+        flows['_flow_type'] == '입금',
+        flows['_amount_krw'],
+        -flows['_amount_krw'],
+    )
+    return float(np.sum(signed_amounts * weights.to_numpy()))
 
   def cumulative_net_flow(finish_date):
-    if account_cash_flows.empty:
-      return 0.0
-    flows = account_cash_flows[
-        (account_cash_flows['trans_date'] > pd.Timestamp(BJ_YEAR_END_BASELINE_DATE))
-        & (account_cash_flows['trans_date'] <= finish_date)
-    ]
-    deposits = flows.loc[flows['_flow_type'] == '입금', 'amount'].sum()
-    withdrawals = flows.loc[flows['_flow_type'] == '출금', 'amount'].sum()
-    return float(deposits - withdrawals)
+    return signed_net_flow(
+        cash_flows_between(pd.Timestamp(BJ_YEAR_END_BASELINE_DATE), finish_date)
+    )
+
+  def adjusted_return_base(opening_value, start_date, finish_date):
+    return opening_value + weighted_net_flow(start_date, finish_date)
 
   fixed_fx_date = max(query_start, cutoff)
   fixed_fx_rate = market_price('KRW=X', fixed_fx_date)
@@ -468,16 +527,22 @@ def build_bj_account_performance(
       price = market_price(ticker, target_date) if ticker else None
       if price is None or price <= 0:
         price = fallback_price
-      currency = holding.get('currency')
+      currency = normalize_currency(holding.get('currency'))
       multiplier = fx_rate if currency == 'USD' else 1.0
       multiplier_ex_fx = fixed_fx_rate if currency == 'USD' else 1.0
       total_eval += quantity * price * multiplier
       total_eval_ex_fx += quantity * price * multiplier_ex_fx
 
     if target_date == selection_start_date:
-      selection_start_eval = total_eval
+      selection_start_eval = (
+          previous_eval
+          if previous_eval is not None and previous_date < selection_start_date
+          else total_eval
+      )
 
     cumulative_profit = (
+        np.nan
+        if selection_only else
         total_eval
         - float(baseline_amount)
         - cumulative_net_flow(target_date)
@@ -485,7 +550,17 @@ def build_bj_account_performance(
     selection_cumulative_profit = (
         total_eval
         - selection_start_eval
-        - net_flow_between(selection_start_date, target_date)
+        - signed_net_flow(cash_flows_between(
+            selection_start_date - pd.Timedelta(days=1), target_date
+        ))
+        if selection_start_eval is not None else np.nan
+    )
+    selection_return_base = (
+        adjusted_return_base(
+            selection_start_eval,
+            selection_start_date - pd.Timedelta(days=1),
+            target_date,
+        )
         if selection_start_eval is not None else np.nan
     )
 
@@ -495,13 +570,28 @@ def build_bj_account_performance(
       period_profit_ex_fx = np.nan
       period_base_ex_fx = np.nan
     else:
-      period_flow = net_flow_between(previous_date, target_date)
+      period_flows = cash_flows_between(previous_date, target_date)
+      period_flow = signed_net_flow(period_flows)
       period_profit = total_eval - previous_eval - period_flow
-      period_base = previous_eval + period_flow
+      period_base = adjusted_return_base(
+          previous_eval, previous_date, target_date
+      )
       period_profit_ex_fx = (
           total_eval_ex_fx - previous_eval_ex_fx - period_flow
       )
-      period_base_ex_fx = previous_eval_ex_fx + period_flow
+      period_base_ex_fx = adjusted_return_base(
+          previous_eval_ex_fx, previous_date, target_date
+      )
+
+    cumulative_return_base = (
+        np.nan
+        if selection_only else
+        adjusted_return_base(
+            float(baseline_amount),
+            pd.Timestamp(BJ_YEAR_END_BASELINE_DATE),
+            target_date,
+        )
+    )
 
     if target_date == cutoff:
       cumulative_profit_ex_fx = cumulative_profit
@@ -518,13 +608,13 @@ def build_bj_account_performance(
         'period_profit': period_profit,
         'cumulative_profit': cumulative_profit,
         'period_base': period_base,
-        'cumulative_base': float(baseline_amount) + cumulative_net_flow(target_date),
+        'cumulative_base': cumulative_return_base,
         'selection_cumulative_profit': selection_cumulative_profit,
-        'selection_base': selection_start_eval,
+        'selection_base': selection_return_base,
         'period_profit_ex_fx': period_profit_ex_fx,
         'cumulative_profit_ex_fx': cumulative_profit_ex_fx,
         'period_base_ex_fx': period_base_ex_fx,
-        'cumulative_base_ex_fx': float(baseline_amount) + cumulative_net_flow(target_date),
+        'cumulative_base_ex_fx': cumulative_return_base,
     }
     previous_eval = total_eval
     previous_eval_ex_fx = total_eval_ex_fx
@@ -1689,6 +1779,55 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           account for account in selected_accounts
           if whose_mapping.get(account) == 'BJ'
       ]
+      if selected_bj_accounts:
+        diagnostics = cf_df.copy()
+        if not diagnostics.empty:
+          diagnostics['_account_key'] = diagnostics['account_num'].map(
+              normalize_account_num
+          )
+          diagnostics['_flow_type'] = diagnostics['flow_type'].map(
+              normalize_cash_flow_type
+          )
+          diagnostics['_trans_date'] = pd.to_datetime(
+              diagnostics['trans_date'], errors='coerce'
+          )
+          diagnostics['_amount_krw'] = diagnostics['amount'].map(
+              parse_cash_flow_amount
+          )
+          selected_account_keys = {
+              normalize_account_num(account)
+              for account in selected_bj_accounts
+          }
+          diagnostics = diagnostics[
+              diagnostics['_account_key'].isin(selected_account_keys)
+              & (diagnostics['_trans_date'] > pd.Timestamp(BJ_YEAR_END_BASELINE_DATE))
+              & (diagnostics['_trans_date'] <= pd.Timestamp(end_date))
+          ]
+          valid_flows = diagnostics.dropna(
+              subset=['_trans_date', '_amount_krw']
+          )
+          deposits = valid_flows.loc[
+              valid_flows['_flow_type'] == '입금', '_amount_krw'
+          ].sum()
+          withdrawals = valid_flows.loc[
+              valid_flows['_flow_type'] == '출금', '_amount_krw'
+          ].sum()
+          recognized_flow_count = valid_flows['_flow_type'].isin(
+              ['입금', '출금']
+          ).sum()
+          ignored_flow_count = len(diagnostics) - recognized_flow_count
+        else:
+          deposits = withdrawals = 0.0
+          recognized_flow_count = ignored_flow_count = 0
+        st.info(
+            'BJ 현금흐름 진단 (KRW): '
+            f'{recognized_flow_count}건 매칭, '
+            f'입금 {deposits:,.0f}원, 출금 {withdrawals:,.0f}원, '
+            f'순입금 {deposits - withdrawals:,.0f}원. '
+            '미매칭/금액 오류/알 수 없는 유형은 '
+            f'{ignored_flow_count}건입니다. '
+            '입출금 금액은 원화로 처리되며, USD 보유자산만 환율을 적용합니다.'
+        )
       saved_baselines = dict(zip(
           year_end_value_df['account_num'].astype(str),
           year_end_value_df['baseline_amount'],
@@ -1834,6 +1973,19 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               start_date,
               summary_mode=(menu == 'SUMMARY'),
           )
+        elif whose_val != 'BJ':
+          account_performance = build_bj_account_performance(
+              account_pf_all,
+              market_data,
+              cf_df,
+              0,
+              target_dates,
+              end_date,
+              option_freq,
+              start_date,
+              summary_mode=(menu == 'SUMMARY'),
+              selection_only=True,
+          )
 
         account_pf_all_sorted = account_pf_all.sort_values('record_date', ascending=False)
         unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker'])
@@ -1860,11 +2012,28 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
           if not cf_df.empty:
             acc_cf = cf_df[
-                (cf_df['account_num'].astype(str) == acc)
-                & (cf_df['trans_date'] <= t_str)
+                cf_df['account_num'].map(normalize_account_num)
+                == normalize_account_num(acc)
+            ].copy()
+            acc_cf['_flow_type'] = acc_cf['flow_type'].map(
+                normalize_cash_flow_type
+            )
+            acc_cf['_trans_date'] = pd.to_datetime(
+                acc_cf['trans_date'], errors='coerce'
+            )
+            acc_cf['_amount_krw'] = acc_cf['amount'].map(
+                parse_cash_flow_amount
+            )
+            acc_cf = acc_cf[
+                (acc_cf['_trans_date'] <= pd.Timestamp(t_str))
+                & acc_cf['_amount_krw'].notna()
             ]
-            in_flow = acc_cf[acc_cf['flow_type'] == '입금']['amount'].sum()
-            out_flow = acc_cf[acc_cf['flow_type'] == '출금']['amount'].sum()
+            in_flow = acc_cf.loc[
+                acc_cf['_flow_type'] == '입금', '_amount_krw'
+            ].sum()
+            out_flow = acc_cf.loc[
+                acc_cf['_flow_type'] == '출금', '_amount_krw'
+            ].sum()
           else:
             in_flow, out_flow = 0, 0
           principal = init_val + in_flow - out_flow
@@ -1895,7 +2064,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             tk = item_info['ticker']
             cat2 = normalize_filter_value(item_info.get('category2'), '미분류')
             cat4 = normalize_filter_value(item_info.get('category4'), '미분류')
-            curr = item_info['currency'] if pd.notna(item_info['currency']) else 'KRW'
+            curr = normalize_currency(item_info['currency'])
             key = (str(iname), str(tk))
             item_bj_ex_fx_rate = (
                 bj_fixed_fx_rate
@@ -4297,7 +4466,7 @@ elif menu == '원금 및 입출금 관리':
 
   tab1, tab2, tab3 = st.tabs([
       '🏦 계좌별 최초 원금 설정',
-      '💸 입출금(Cash Flow) 기록 관리',
+      '💸 계좌별 입출금 입력',
       '📅 BJ 2025년 말 평가액 기준',
   ])
 
@@ -4350,68 +4519,149 @@ elif menu == '원금 및 입출금 관리':
           st.rerun()
 
   with tab2:
-    st.subheader('입금 및 출금 내역 관리')
+    st.subheader('계좌별 입출금 내역')
+    st.caption(
+        '계좌, 거래일, 입금·출금, 원화 금액을 기록합니다. '
+        '기존 입출금 내역은 유지되며, 거래일이 조회 구간의 시작일과 종료일 '
+        '사이에 포함되면 평가손익과 BJ 올해 누적손익에 반영됩니다. '
+        '수익률은 Modified Dietz 방식으로 외부 입출금 시점과 금액을 중립화합니다.'
+    )
     conn = get_connection()
     pf_accs = pd.read_sql(
         'SELECT DISTINCT broker, account_num FROM portfolio', conn
     )
-    cf_df = pd.read_sql('SELECT * FROM cash_flow ORDER BY trans_date DESC', conn)
+    cf_df = pd.read_sql(
+        'SELECT * FROM cash_flow ORDER BY trans_date DESC, id DESC', conn
+    )
     conn.close()
 
-    with st.expander('➕ 신규 입출금 내역 추가', expanded=True):
+    if pf_accs.empty:
+      st.info('포트폴리오에 등록된 계좌가 없습니다.')
+    else:
+      account_options = []
+      account_by_label = {}
+      for _, account_row in pf_accs.iterrows():
+        broker = (
+            str(account_row['broker'])
+            if pd.notna(account_row['broker']) else '증권사 미지정'
+        )
+        account_num = str(account_row['account_num'])
+        alias = alias_map.get(account_num, '')
+        label = (
+            f'[{broker}] {account_num} ({alias})'
+            if alias else f'[{broker}] {account_num}'
+        )
+        account_options.append(label)
+        account_by_label[label] = account_num
+
+      selected_account_label = st.selectbox(
+          '입출금 내역을 입력하거나 조회할 계좌',
+          options=account_options,
+          key='cash_flow_account_selector',
+      )
+      selected_account_num = account_by_label[selected_account_label]
+
       with st.form('add_cash_flow_form'):
         col_cf1, col_cf2, col_cf3 = st.columns(3)
         with col_cf1:
           cf_date = st.date_input('거래 일자', value=date.today())
-          acc_choices = [
-              f"{row['broker']} | {row['account_num']}"
-              for _, row in pf_accs.iterrows()
-          ]
-          selected_acc_str = st.selectbox('계좌 선택', options=acc_choices)
+          flow_type = st.radio(
+              '구분', options=['입금', '출금'], horizontal=True
+          )
         with col_cf2:
-          flow_type = st.radio('구분', options=['입금', '출금'], horizontal=True)
-          cf_amount = st.number_input('금액 (원)', value=0.0, step=100000.0, format='%.0f')
+          cf_amount = st.number_input(
+              '금액 (원)', min_value=0.0, value=0.0,
+              step=100000.0, format='%.0f',
+          )
         with col_cf3:
-          cf_note = st.text_input('비고 (예: 추가 시드 입금, 생활비 출금 등)')
+          cf_note = st.text_input(
+              '비고 (예: 추가 시드 입금, 생활비 출금 등)'
+          )
 
-        sub_cf = st.form_submit_button('➕ 입출금 내역 저장')
-        if sub_cf:
-          if selected_acc_str and cf_amount > 0:
-            acc_num = selected_acc_str.split('|')[1].strip()
+        save_cash_flow = st.form_submit_button('➕ 선택 계좌에 입출금 저장')
+        if save_cash_flow:
+          if cf_amount <= 0:
+            st.warning('입출금 금액은 0보다 커야 합니다.')
+          else:
             conn = get_connection()
-            c = conn.cursor()
-            c.execute(
-                'INSERT INTO cash_flow (trans_date, account_num, flow_type, amount, note) VALUES (?, ?, ?, ?, ?)',
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO cash_flow '
+                '(trans_date, account_num, flow_type, amount, note) '
+                'VALUES (?, ?, ?, ?, ?)',
                 (
                     cf_date.strftime('%Y-%m-%d'),
-                    acc_num,
+                    selected_account_num,
                     flow_type,
                     cf_amount,
-                    cf_note,
+                    cf_note.strip(),
                 ),
             )
             conn.commit()
             conn.close()
-            st.success('입출금 내역이 등록되었습니다!')
+            st.success('선택 계좌의 입출금 내역을 저장했습니다.')
             st.rerun()
-          else:
-            st.warning('올바른 계좌와 0보다 큰 금액을 입력해주세요.')
 
-    st.write('---')
-    st.markdown('##### 📋 등록된 입출금 내역 목록')
-    if not cf_df.empty:
-      st.dataframe(cf_df, use_container_width=True)
-      del_id = st.number_input('삭제할 내역 ID (0 입력 시 삭제 안 함)', min_value=0, step=1, value=0)
-      if st.button('🗑️ 선택 내역 삭제') and del_id > 0:
-        conn = get_connection()
-        c = conn.cursor()
-        c.execute('DELETE FROM cash_flow WHERE id = ?', (del_id,))
-        conn.commit()
-        conn.close()
-        st.success(f'ID {del_id} 내역이 삭제되었습니다.')
-        st.rerun()
-    else:
-      st.info('등록된 입출금 내역이 없습니다.')
+      account_cash_flow_df = cf_df[
+          cf_df['account_num'].map(normalize_account_num)
+          == normalize_account_num(selected_account_num)
+      ].copy()
+      st.markdown(f'##### 📋 {selected_account_label} 입출금 내역')
+      if not account_cash_flow_df.empty:
+        account_cash_flow_df['amount'] = account_cash_flow_df[
+            'amount'
+        ].map(parse_cash_flow_amount)
+        deposits = account_cash_flow_df.loc[
+            account_cash_flow_df['flow_type'].map(normalize_cash_flow_type)
+            == '입금', 'amount'
+        ].sum()
+        withdrawals = account_cash_flow_df.loc[
+            account_cash_flow_df['flow_type'].map(normalize_cash_flow_type)
+            == '출금', 'amount'
+        ].sum()
+        st.metric('누적 순입금 (원)', f'{deposits - withdrawals:,.0f}')
+        display_columns = [
+            column for column in (
+                'id', 'trans_date', 'flow_type', 'amount', 'note'
+            )
+            if column in account_cash_flow_df.columns
+        ]
+        st.dataframe(
+            account_cash_flow_df[display_columns].rename(columns={
+                'id': 'ID',
+                'trans_date': '거래일',
+                'flow_type': '구분',
+                'amount': '금액 (원)',
+                'note': '비고',
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+        delete_options = account_cash_flow_df['id'].astype(int).tolist()
+        delete_id = st.selectbox(
+            '삭제할 내역 ID',
+            options=delete_options,
+            format_func=lambda row_id: (
+                f"ID {row_id} | "
+                f"{account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'trans_date'].iloc[0]} | "
+                f"{account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'flow_type'].iloc[0]} | "
+                f"{parse_cash_flow_amount(account_cash_flow_df.loc[account_cash_flow_df['id'] == row_id, 'amount'].iloc[0]):,.0f}원"
+            ),
+            key='cash_flow_delete_id',
+        )
+        if st.button('🗑️ 선택 계좌의 내역 삭제'):
+          conn = get_connection()
+          cursor = conn.cursor()
+          cursor.execute(
+              'DELETE FROM cash_flow WHERE id = ? AND account_num = ?',
+              (int(delete_id), selected_account_num),
+          )
+          conn.commit()
+          conn.close()
+          st.success(f'ID {delete_id} 입출금 내역을 삭제했습니다.')
+          st.rerun()
+      else:
+        st.info('선택 계좌에 등록된 입출금 내역이 없습니다.')
 
   with tab3:
     st.subheader('BJ 계좌별 2025년 12월 31일 최종 평가금액')
