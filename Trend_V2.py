@@ -319,6 +319,12 @@ def resolve_account_whose(account_num, whose, broker, alias_map):
   return 'BJ'
 
 
+def normalize_account_num(account_num):
+  if pd.isna(account_num):
+    return ''
+  return str(account_num).strip()
+
+
 def build_bj_account_performance(
     account_df, market_data, cash_flow_df, baseline_amount, target_dates,
     end_date, frequency, query_start_date, summary_mode=False,
@@ -357,10 +363,17 @@ def build_bj_account_performance(
   account_df = account_df.copy()
   account_df['record_date'] = pd.to_datetime(account_df['record_date'])
   account_df = account_df.sort_values('record_date')
+  account_num = normalize_account_num(account_df['account_num'].iloc[0])
   account_cash_flows = cash_flow_df[
-      cash_flow_df['account_num'].astype(str)
-      == str(account_df['account_num'].iloc[0])
+      cash_flow_df['account_num'].map(normalize_account_num) == account_num
   ].copy() if not cash_flow_df.empty else pd.DataFrame()
+  if not account_cash_flows.empty:
+    account_cash_flows['trans_date'] = pd.to_datetime(
+        account_cash_flows['trans_date'], errors='coerce'
+    )
+    account_cash_flows['amount'] = pd.to_numeric(
+        account_cash_flows['amount'], errors='coerce'
+    )
 
   def market_price(ticker, target_date):
     if ticker not in market_data.columns:
@@ -377,22 +390,30 @@ def build_bj_account_performance(
     if account_cash_flows.empty:
       return 0.0
     flows = account_cash_flows[
-        (account_cash_flows['trans_date'] > start_date.strftime('%Y-%m-%d'))
-        & (account_cash_flows['trans_date'] <= finish_date.strftime('%Y-%m-%d'))
+        (account_cash_flows['trans_date'] > start_date)
+        & (account_cash_flows['trans_date'] <= finish_date)
     ]
-    deposits = flows.loc[flows['flow_type'] == '입금', 'amount'].sum()
-    withdrawals = flows.loc[flows['flow_type'] == '출금', 'amount'].sum()
+    deposits = flows.loc[
+        flows['flow_type'].astype(str).str.strip() == '입금', 'amount'
+    ].sum()
+    withdrawals = flows.loc[
+        flows['flow_type'].astype(str).str.strip() == '출금', 'amount'
+    ].sum()
     return float(deposits - withdrawals)
 
   def cumulative_net_flow(finish_date):
     if account_cash_flows.empty:
       return 0.0
     flows = account_cash_flows[
-        (account_cash_flows['trans_date'] > BJ_YEAR_END_BASELINE_DATE)
-        & (account_cash_flows['trans_date'] <= finish_date.strftime('%Y-%m-%d'))
+        (account_cash_flows['trans_date'] > pd.Timestamp(BJ_YEAR_END_BASELINE_DATE))
+        & (account_cash_flows['trans_date'] <= finish_date)
     ]
-    deposits = flows.loc[flows['flow_type'] == '입금', 'amount'].sum()
-    withdrawals = flows.loc[flows['flow_type'] == '출금', 'amount'].sum()
+    deposits = flows.loc[
+        flows['flow_type'].astype(str).str.strip() == '입금', 'amount'
+    ].sum()
+    withdrawals = flows.loc[
+        flows['flow_type'].astype(str).str.strip() == '출금', 'amount'
+    ].sum()
     return float(deposits - withdrawals)
 
   fixed_fx_date = max(query_start, cutoff)
@@ -405,6 +426,8 @@ def build_bj_account_performance(
   previous_eval_ex_fx = None
   previous_date = None
   cumulative_profit_ex_fx = None
+  selection_start_date = max(query_start, cutoff)
+  selection_start_eval = None
 
   for target_date in calc_dates:
     holdings = account_df[account_df['record_date'] <= target_date]
@@ -438,10 +461,19 @@ def build_bj_account_performance(
       total_eval += quantity * price * multiplier
       total_eval_ex_fx += quantity * price * multiplier_ex_fx
 
+    if target_date == selection_start_date:
+      selection_start_eval = total_eval
+
     cumulative_profit = (
         total_eval
         - float(baseline_amount)
         - cumulative_net_flow(target_date)
+    )
+    selection_cumulative_profit = (
+        total_eval
+        - selection_start_eval
+        - net_flow_between(selection_start_date, target_date)
+        if selection_start_eval is not None else np.nan
     )
 
     if target_date == cutoff or previous_eval is None or previous_date is None:
@@ -474,6 +506,8 @@ def build_bj_account_performance(
         'cumulative_profit': cumulative_profit,
         'period_base': period_base,
         'cumulative_base': float(baseline_amount) + cumulative_net_flow(target_date),
+        'selection_cumulative_profit': selection_cumulative_profit,
+        'selection_base': selection_start_eval,
         'period_profit_ex_fx': period_profit_ex_fx,
         'cumulative_profit_ex_fx': cumulative_profit_ex_fx,
         'period_base_ex_fx': period_base_ex_fx,
@@ -1910,6 +1944,12 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 '계좌기준_누적손익': account_metrics.get('cumulative_profit', np.nan),
                 '계좌기준_주기기준액': account_metrics.get('period_base', np.nan),
                 '계좌기준_누적기준액': account_metrics.get('cumulative_base', np.nan),
+                'BJ 선택구간_누적손익': account_metrics.get(
+                    'selection_cumulative_profit', np.nan
+                ),
+                'BJ 선택구간_기준액': account_metrics.get(
+                    'selection_base', np.nan
+                ),
                 '계좌기준_주기손익_ex_fx': account_metrics.get(
                     'period_profit_ex_fx', np.nan
                 ),
@@ -2254,31 +2294,19 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                     bj_cumulative_base_col: 'bj_start_value',
                 })
             )
-            bj_selection_eval = (
-                df_curr[
-                    (df_curr['whose'] == 'BJ')
-                    & df_curr['account_num'].isin(
-                        bj_rows['account_num'].dropna().unique()
-                    )
+            bj_selection_metrics = (
+                bj_rows.groupby(['Date', group_col])[
+                    ['BJ 선택구간_누적손익', 'BJ 선택구간_기준액']
                 ]
-                .groupby(['Date', group_col])['총평가금액']
-                .sum()
+                .agg(lambda values: values.sum(min_count=1))
                 .reset_index()
-                .sort_values([group_col, 'Date'])
-            )
-            bj_selection_eval['bj_selection_cumulative_profit'] = (
-                bj_selection_eval['총평가금액']
-                - bj_selection_eval.groupby(group_col)[
-                    '총평가금액'
-                ].transform('first')
-            )
-            bj_selection_eval['bj_selection_base'] = (
-                bj_selection_eval.groupby(group_col)[
-                    '총평가금액'
-                ].transform('first')
+                .rename(columns={
+                    'BJ 선택구간_누적손익': 'bj_selection_cumulative_profit',
+                    'BJ 선택구간_기준액': 'bj_selection_base',
+                })
             )
             bj_agg = bj_agg.merge(
-                bj_selection_eval[
+                bj_selection_metrics[
                     [
                         'Date',
                         group_col,
@@ -3361,24 +3389,16 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                   bj_cumulative_base_col: 'bj_base',
               })
           )
-          bj_selection_eval = (
-              df_curr[
-                  (df_curr['whose'] == 'BJ')
-                  & df_curr['account_num'].isin(
-                      bj_rows['account_num'].dropna().unique()
-                  )
+          bj_selection_metrics = (
+              bj_rows.groupby('Date')[
+                  ['BJ 선택구간_누적손익', 'BJ 선택구간_기준액']
               ]
-              .groupby('Date')['총평가금액']
-              .sum()
-              .sort_index()
+              .agg(lambda values: values.sum(min_count=1))
+              .rename(columns={
+                  'BJ 선택구간_누적손익': 'bj_selection_cumulative_profit',
+                  'BJ 선택구간_기준액': 'bj_selection_base',
+              })
           )
-          bj_selection_base = bj_selection_eval.iloc[0] if not bj_selection_eval.empty else np.nan
-          bj_selection_metrics = pd.DataFrame({
-              'bj_selection_cumulative_profit': (
-                  bj_selection_eval - bj_selection_base
-              ),
-              'bj_selection_base': bj_selection_base,
-          })
           bj_agg = bj_agg.join(bj_selection_metrics, how='left')
           bj_by_date = bj_agg.to_dict('index')
           grp_agg['bj_base'] = np.nan
