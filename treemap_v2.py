@@ -702,14 +702,18 @@ def normalize_ticker(ticker, currency):
     if not ticker or pd.isna(ticker) or str(ticker).strip() == "":
         return None
     t_str = str(ticker).strip().upper()
+    if t_str.endswith((".KS", ".KQ")):
+        return t_str
     # Korean listed securities are often imported as a bare 6 digit code.
     # Infer the .KS suffix from the code as well as the currency so one
     # account's missing/incorrect currency value cannot split the same ticker.
     if currency == "KRW" or re.fullmatch(r"\d{1,6}", t_str):
-        code = t_str.zfill(6)
-        if not (code.endswith(".KS") or code.endswith(".KQ")):
-            return f"{code}.KS"
-        return code
+        if re.fullmatch(r"\d{1,6}", t_str):
+            return f"{t_str.zfill(6)}.KS"
+        # Labels such as "펀드" and "현금" are not exchange tickers. Returning
+        # None keeps treemap calculations on each row's own saved price instead
+        # of sharing one price across unrelated assets with the same label.
+        return None
     return t_str
 
 
