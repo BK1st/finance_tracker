@@ -702,7 +702,10 @@ def normalize_ticker(ticker, currency):
     if not ticker or pd.isna(ticker) or str(ticker).strip() == "":
         return None
     t_str = str(ticker).strip().upper()
-    if currency == "KRW":
+    # Korean listed securities are often imported as a bare 6 digit code.
+    # Infer the .KS suffix from the code as well as the currency so one
+    # account's missing/incorrect currency value cannot split the same ticker.
+    if currency == "KRW" or re.fullmatch(r"\d{1,6}", t_str):
         code = t_str.zfill(6)
         if not (code.endswith(".KS") or code.endswith(".KQ")):
             return f"{code}.KS"
@@ -1059,9 +1062,6 @@ def update_all_prices_and_rate_batch(curr_rate):
             lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
         )
         valid_tickers = tuple(df["formatted_ticker"].dropna().unique().tolist())
-        account_value_tickers = find_tickers_with_conflicting_saved_prices(
-            df, scope_column="record_date"
-        )
 
         today = datetime.now()
         start_date_str = (today - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -1075,10 +1075,8 @@ def update_all_prices_and_rate_batch(curr_rate):
         )
 
         price_cache = {}
-        skipped_tickers = sorted(account_value_tickers.intersection(valid_tickers))
+        skipped_tickers = []
         for f_ticker in valid_tickers:
-            if f_ticker in account_value_tickers:
-                continue
             ticker_regular_only = regular_only_for_ticker(f_ticker)
             is_kr = is_korean_ticker(f_ticker)
             if not is_kr:
@@ -1093,8 +1091,7 @@ def update_all_prices_and_rate_batch(curr_rate):
         failed_tickers = sorted(
             ticker
             for ticker in valid_tickers
-            if ticker not in account_value_tickers
-            and price_cache.get(ticker) is None
+            if price_cache.get(ticker) is None
         )
         
         for _, row in df.iterrows():
@@ -1696,9 +1693,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 lambda r: normalize_ticker(r["ticker"], r["currency"]), axis=1
             )
             tickers = tuple(sub_df["formatted_ticker"].dropna().unique().tolist())
-            account_value_tickers = find_tickers_with_conflicting_saved_prices(
-                sub_df
-            )
+            account_value_tickers = set()
             if account_value_tickers:
                 st.caption(
                     "동일 티커인데 저장 가격이 계좌별로 다른 항목은 "
@@ -1722,8 +1717,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                     hist_price_map = {}
                     for tk in tickers:
-                        if tk in account_value_tickers:
-                            continue
                         hist_price_map[tk] = get_price_from_batch_data(
                             m_data, tk, target_eval_date
                         )
@@ -1731,8 +1724,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     for idx, row in sub_df.iterrows():
                         tk = row["formatted_ticker"]
                         if (
-                            tk not in account_value_tickers
-                            and tk in hist_price_map
+                            tk in hist_price_map
                             and hist_price_map[tk] is not None
                         ):
                             sub_df.at[idx, "current_price"] = hist_price_map[tk]
@@ -1753,8 +1745,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                 live_price_map = {}
                 failed_tickers = []
                 for ticker in tickers:
-                    if ticker in account_value_tickers:
-                        continue
                     live_price = get_price_from_batch_data(
                         live_market_data,
                         ticker,
@@ -1768,11 +1758,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                 for idx, row in sub_df.iterrows():
                     ticker = row["formatted_ticker"]
-                    latest_price = (
-                        None
-                        if ticker in account_value_tickers
-                        else live_price_map.get(ticker)
-                    )
+                    latest_price = live_price_map.get(ticker)
                     if latest_price is not None:
                         sub_df.at[idx, "current_price"] = latest_price
 
@@ -2025,10 +2011,6 @@ elif menu == "일별/시점별 보유 현황 분석":
 
                     for tk in tickers:
                         if tk:
-                            if tk in account_value_tickers:
-                                ticker_eval_prices[tk] = None
-                                ticker_base_prices[tk] = None
-                                continue
                             if is_daily:
                                 eval_p, base_p = _get_daily_prices(
                                     m_data,
@@ -2060,11 +2042,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                         profit_amt = 0.0
 
                         if f_ticker:
-                            if f_ticker in account_value_tickers:
-                                change_rates.append(0.0)
-                                period_profits.append(0.0)
-                                continue
-
                             eval_p = ticker_eval_prices.get(f_ticker)
                             if eval_p is None or eval_p <= 0:
                                 eval_p = curr_p
