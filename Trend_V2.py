@@ -4518,10 +4518,6 @@ elif menu == '포트폴리오 업로드':
 
         conn = get_connection()
         c = conn.cursor()
-        if 'record_date' in df_db.columns:
-          rec_dates = df_db['record_date'].unique()
-          for r_date in rec_dates:
-            c.execute('DELETE FROM portfolio WHERE record_date = ?', (r_date,))
 
         target_cols = [
             'record_date', 'broker', 'account_num', 'account_name', 'account_type',
@@ -4535,6 +4531,30 @@ elif menu == '포트폴리오 업로드':
             df_db[col] = None
 
         df_db = df_db[target_cols]
+
+        # Replace only snapshots for accounts present in this upload.
+        # Deleting by date alone removes other owners' accounts when an
+        # owner-specific workbook (for example, SH only) is uploaded.
+        account_keys = df_db[
+            ['record_date', 'broker', 'account_num', 'whose']
+        ].drop_duplicates()
+        for _, account_key in account_keys.iterrows():
+          account_num = account_key['account_num']
+          if pd.isna(account_num) or not str(account_num).strip():
+            continue
+          key_values = tuple(
+              None if pd.isna(account_key[column]) else account_key[column]
+              for column in ('record_date', 'broker', 'account_num', 'whose')
+          )
+          c.execute(
+              '''DELETE FROM portfolio
+                 WHERE record_date IS ?
+                   AND broker IS ?
+                   AND account_num IS ?
+                   AND whose IS ?''',
+              key_values,
+          )
+
         df_db.to_sql('portfolio', conn, if_exists='append', index=False)
         conn.commit()
         conn.close()
