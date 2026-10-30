@@ -4757,6 +4757,12 @@ elif menu == '원금 및 입출금 관리':
     summary_cf['account_type'] = summary_cf['_acc_norm'].map(
         lambda key: acc_meta_map.get(key, {}).get('account_type', '일반')
     )
+    summary_cf['account_type_group'] = summary_cf['_acc_norm'].map(
+        lambda key: acc_meta_map.get(key, {}).get('account_type_group', '일반')
+    )
+    summary_cf['account_label'] = summary_cf['_acc_norm'].map(
+        lambda key: acc_meta_map.get(key, {}).get('label', str(key))
+    )
     summary_cf['dt'] = pd.to_datetime(summary_cf['trans_date'], errors='coerce')
     summary_cf['year'] = summary_cf['dt'].dt.year
     summary_cf['month'] = summary_cf['dt'].dt.month
@@ -4802,6 +4808,86 @@ elif menu == '원금 및 입출금 관리':
         & summary_cf['amount_clean'].notna()
     ].copy()
 
+    group_dim_labels = {
+        'year': '연도',
+        'month': '월',
+        'whose': 'WHOSE',
+        'account_type_group': '계좌유형',
+        'account_label': '계좌',
+    }
+    group_dim_options = list(group_dim_labels)
+    selected_group_dims = st.multiselect(
+        '표의 구분 기준 (여러 개 선택 가능)',
+        options=group_dim_options,
+        default=['year', 'month', 'whose', 'account_type_group'],
+        format_func=lambda key: group_dim_labels[key],
+        key='cash_flow_summary_group_dims',
+        help='선택한 기준에 따라 표를 나누고, 여러 기준이면 각 단계의 소계를 표시합니다.',
+    )
+    if selected_group_dims:
+      first_group_state_key = 'cash_flow_summary_first_group_dim'
+      if st.session_state.get(first_group_state_key) not in selected_group_dims:
+        st.session_state[first_group_state_key] = selected_group_dims[0]
+      first_group_dim = st.selectbox(
+          '가장 먼저 구분할 기준',
+          options=selected_group_dims,
+          format_func=lambda key: group_dim_labels[key],
+          key=first_group_state_key,
+      )
+      ordered_group_dims = [first_group_dim] + [
+          key for key in selected_group_dims if key != first_group_dim
+      ]
+    else:
+      ordered_group_dims = []
+
+    display_dim_labels = {
+        'year': '연도',
+        'month': '월',
+        'whose': 'WHOSE',
+        'account_type_group': '계좌유형',
+        'account_label': '계좌',
+    }
+
+    def make_grouped_summary(source_df, group_dims, metric_columns):
+      """Create detail rows, hierarchical subtotals, and a grand total."""
+      display_columns = [display_dim_labels[key] for key in group_dims]
+      output_rows = []
+
+      def append_summary_row(frame, prefix, row_label):
+        row = {'집계구분': row_label}
+        for index, key in enumerate(group_dims):
+          label = display_dim_labels[key]
+          row[label] = prefix[index] if index < len(prefix) else ''
+        totals = frame[metric_columns].sum(numeric_only=True)
+        for metric in metric_columns:
+          row[metric] = float(totals.get(metric, 0.0))
+        output_rows.append(row)
+
+      def add_group_rows(frame, depth, prefix):
+        if depth >= len(group_dims):
+          append_summary_row(frame, prefix, '상세')
+          return
+        key = group_dims[depth]
+        for group_value, child in frame.groupby(key, dropna=False, sort=True):
+          clean_value = '' if pd.isna(group_value) else group_value
+          child_prefix = prefix + [clean_value]
+          add_group_rows(child, depth + 1, child_prefix)
+          if depth < len(group_dims) - 1:
+            append_summary_row(
+                child, child_prefix,
+                f'{display_dim_labels[key]} 소계',
+            )
+
+      if source_df.empty:
+        empty_columns = ['집계구분'] + display_columns + metric_columns
+        return pd.DataFrame(columns=empty_columns)
+      if group_dims:
+        add_group_rows(source_df, 0, [])
+      append_summary_row(source_df, [], '전체 합산')
+      return pd.DataFrame(output_rows, columns=(
+          ['집계구분'] + display_columns + metric_columns
+      ))
+
     # Account-level principal = initial principal + lifetime net cash flow.
     principal_rows = pf_accs.copy()
     if not principal_rows.empty:
@@ -4838,110 +4924,95 @@ elif menu == '원금 및 입출금 관리':
           axis=1,
       )
 
-    # WHOSE summary (including the combined total).
-    st.markdown('##### WHOSE별 선택 기간 입출금 누적')
-    if period_cf.empty:
-      whose_flow = pd.DataFrame(
-          columns=['WHOSE', '입금누적', '출금누적', '순입출금누적']
-      )
-    else:
-      whose_flow = (
-          period_cf.groupby('whose', dropna=False)
-          .agg(
-              입금누적=('입금액', 'sum'),
-              출금누적=('출금액', 'sum'),
-              순입출금누적=('순입출금액', 'sum'),
-          )
-          .reset_index()
-          .rename(columns={'whose': 'WHOSE'})
-      )
-    if not principal_rows.empty:
-      whose_principal = principal_rows.groupby('whose')['전체 원금'].sum()
-      owner_names = sorted(set(
-          whose_flow['WHOSE'].dropna().astype(str).tolist()
-          + whose_principal.index.astype(str).tolist()
-      ))
-      whose_flow = (
-          whose_flow.set_index('WHOSE')
-          .reindex(owner_names)
-          .fillna(0.0)
-          .rename_axis('WHOSE')
-          .reset_index()
-      )
-      whose_flow['전체 원금'] = whose_flow['WHOSE'].map(whose_principal).fillna(0.0)
-    else:
-      whose_flow['전체 원금'] = 0.0
-    total_row = {
-        'WHOSE': '전체 합산',
-        '입금누적': whose_flow['입금누적'].sum() if '입금누적' in whose_flow else 0.0,
-        '출금누적': whose_flow['출금누적'].sum() if '출금누적' in whose_flow else 0.0,
-        '순입출금누적': whose_flow['순입출금누적'].sum() if '순입출금누적' in whose_flow else 0.0,
-        '전체 원금': whose_flow['전체 원금'].sum(),
-    }
-    whose_flow = pd.concat([whose_flow, pd.DataFrame([total_row])], ignore_index=True)
-    whose_flow = whose_flow.rename(columns={
-        '입금누적': '입금 누적액',
-        '출금누적': '출금 누적액',
-        '순입출금누적': '순입출금 누적액',
+    # Selected-period summary grouped by the chosen dimensions.
+    st.markdown('##### 선택 기간 입출금 누적')
+    period_summary_source = period_cf.rename(columns={
+        '입금액': '입금 누적액',
+        '출금액': '출금 누적액',
+        '순입출금액': '순입출금 누적액',
     })
+    whose_flow = make_grouped_summary(
+        period_summary_source,
+        ordered_group_dims,
+        ['입금 누적액', '출금 누적액', '순입출금 누적액'],
+    )
     st.dataframe(
         whose_flow.style.format({
-            col: '{:,.0f}원' for col in
-            ['입금 누적액', '출금 누적액', '순입출금 누적액', '전체 원금']
+            col: '{:,.0f}원' for col in [
+                '입금 누적액', '출금 누적액', '순입출금 누적액'
+            ]
             if col in whose_flow.columns
         }),
         use_container_width=True,
         hide_index=True,
     )
 
-    # Monthly running totals, with collapsible year groups when more than one
-    # year is selected (or ALL years is selected).
+    # Year/month cumulative summary uses the same selected dimensions/order.
     st.markdown('##### 연도·월별 누적 입출금')
     if period_cf.empty:
-      st.info('선택한 연도·월에 표시할 입출금 내역이 없습니다.')
-    else:
-      monthly_flow = (
+      monthly_summary = make_grouped_summary(
+          period_cf,
+          ordered_group_dims,
+          ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
+      )
+    elif 'month' in ordered_group_dims:
+      cumulative_group_dims = [
+          key for key in ordered_group_dims if key not in ('year', 'month')
+      ]
+      monthly_group_keys = list(dict.fromkeys(
+          ['year'] + cumulative_group_dims + ['month']
+      ))
+      monthly_summary_source = (
           summary_cf[summary_cf['year'].isin(selected_year_values)]
-          .groupby(['year', 'month', 'whose'], dropna=False)
+          .groupby(monthly_group_keys, dropna=False)
           .agg(
               입금액=('입금액', 'sum'),
               출금액=('출금액', 'sum'),
               순입출금액=('순입출금액', 'sum'),
           )
           .reset_index()
-          .sort_values(['year', 'month', 'whose'])
+          .sort_values(monthly_group_keys)
       )
-      monthly_flow['누적 순입출금액'] = monthly_flow.groupby(
-          ['year', 'whose']
+      cumulative_keys = [key for key in monthly_group_keys if key != 'month']
+      monthly_summary_source['누적 순입출금액'] = monthly_summary_source.groupby(
+          cumulative_keys, dropna=False
       )['순입출금액'].cumsum()
-      monthly_flow = monthly_flow[
-          monthly_flow['month'].isin(selected_month_values)
+      monthly_summary_source = monthly_summary_source[
+          monthly_summary_source['month'].isin(selected_month_values)
       ]
-      show_year_groups = len(selected_year_values) > 1
-      for year_value, year_df in monthly_flow.groupby('year', sort=True):
-        display_df = year_df.rename(columns={
-            'year': '연도', 'month': '월', 'whose': 'WHOSE'
-        })[['연도', '월', 'WHOSE', '입금액', '출금액', '순입출금액', '누적 순입출금액']]
-        display_df['월'] = display_df['월'].map(lambda month: f'{int(month)}월')
-        if show_year_groups:
-          with st.expander(f'{int(year_value)}년', expanded=False):
-            st.dataframe(
-                display_df.style.format({
-                    col: '{:,.0f}원' for col in
-                    ['입금액', '출금액', '순입출금액', '누적 순입출금액']
-                }),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-          st.dataframe(
-              display_df.style.format({
-                  col: '{:,.0f}원' for col in
-                  ['입금액', '출금액', '순입출금액', '누적 순입출금액']
-              }),
-              use_container_width=True,
-              hide_index=True,
-          )
+      monthly_summary_source = (
+          monthly_summary_source.groupby(ordered_group_dims, dropna=False)
+          [['입금액', '출금액', '순입출금액', '누적 순입출금액']]
+          .sum()
+          .reset_index()
+      )
+      monthly_summary = make_grouped_summary(
+          monthly_summary_source,
+          ordered_group_dims,
+          ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
+      )
+    else:
+      monthly_summary_source = period_cf.rename(columns={
+          '순입출금액': '누적 순입출금액',
+      }).copy()
+      monthly_summary = make_grouped_summary(
+          monthly_summary_source,
+          ordered_group_dims,
+          ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
+      )
+    if '월' in monthly_summary.columns:
+      monthly_summary['월'] = monthly_summary['월'].map(
+          lambda month: f'{int(month)}월' if pd.notna(month) and str(month).strip() else month
+      )
+    st.dataframe(
+        monthly_summary.style.format({
+            col: '{:,.0f}원' for col in [
+                '입금액', '출금액', '순입출금액', '누적 순입출금액'
+            ] if col in monthly_summary.columns
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.markdown('##### WHOSE 선택 후 계좌별 입출금 및 전체 원금')
     owner_options = sorted(set(
