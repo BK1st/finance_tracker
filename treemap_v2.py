@@ -704,12 +704,14 @@ def normalize_ticker(ticker, currency):
     t_str = str(ticker).strip().upper()
     if t_str.endswith((".KS", ".KQ")):
         return t_str
-    # Korean listed securities are often imported as a bare 6 digit code.
-    # Infer the .KS suffix from the code as well as the currency so one
-    # account's missing/incorrect currency value cannot split the same ticker.
+    # Korean listed securities may use numeric or alphanumeric six-character
+    # codes (for example, 0049K0). Infer the .KS suffix from the code as well
+    # as the currency so imported currency inconsistencies do not split it.
     if currency == "KRW" or re.fullmatch(r"\d{1,6}", t_str):
         if re.fullmatch(r"\d{1,6}", t_str):
             return f"{t_str.zfill(6)}.KS"
+        if re.fullmatch(r"[A-Z0-9]{6}", t_str):
+            return f"{t_str}.KS"
         # Labels such as "펀드" and "현금" are not exchange tickers. Returning
         # None keeps treemap calculations on each row's own saved price instead
         # of sharing one price across unrelated assets with the same label.
@@ -1047,14 +1049,50 @@ def _get_daily_prices(
     return eval_p, base_p
 
 
-def update_all_prices_and_rate_batch(curr_rate):
-    """배치 수집 방식으로 전체 시세 및 환율 일괄 업데이트"""
+def get_selected_owner_date_pairs():
+    """시점별 보유 현황에서 선택한 소유주별 기준 날짜를 반환한다."""
+    selected_owners = st.session_state.get("treemap_sel_whose", [])
+    if isinstance(selected_owners, str):
+        selected_owners = [selected_owners]
+
+    owner_date_pairs = []
+    for owner in selected_owners:
+        if not is_current_user_admin and owner != logged_in_user:
+            continue
+        selected_date = st.session_state.get(f"select_date_{owner}")
+        if selected_date is not None:
+            owner_date_pairs.append((str(owner), str(selected_date)))
+    return list(dict.fromkeys(owner_date_pairs))
+
+
+def update_all_prices_and_rate_batch(curr_rate, owner_date_pairs=None):
+    """선택한 소유주·기준일의 가격과 환율만 배치 업데이트한다."""
     conn = get_connection()
     try:
-        df = pd.read_sql(
-            "SELECT id, record_date, ticker, currency, current_price FROM portfolio",
-            conn,
+        query = (
+            "SELECT id, record_date, whose, ticker, currency, current_price "
+            "FROM portfolio"
         )
+        params = []
+        if owner_date_pairs is not None:
+            if not owner_date_pairs:
+                return {
+                    "updated_rows": 0,
+                    "failed_tickers": [],
+                    "skipped_tickers": [],
+                }
+            clauses = []
+            for owner, record_date in owner_date_pairs:
+                owner_condition = (
+                    "COALESCE(NULLIF(whose, ''), '본인') = ?"
+                    if owner == "본인" else "whose = ?"
+                )
+                clauses.append(
+                    f"({owner_condition} AND record_date = ?)"
+                )
+                params.extend([owner, record_date])
+            query += " WHERE " + " OR ".join(clauses)
+        df = pd.read_sql(query, conn, params=params)
         if df.empty:
             return {
                 "updated_rows": 0,
@@ -1187,18 +1225,35 @@ if st.sidebar.button("🧹 시세 캐시 비우기"):
     st.cache_data.clear()
     st.session_state.live_rate_store = fetch_live_exchange_rate()
     st.sidebar.success(
-        "캐시를 비우고 환율을 조회했습니다. 저장된 주식 가격은 "
-        "'실시간 환율 및 전체 최신 시세 일괄 업데이트'를 눌러 갱신하세요."
+        "캐시를 비우고 환율을 조회했습니다. 시점별 보유 현황에서 "
+        "소유주와 날짜를 선택한 뒤 선택 시점 업데이트를 눌러 갱신하세요."
     )
 
-if st.sidebar.button("⚡ 실시간 환율 및 전체 최신 시세 일괄 업데이트"):
-    with st.spinner("실시간 환율 조회 및 전체 종목 최신 시세 업데이트 중..."):
+selected_snapshot_pairs = get_selected_owner_date_pairs()
+if selected_snapshot_pairs:
+    selected_snapshot_label = ", ".join(
+        f"{owner} · {record_date}" for owner, record_date in selected_snapshot_pairs
+    )
+    st.sidebar.caption(f"시세 갱신 대상: {selected_snapshot_label}")
+else:
+    st.sidebar.caption(
+        "시점별 보유 현황에서 소유주와 기준 날짜를 먼저 선택하면 갱신할 수 있습니다."
+    )
+
+if st.sidebar.button(
+    "⚡ 선택 시점의 시세 및 환율 업데이트",
+    disabled=not selected_snapshot_pairs,
+):
+    with st.spinner("선택한 소유주·기준 날짜의 시세를 업데이트 중..."):
         st.cache_data.clear()
         target_rate = fetch_live_exchange_rate()
         st.session_state.live_rate_store = target_rate
-        update_result = update_all_prices_and_rate_batch(target_rate)
+        update_result = update_all_prices_and_rate_batch(
+            target_rate, selected_snapshot_pairs
+        )
         summary = (
             f"환율: {target_rate}원\n"
+            f"대상: {selected_snapshot_label}\n"
             f"{format_price_update_summary(update_result)}"
         )
         if update_result["failed_tickers"] or update_result["skipped_tickers"]:
@@ -1235,14 +1290,31 @@ if menu == "자산 입력 및 관리":
         df_raw = df_raw[df_raw["whose"] == logged_in_user].copy()
 
     st.subheader("🔄 일괄 업데이트 설정")
+    selected_snapshot_pairs = get_selected_owner_date_pairs()
+    if selected_snapshot_pairs:
+        st.info(
+            "업데이트 대상: "
+            + ", ".join(
+                f"{owner} · {record_date}"
+                for owner, record_date in selected_snapshot_pairs
+            )
+        )
+    else:
+        st.warning(
+            "시점별 보유 현황 메뉴에서 소유주와 기준 날짜를 먼저 선택해야 "
+            "해당 스냅샷을 업데이트할 수 있습니다."
+        )
     rate_option = st.radio(
         "환율 적용 기준 선택",
         ["사이드바 지정 환율 사용", "실시간 환율 API 조회하여 사용"],
         horizontal=True
     )
 
-    if st.button("🔄 전체 데이터 최신 시세로 무조건 일괄 업데이트"):
-        with st.spinner("배치 일괄 시세 및 환율을 반영 중..."):
+    if st.button(
+        "🔄 선택한 소유주·날짜의 시세로 일괄 업데이트",
+        disabled=not selected_snapshot_pairs,
+    ):
+        with st.spinner("선택한 소유주·날짜의 시세 및 환율을 반영 중..."):
             st.cache_data.clear()
             if "실시간" in rate_option:
                 target_rate = fetch_live_exchange_rate()
@@ -1250,9 +1322,17 @@ if menu == "자산 입력 및 관리":
             else:
                 target_rate = current_rate
 
-            update_result = update_all_prices_and_rate_batch(target_rate)
+            update_result = update_all_prices_and_rate_batch(
+                target_rate, selected_snapshot_pairs
+            )
             summary = (
                 f"적용 환율: {target_rate}원\n"
+                "대상: "
+                + ", ".join(
+                    f"{owner} · {record_date}"
+                    for owner, record_date in selected_snapshot_pairs
+                )
+                + "\n"
                 f"{format_price_update_summary(update_result)}"
             )
             if update_result["failed_tickers"] or update_result["skipped_tickers"]:
@@ -1537,6 +1617,96 @@ if menu == "자산 입력 및 관리":
 
     elif mode == "🗑 데이터 삭제 관리":
         if not df_raw.empty:
+            st.subheader("📅 날짜별 자산 데이터 삭제")
+            st.caption(
+                "선택한 기준일의 자산 스냅샷을 소유주별 또는 전체 소유주 기준으로 삭제합니다."
+            )
+            available_delete_dates = sorted(
+                df_raw["record_date"].dropna().astype(str).unique().tolist(),
+                reverse=True,
+            )
+            available_delete_owners = sorted(
+                df_raw["whose"].fillna("본인").replace("", "본인").astype(str).unique().tolist()
+            )
+            delete_col1, delete_col2 = st.columns(2)
+            with delete_col1:
+                selected_delete_date = st.selectbox(
+                    "삭제할 기준 날짜",
+                    options=available_delete_dates,
+                    key="portfolio_delete_date_selector",
+                )
+            with delete_col2:
+                delete_owner_options = (
+                    ["전체 소유주"] + available_delete_owners
+                    if is_current_user_admin else [logged_in_user]
+                )
+                selected_delete_owner = st.selectbox(
+                    "삭제할 소유주",
+                    options=delete_owner_options,
+                    key="portfolio_delete_owner_selector",
+                )
+
+            st.warning(
+                f"삭제 대상: {selected_delete_date} · {selected_delete_owner}"
+            )
+            date_match_mask = (
+                df_raw["record_date"].astype(str) == selected_delete_date
+            )
+            if selected_delete_owner != "전체 소유주":
+                target_preview_owner = (
+                    logged_in_user
+                    if not is_current_user_admin
+                    else selected_delete_owner
+                )
+                normalized_owners = (
+                    df_raw["whose"].fillna("본인").replace("", "본인").astype(str)
+                )
+                date_match_mask &= normalized_owners == target_preview_owner
+            st.caption(f"삭제 예정 행 수: {int(date_match_mask.sum())}개")
+            confirm_date_delete = st.checkbox(
+                "선택한 날짜의 자산 데이터를 삭제하겠습니다.",
+                key="portfolio_delete_date_confirm",
+            )
+            if st.button(
+                "🗑️ 선택 날짜 자산 스냅샷 삭제",
+                type="primary",
+                disabled=not confirm_date_delete,
+            ):
+                conn = get_connection()
+                try:
+                    cursor = conn.cursor()
+                    if (
+                        is_current_user_admin
+                        and selected_delete_owner == "전체 소유주"
+                    ):
+                        cursor.execute(
+                            "DELETE FROM portfolio WHERE record_date = ?",
+                            (selected_delete_date,),
+                        )
+                    else:
+                        target_owner = (
+                            logged_in_user
+                            if not is_current_user_admin
+                            else selected_delete_owner
+                        )
+                        cursor.execute(
+                            "DELETE FROM portfolio "
+                            "WHERE record_date = ? "
+                            "AND COALESCE(NULLIF(whose, ''), '본인') = ?",
+                            (selected_delete_date, target_owner),
+                        )
+                    deleted_count = cursor.rowcount
+                    conn.commit()
+                    export_backup_json()
+                    st.success(
+                        f"{selected_delete_date} 날짜의 자산 데이터 "
+                        f"{deleted_count}개 행을 삭제했습니다."
+                    )
+                    st.rerun()
+                finally:
+                    conn.close()
+
+            st.markdown("---")
             st.subheader("🗑️ 데이터 삭제 관리 (체크박스 다중 선택 삭제)")
             st.caption("삭제를 원하시는 데이터 행의 **'삭제 선택'** 체크박스를 클릭한 후 아래 삭제 버튼을 눌러주세요.")
 
