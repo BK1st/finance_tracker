@@ -1071,6 +1071,10 @@ def render_summary_page(
         summary_data.drop_duplicates(['Date', 'account_num']),
         source_column,
     ).to_numpy()
+  account_metrics['_sh_period_profit'] = numeric_column(
+      summary_data.drop_duplicates(['Date', 'account_num']),
+      '계좌기준_주기손익',
+  ).to_numpy()
   account_daily = account_daily.merge(
       account_metrics, on=['Date', 'account_num'], how='left'
   )
@@ -1080,6 +1084,13 @@ def render_summary_page(
   ].where(
       account_daily.loc[is_bj, '_bj_period_profit'].notna(),
       account_daily.loc[is_bj, '_summary_profit'],
+  )
+  is_sh = account_daily['whose'] != 'BJ'
+  account_daily.loc[is_sh, '_summary_profit'] = account_daily.loc[
+      is_sh, '_sh_period_profit'
+  ].where(
+      account_daily.loc[is_sh, '_sh_period_profit'].notna(),
+      account_daily.loc[is_sh, '_summary_profit'],
   )
 
   def benchmark_return(label, start_date, end_date):
@@ -3624,6 +3635,47 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           first_eval_val = grp_agg.groupby('whose')['총평가금액'].transform('first')
           grp_agg['선택구간 누적손익'] = grp_agg['총평가금액'] - first_eval_val
 
+          # SH 계좌는 계좌 기준 성과 컬럼에 이미 입출금 차감 결과가 있다.
+          # 항목별 원본 손익을 WHOSE 단위로 다시 더하면 입금이 손익에 섞이므로,
+          # 계좌별 중복을 제거한 조정 성과를 SH 합산에도 사용한다.
+          sh_account_rows = df_curr[df_curr['whose'] != 'BJ'].drop_duplicates(
+              ['Date', 'account_num']
+          )
+          sh_metrics = (
+              sh_account_rows.groupby(['Date', 'whose'])[
+                  [
+                      '계좌기준_주기손익',
+                      'BJ 선택구간_누적손익',
+                      'BJ 선택구간_기준액',
+                      '계좌기준_주기기준액',
+                  ]
+              ]
+              .agg(lambda values: values.sum(min_count=1))
+              .reset_index()
+          )
+          grp_agg = grp_agg.merge(
+              sh_metrics,
+              on=['Date', 'whose'],
+              how='left',
+              suffixes=('', '_sh_adjusted'),
+          )
+          sh_mask = grp_agg['whose'] != 'BJ'
+          grp_agg.loc[sh_mask, '주기별 평가손익'] = grp_agg.loc[
+              sh_mask, '계좌기준_주기손익'
+          ].where(
+              grp_agg.loc[sh_mask, '계좌기준_주기손익'].notna(),
+              grp_agg.loc[sh_mask, '주기별 평가손익'],
+          )
+          grp_agg.loc[sh_mask, '선택구간 누적손익'] = grp_agg.loc[
+              sh_mask, 'BJ 선택구간_누적손익'
+          ].where(
+              grp_agg.loc[sh_mask, 'BJ 선택구간_누적손익'].notna(),
+              grp_agg.loc[sh_mask, '선택구간 누적손익'],
+          )
+          grp_agg.loc[sh_mask, 'sh_adjusted_period_base'] = grp_agg.loc[
+              sh_mask, '계좌기준_주기기준액'
+          ]
+
           grp_agg['수익률'] = np.where(
               grp_agg['원금'] > 0, (grp_agg['평가손익'] / grp_agg['원금']) * 100, 0
           )
@@ -3637,6 +3689,12 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               grp_agg['period_start_base'] > 0,
               (grp_agg['주기별 평가손익'] / grp_agg['period_start_base']) * 100,
               0
+          )
+          grp_agg.loc[sh_mask, '주기별 수익률'] = np.where(
+              grp_agg.loc[sh_mask, 'sh_adjusted_period_base'] > 0,
+              grp_agg.loc[sh_mask, '주기별 평가손익']
+              / grp_agg.loc[sh_mask, 'sh_adjusted_period_base'] * 100,
+              np.nan,
           )
           
           grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
