@@ -4637,7 +4637,7 @@ elif menu == '원금 및 입출금 관리':
     )
     conn = get_connection()
     pf_accs = pd.read_sql(
-        'SELECT DISTINCT broker, account_num, account_type, whose FROM portfolio', conn
+        'SELECT DISTINCT broker, account_num, account_type, account_name, whose FROM portfolio', conn
     )
     cf_df = pd.read_sql(
         'SELECT * FROM cash_flow ORDER BY trans_date DESC, id DESC', conn
@@ -4665,6 +4665,12 @@ elif menu == '원금 및 입출금 관리':
       type_group = get_acc_type_group(raw_acc_type)
       whose_val = resolve_account_whose(acc_num, account_row.get('whose'), broker, alias_map)
       alias = alias_map.get(acc_num, '')
+      cash_label_text = f'{alias} {account_row.get("account_name", "")}'.upper()
+      type_pivot = (
+          'CASH'
+          if any(token in cash_label_text for token in ['CASH', 'CMA', '현금'])
+          else type_group
+      )
       label = (
           f'[{broker}] {acc_num} ({alias}) [{type_group}|{whose_val}]'
           if alias else f'[{broker}] {acc_num} [{type_group}|{whose_val}]'
@@ -4675,6 +4681,7 @@ elif menu == '원금 및 입출금 관리':
             'broker': broker,
             'account_type': raw_acc_type,
             'account_type_group': type_group,
+            'account_type_pivot': type_pivot,
             'whose': whose_val,
             'alias': alias,
             'label': label,
@@ -4760,6 +4767,9 @@ elif menu == '원금 및 입출금 관리':
     summary_cf['account_type_group'] = summary_cf['_acc_norm'].map(
         lambda key: acc_meta_map.get(key, {}).get('account_type_group', '일반')
     )
+    summary_cf['account_type_pivot'] = summary_cf['_acc_norm'].map(
+        lambda key: acc_meta_map.get(key, {}).get('account_type_pivot', '일반')
+    )
     summary_cf['account_label'] = summary_cf['_acc_norm'].map(
         lambda key: acc_meta_map.get(key, {}).get('label', str(key))
     )
@@ -4812,30 +4822,51 @@ elif menu == '원금 및 입출금 관리':
         'year': '연도',
         'month': '월',
         'whose': 'WHOSE',
-        'account_type_group': '계좌유형',
+        'account_type_pivot': '계좌유형(CASH/연금/일반)',
         'account_label': '계좌',
     }
     group_dim_options = list(group_dim_labels)
-    selected_group_dims = st.multiselect(
-        '표의 구분 기준 (여러 개 선택 가능)',
+    selected_row_dims = st.multiselect(
+        '행 구분 기준 (여러 개 선택 가능)',
         options=group_dim_options,
-        default=['year', 'month', 'whose', 'account_type_group'],
+        default=['year', 'month', 'whose', 'account_label'],
         format_func=lambda key: group_dim_labels[key],
-        key='cash_flow_summary_group_dims',
-        help='선택한 기준에 따라 표를 나누고, 여러 기준이면 각 단계의 소계를 표시합니다.',
+        key='cash_flow_summary_row_dims',
+        help='행 기준을 여러 개 선택하면 계층별 부분합이 표시됩니다.',
     )
-    if selected_group_dims:
+    column_dim_options = [
+        key for key in group_dim_options if key not in selected_row_dims
+    ]
+    column_state_key = 'cash_flow_summary_column_dim'
+    valid_column_options = ['없음'] + column_dim_options
+    default_column_dim = (
+        'account_type_pivot'
+        if 'account_type_pivot' in column_dim_options else '없음'
+    )
+    if st.session_state.get(column_state_key) not in valid_column_options:
+      st.session_state[column_state_key] = default_column_dim
+    selected_column_dim = st.selectbox(
+        '열 구분 기준 (피벗 열)',
+        options=['없음'] + column_dim_options,
+        format_func=lambda key: '없음' if key == '없음' else group_dim_labels[key],
+        key=column_state_key,
+        help='예: 계좌유형(CASH/연금/일반)을 선택하면 열에 유형별 금액과 총합계를 표시합니다.',
+    )
+    selected_column_dim = (
+        None if selected_column_dim == '없음' else selected_column_dim
+    )
+    if selected_row_dims:
       first_group_state_key = 'cash_flow_summary_first_group_dim'
-      if st.session_state.get(first_group_state_key) not in selected_group_dims:
-        st.session_state[first_group_state_key] = selected_group_dims[0]
+      if st.session_state.get(first_group_state_key) not in selected_row_dims:
+        st.session_state[first_group_state_key] = selected_row_dims[0]
       first_group_dim = st.selectbox(
-          '가장 먼저 구분할 기준',
-          options=selected_group_dims,
+          '가장 먼저 표시할 행 기준',
+          options=selected_row_dims,
           format_func=lambda key: group_dim_labels[key],
           key=first_group_state_key,
       )
       ordered_group_dims = [first_group_dim] + [
-          key for key in selected_group_dims if key != first_group_dim
+          key for key in selected_row_dims if key != first_group_dim
       ]
     else:
       ordered_group_dims = []
@@ -4844,49 +4875,123 @@ elif menu == '원금 및 입출금 관리':
         'year': '연도',
         'month': '월',
         'whose': 'WHOSE',
-        'account_type_group': '계좌유형',
+        'account_type_pivot': '계좌유형(CASH/연금/일반)',
         'account_label': '계좌',
     }
 
-    def make_grouped_summary(source_df, group_dims, metric_columns):
-      """Create detail rows, hierarchical subtotals, and a grand total."""
-      display_columns = [display_dim_labels[key] for key in group_dims]
+    def make_grouped_summary(
+        source_df, row_dims, column_dim, metric_columns
+    ):
+      """Create pivot columns, hierarchical row subtotals, and grand totals."""
+      display_columns = [display_dim_labels[key] for key in row_dims]
       output_rows = []
+      column_values = []
+      column_value_labels = {}
+      if column_dim and column_dim in source_df.columns and not source_df.empty:
+        column_values = sorted(
+            source_df[column_dim].fillna('미분류').astype(str).unique().tolist()
+        )
+        for value in column_values:
+          label = value
+          if column_dim in ('year', 'month') and value != '미분류':
+            try:
+              label = str(int(float(value)))
+              if column_dim == 'month':
+                label = f'{label}월'
+            except (TypeError, ValueError):
+              pass
+          column_value_labels[value] = label
+      value_columns = (
+          [f'{column_value_labels[column_value]} | {metric}'
+           for column_value in column_values for metric in metric_columns]
+          + [f'총합계 | {metric}' for metric in metric_columns]
+          if column_dim else metric_columns
+      )
 
       def append_summary_row(frame, prefix, row_label):
         row = {'집계구분': row_label}
-        for index, key in enumerate(group_dims):
+        for index, key in enumerate(row_dims):
           label = display_dim_labels[key]
           row[label] = prefix[index] if index < len(prefix) else ''
-        totals = frame[metric_columns].sum(numeric_only=True)
-        for metric in metric_columns:
-          row[metric] = float(totals.get(metric, 0.0))
+        if column_dim:
+          category_values = frame[column_dim].fillna('미분류').astype(str)
+          for column_value in column_values:
+            category_frame = frame[category_values == column_value]
+            category_totals = category_frame[metric_columns].sum(numeric_only=True)
+            for metric in metric_columns:
+              row[f'{column_value_labels[column_value]} | {metric}'] = float(
+                  category_totals.get(metric, 0.0)
+              )
+          totals = frame[metric_columns].sum(numeric_only=True)
+          for metric in metric_columns:
+            row[f'총합계 | {metric}'] = float(totals.get(metric, 0.0))
+        else:
+          totals = frame[metric_columns].sum(numeric_only=True)
+          for metric in metric_columns:
+            row[metric] = float(totals.get(metric, 0.0))
         output_rows.append(row)
 
       def add_group_rows(frame, depth, prefix):
-        if depth >= len(group_dims):
+        if depth >= len(row_dims):
           append_summary_row(frame, prefix, '상세')
           return
-        key = group_dims[depth]
+        key = row_dims[depth]
         for group_value, child in frame.groupby(key, dropna=False, sort=True):
           clean_value = '' if pd.isna(group_value) else group_value
+          if key in ('year', 'month') and clean_value != '':
+            try:
+              clean_value = int(float(clean_value))
+            except (TypeError, ValueError):
+              pass
           child_prefix = prefix + [clean_value]
           add_group_rows(child, depth + 1, child_prefix)
-          if depth < len(group_dims) - 1:
+          if depth < len(row_dims) - 1:
             append_summary_row(
                 child, child_prefix,
                 f'{display_dim_labels[key]} 소계',
             )
 
       if source_df.empty:
-        empty_columns = ['집계구분'] + display_columns + metric_columns
-        return pd.DataFrame(columns=empty_columns)
-      if group_dims:
+        empty_columns = ['집계구분'] + display_columns + value_columns
+        empty_df = pd.DataFrame(columns=empty_columns)
+        if column_dim:
+          empty_df.columns = pd.MultiIndex.from_tuples(
+              [('', '집계구분')]
+              + [('행 레이블', label) for label in display_columns]
+              + [
+                  (column_value_labels[column_value], metric)
+                  for column_value in column_values
+                  for metric in metric_columns
+              ]
+              + [('총합계', metric) for metric in metric_columns]
+          )
+        return empty_df
+      if row_dims:
         add_group_rows(source_df, 0, [])
       append_summary_row(source_df, [], '전체 합산')
-      return pd.DataFrame(output_rows, columns=(
-          ['집계구분'] + display_columns + metric_columns
+      result_df = pd.DataFrame(output_rows, columns=(
+          ['집계구분'] + display_columns + value_columns
       ))
+      if column_dim:
+        result_df.columns = pd.MultiIndex.from_tuples(
+            [('', '집계구분')]
+            + [('행 레이블', label) for label in display_columns]
+            + [
+                (column_value_labels[column_value], metric)
+                for column_value in column_values
+                for metric in metric_columns
+            ]
+            + [('총합계', metric) for metric in metric_columns]
+        )
+      return result_df
+
+    def summary_metric_format(df, metric_names):
+      format_map = {}
+      for column in df.columns:
+        metric_name = column[-1] if isinstance(column, tuple) else column
+        if metric_name in metric_names:
+          format_map[column] = '{:,.0f}원'
+      return format_map
 
     # Account-level principal = initial principal + lifetime net cash flow.
     principal_rows = pf_accs.copy()
@@ -4926,6 +5031,9 @@ elif menu == '원금 및 입출금 관리':
 
     # Selected-period summary grouped by the chosen dimensions.
     st.markdown('##### 선택 기간 입출금 누적')
+    summary_group_dims = ordered_group_dims + (
+        [selected_column_dim] if selected_column_dim else []
+    )
     period_summary_source = period_cf.rename(columns={
         '입금액': '입금 누적액',
         '출금액': '출금 누적액',
@@ -4934,15 +5042,14 @@ elif menu == '원금 및 입출금 관리':
     whose_flow = make_grouped_summary(
         period_summary_source,
         ordered_group_dims,
+        selected_column_dim,
         ['입금 누적액', '출금 누적액', '순입출금 누적액'],
     )
     st.dataframe(
-        whose_flow.style.format({
-            col: '{:,.0f}원' for col in [
-                '입금 누적액', '출금 누적액', '순입출금 누적액'
-            ]
-            if col in whose_flow.columns
-        }),
+        whose_flow.style.format(summary_metric_format(
+            whose_flow,
+            ['입금 누적액', '출금 누적액', '순입출금 누적액'],
+        )),
         use_container_width=True,
         hide_index=True,
     )
@@ -4953,11 +5060,12 @@ elif menu == '원금 및 입출금 관리':
       monthly_summary = make_grouped_summary(
           period_cf,
           ordered_group_dims,
+          selected_column_dim,
           ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
       )
-    elif 'month' in ordered_group_dims:
+    elif 'month' in summary_group_dims:
       cumulative_group_dims = [
-          key for key in ordered_group_dims if key not in ('year', 'month')
+          key for key in summary_group_dims if key not in ('year', 'month')
       ]
       monthly_group_keys = list(dict.fromkeys(
           ['year'] + cumulative_group_dims + ['month']
@@ -4981,7 +5089,7 @@ elif menu == '원금 및 입출금 관리':
           monthly_summary_source['month'].isin(selected_month_values)
       ]
       monthly_summary_source = (
-          monthly_summary_source.groupby(ordered_group_dims, dropna=False)
+          monthly_summary_source.groupby(summary_group_dims, dropna=False)
           [['입금액', '출금액', '순입출금액', '누적 순입출금액']]
           .sum()
           .reset_index()
@@ -4989,27 +5097,35 @@ elif menu == '원금 및 입출금 관리':
       monthly_summary = make_grouped_summary(
           monthly_summary_source,
           ordered_group_dims,
+          selected_column_dim,
           ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
       )
     else:
-      monthly_summary_source = period_cf.rename(columns={
-          '순입출금액': '누적 순입출금액',
-      }).copy()
+      monthly_summary_source = period_cf.copy()
+      monthly_summary_source['누적 순입출금액'] = (
+          monthly_summary_source['순입출금액']
+      )
       monthly_summary = make_grouped_summary(
           monthly_summary_source,
           ordered_group_dims,
+          selected_column_dim,
           ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
       )
-    if '월' in monthly_summary.columns:
-      monthly_summary['월'] = monthly_summary['월'].map(
+    monthly_month_column = (
+        ('행 레이블', '월')
+        if isinstance(monthly_summary.columns, pd.MultiIndex) else '월'
+    )
+    if monthly_month_column in monthly_summary.columns:
+      monthly_summary[monthly_month_column] = monthly_summary[
+          monthly_month_column
+      ].map(
           lambda month: f'{int(month)}월' if pd.notna(month) and str(month).strip() else month
       )
     st.dataframe(
-        monthly_summary.style.format({
-            col: '{:,.0f}원' for col in [
-                '입금액', '출금액', '순입출금액', '누적 순입출금액'
-            ] if col in monthly_summary.columns
-        }),
+        monthly_summary.style.format(summary_metric_format(
+            monthly_summary,
+            ['입금액', '출금액', '순입출금액', '누적 순입출금액'],
+        )),
         use_container_width=True,
         hide_index=True,
     )
