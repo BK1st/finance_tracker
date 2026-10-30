@@ -2517,25 +2517,34 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 .reset_index()
                 .sort_values([group_col, 'Date'])
             )
-            sh_agg['sh_period_profit'] = sh_agg.groupby(group_col)[
-                '총평가금액'
-            ].diff()
-            sh_agg['sh_cumulative_profit'] = (
-                sh_agg['총평가금액']
-                - sh_agg.groupby(group_col)['총평가금액'].transform('first')
-            )
-            sh_agg['sh_start_value'] = sh_agg.groupby(group_col)[
-                '총평가금액'
-            ].transform('first')
             sh_agg['sh_prev_eval'] = sh_agg.groupby(group_col)[
                 '총평가금액'
             ].shift(1)
             sh_agg['sh_prev_principal'] = sh_agg.groupby(group_col)[
                 '원금'
             ].shift(1)
+            sh_agg['sh_period_cash_flow'] = (
+                sh_agg['원금'] - sh_agg['sh_prev_principal']
+            ).fillna(0)
+            sh_agg['sh_period_profit'] = (
+                sh_agg['총평가금액']
+                - sh_agg['sh_prev_eval'].fillna(sh_agg['총평가금액'])
+                - sh_agg['sh_period_cash_flow']
+            )
+            sh_agg['sh_cumulative_profit'] = (
+                sh_agg['총평가금액']
+                - sh_agg.groupby(group_col)['총평가금액'].transform('first')
+                - (
+                    sh_agg['원금']
+                    - sh_agg.groupby(group_col)['원금'].transform('first')
+                )
+            )
+            sh_agg['sh_start_value'] = sh_agg.groupby(group_col)[
+                '총평가금액'
+            ].transform('first')
             sh_agg['sh_period_base'] = (
                 sh_agg['sh_prev_eval'].fillna(sh_agg['총평가금액'])
-                + (sh_agg['원금'] - sh_agg['sh_prev_principal']).fillna(0)
+                + sh_agg['sh_period_cash_flow']
             )
 
             df_curr = ensure_bj_selection_metrics(
