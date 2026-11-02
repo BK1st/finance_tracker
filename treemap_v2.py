@@ -1050,18 +1050,57 @@ def _get_daily_prices(
 
 
 def get_selected_owner_date_pairs():
-    """시점별 보유 현황에서 선택한 소유주별 기준 날짜를 반환한다."""
+    """현재 선택 날짜를 반환하고, 선택 상태가 없으면 소유주별 최신 날짜를 사용한다."""
     selected_owners = st.session_state.get("treemap_sel_whose", [])
     if isinstance(selected_owners, str):
         selected_owners = [selected_owners]
 
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT COALESCE(NULLIF(whose, ''), '본인') AS owner, record_date
+            FROM portfolio
+            WHERE record_date IS NOT NULL AND TRIM(record_date) != ''
+            ORDER BY record_date DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    owner_dates = {}
+    for owner, record_date in rows:
+        owner = str(owner)
+        record_date = str(record_date)
+        owner_dates.setdefault(owner, [])
+        if record_date not in owner_dates[owner]:
+            owner_dates[owner].append(record_date)
+
+    available_owners = sorted(owner_dates)
+    if not is_current_user_admin:
+        available_owners = [
+            owner for owner in available_owners if owner == logged_in_user
+        ]
+
+    selected_owners = [
+        owner for owner in selected_owners if owner in available_owners
+    ]
+    if not selected_owners:
+        selected_owners = available_owners
+        st.session_state["treemap_sel_whose"] = selected_owners
+
     owner_date_pairs = []
     for owner in selected_owners:
-        if not is_current_user_admin and owner != logged_in_user:
+        dates = owner_dates.get(owner, [])
+        if not dates:
             continue
-        selected_date = st.session_state.get(f"select_date_{owner}")
-        if selected_date is not None:
-            owner_date_pairs.append((str(owner), str(selected_date)))
+
+        date_key = f"select_date_{owner}"
+        selected_date = st.session_state.get(date_key)
+        if selected_date is None or str(selected_date) not in dates:
+            selected_date = dates[0]
+            st.session_state[date_key] = selected_date
+        owner_date_pairs.append((str(owner), str(selected_date)))
     return list(dict.fromkeys(owner_date_pairs))
 
 
@@ -1226,7 +1265,8 @@ if st.sidebar.button("🧹 시세 캐시 비우기"):
     st.session_state.live_rate_store = fetch_live_exchange_rate()
     st.sidebar.success(
         "캐시를 비우고 환율을 조회했습니다. 시점별 보유 현황에서 "
-        "소유주와 날짜를 선택한 뒤 선택 시점 업데이트를 눌러 갱신하세요."
+        "현재 선택된 날짜(선택 전이면 소유주별 최신 날짜)를 기준으로 "
+        "시세를 갱신하세요."
     )
 
 selected_snapshot_pairs = get_selected_owner_date_pairs()
@@ -1237,7 +1277,7 @@ if selected_snapshot_pairs:
     st.sidebar.caption(f"시세 갱신 대상: {selected_snapshot_label}")
 else:
     st.sidebar.caption(
-        "시점별 보유 현황에서 소유주와 기준 날짜를 먼저 선택하면 갱신할 수 있습니다."
+        "업데이트할 자산 데이터가 없습니다."
     )
 
 if st.sidebar.button(
@@ -1301,8 +1341,7 @@ if menu == "자산 입력 및 관리":
         )
     else:
         st.warning(
-            "시점별 보유 현황 메뉴에서 소유주와 기준 날짜를 먼저 선택해야 "
-            "해당 스냅샷을 업데이트할 수 있습니다."
+            "업데이트할 자산 데이터가 없습니다."
         )
     rate_option = st.radio(
         "환율 적용 기준 선택",
