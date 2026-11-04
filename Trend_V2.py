@@ -2445,22 +2445,16 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           elif group_col == 'category4':
             item_agg = (
                 df_curr.groupby(['Date', 'category4', 'item_name'])[
-                    ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
+                    ['원금', '평가손익', '총평가금액', '주기별 평가손익']
                 ]
                 .sum()
                 .reset_index()
             )
             grp_agg = (
                 item_agg.groupby(['Date', group_col])[
-                    ['원금', '평가손익', '총평가금액', '주기별 평가손익', '주기별 수익률']
+                    ['원금', '평가손익', '총평가금액', '주기별 평가손익']
                 ]
-                .agg({
-                    '원금': 'sum',
-                    '평가손익': 'sum',
-                    '총평가금액': 'sum',
-                    '주기별 평가손익': 'sum',
-                    '주기별 수익률': 'mean'
-                })
+                .sum()
                 .reset_index()
             )
           else:
@@ -2491,7 +2485,37 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           grp_agg['Chart_Date'] = grp_agg['dt_temp'].dt.strftime('%Y-%m-%d')
           grp_agg.drop(columns=['dt_temp'], inplace=True)
 
-          if group_col in ['item_name', 'category4']:
+          if group_col == 'category4':
+            grp_agg['선택구간 누적손익'] = grp_agg['평가손익']
+            grp_agg['prev_eval'] = grp_agg.groupby(group_col)[
+                '총평가금액'
+            ].shift(1)
+            grp_agg['prev_principal'] = grp_agg.groupby(group_col)[
+                '원금'
+            ].shift(1)
+            grp_agg['period_cash_flow'] = (
+                grp_agg['원금'] - grp_agg['prev_principal']
+            )
+            grp_agg['period_start_base'] = (
+                grp_agg['prev_eval'].fillna(grp_agg['총평가금액'])
+                + grp_agg['period_cash_flow'].fillna(0)
+            )
+            grp_agg['주기별 수익률'] = np.where(
+                grp_agg['period_start_base'] > 0,
+                grp_agg['주기별 평가손익']
+                / grp_agg['period_start_base'] * 100,
+                0,
+            )
+            grp_agg['growth_factor'] = (
+                1 + grp_agg['주기별 수익률'].fillna(0) / 100
+            )
+            grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)[
+                'growth_factor'
+            ].cumprod()
+            grp_agg['선택기간 누적 수익률'] = (
+                grp_agg['누적_성장지수'] - 1
+            ) * 100
+          elif group_col == 'item_name':
             grp_agg['선택구간 누적손익'] = grp_agg['평가손익']
             grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
             grp_agg['누적_성장지수'] = grp_agg.groupby(group_col)['growth_factor'].cumprod()
