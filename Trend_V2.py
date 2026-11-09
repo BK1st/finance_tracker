@@ -1262,6 +1262,29 @@ def render_summary_page(
     end_price = float(end_prices.iloc[-1]['Close'])
     return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
 
+  def benchmark_drawdown_rate(label):
+    prices = benchmark_data.get(label)
+    if prices is None or prices.empty:
+      return np.nan
+    price_series = prices.copy()
+    price_series['Date'] = pd.to_datetime(
+        price_series['Date_str'], errors='coerce'
+    ).dt.normalize()
+    price_series['Close'] = pd.to_numeric(
+        price_series['Close'], errors='coerce'
+    )
+    price_series = price_series.dropna(subset=['Date', 'Close']).sort_values(
+        'Date'
+    )
+    price_series = price_series[
+        price_series['Date'] <= pd.Timestamp(as_of_date).normalize()
+    ]
+    if price_series.empty:
+      return np.nan
+    current_price = float(price_series.iloc[-1]['Close'])
+    peak_price = float(price_series['Close'].max())
+    return calculate_drawdown(current_price, peak_price)[1]
+
   layout_columns = st.selectbox(
       '표 Layout 열 수 (조회된 데이터에 적용)',
       options=[1, 2, 3],
@@ -1285,13 +1308,18 @@ def render_summary_page(
     ].sum()
     drawdown_history = history_data
     if group_column == '_owner_total':
-      drawdown_history = history_data[
-          history_data['whose'].isin(['BJ', 'SH'])
-      ].copy()
-      drawdown_history[group_column] = 'BJ+SH 전체 합산'
+      if 'whose' in history_data.columns:
+        drawdown_history = history_data[
+            history_data['whose'].isin(['BJ', 'SH'])
+        ].copy()
+        drawdown_history[group_column] = 'BJ+SH 전체 합산'
+      else:
+        drawdown_history = pd.DataFrame()
     if (
         not drawdown_history.empty
         and group_column in drawdown_history.columns
+        and 'Date' in drawdown_history.columns
+        and '_history_eval' in drawdown_history.columns
     ):
       history_by_date = (
           drawdown_history.groupby(
@@ -1405,7 +1433,9 @@ def render_summary_page(
             label: benchmark_label,
             '평가금액 (원)': np.nan,
             '고점 대비 하락 금액 (원)': np.nan,
-            '고점 대비 하락률 (%)': np.nan,
+            '고점 대비 하락률 (%)': benchmark_drawdown_rate(
+                benchmark_label
+            ),
         }
         for period_label, period_start, period_end in period_windows:
           row[f'평가손익 ({period_label}) (원)'] = np.nan
@@ -2630,30 +2660,38 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             else bm_ticker_map[bm_label]
         )
         if tk in market_data.columns and not market_data.empty:
-          prices = []
-          dates_str = []
-          for t_date in target_dates:
-            t_str = t_date.strftime('%Y-%m-%d')
-            if pd.to_datetime(t_str) in market_data.index:
-              p = market_data.loc[pd.to_datetime(t_str), tk]
-            else:
-              p = market_data[tk].asof(pd.to_datetime(t_str))
+          if menu == 'SUMMARY':
+            benchmark_prices = market_data[tk].dropna()
+            bm_df = pd.DataFrame({
+                'Date_str': pd.to_datetime(
+                    benchmark_prices.index
+                ).strftime('%Y-%m-%d'),
+                'Close': benchmark_prices.to_numpy(),
+            })
+          else:
+            prices = []
+            dates_str = []
+            for t_date in target_dates:
+              t_str = t_date.strftime('%Y-%m-%d')
+              if pd.to_datetime(t_str) in market_data.index:
+                p = market_data.loc[pd.to_datetime(t_str), tk]
+              else:
+                p = market_data[tk].asof(pd.to_datetime(t_str))
 
-            if (
-                (pd.isna(p) or p == 0)
-                and tk in market_data.columns
-                and not market_data[tk].dropna().empty
-            ):
-              p = float(market_data[tk].dropna().iloc[0])
+              if (
+                  (pd.isna(p) or p == 0)
+                  and not market_data[tk].dropna().empty
+              ):
+                p = float(market_data[tk].dropna().iloc[0])
 
-            prices.append(p)
-            dates_str.append(t_str)
+              prices.append(p)
+              dates_str.append(t_str)
 
-          bm_df = (
-              pd.DataFrame({'Date_str': dates_str, 'Close': prices})
-              .bfill()
-              .ffill()
-          )
+            bm_df = (
+                pd.DataFrame({'Date_str': dates_str, 'Close': prices})
+                .bfill()
+                .ffill()
+            )
           init_p = bm_df['Close'].iloc[0] if len(bm_df) > 0 else 0
 
           bm_df['주기별 수익률'] = bm_df['Close'].pct_change() * 100
