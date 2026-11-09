@@ -994,6 +994,18 @@ def get_history_evaluation_values(
   return result
 
 
+def calculate_drawdown(current_value, peak_value):
+  if (
+      pd.isna(current_value)
+      or current_value <= 0
+      or pd.isna(peak_value)
+      or peak_value <= 0
+  ):
+    return np.nan, np.nan
+  amount = current_value - peak_value
+  return amount, amount / peak_value * 100
+
+
 def style_trend_report_table(table):
   numeric_columns = table.select_dtypes(include='number').columns
   column_config = {}
@@ -3274,13 +3286,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             peak_eval = history_group_peaks.get(grp, np.nan)
-            drawdown_amount = (
-                final_eval - peak_eval
-                if pd.notna(peak_eval) else np.nan
-            )
-            drawdown_rate = (
-                drawdown_amount / peak_eval * 100
-                if pd.notna(peak_eval) and peak_eval > 0 else np.nan
+            drawdown_amount, drawdown_rate = calculate_drawdown(
+                final_eval, peak_eval
             )
 
             final_bj_year_profit = (
@@ -3333,14 +3340,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           del row['_eval']
 
         total_ret = calculate_combined_cumulative_return(grp_agg_summary)
-        total_drawdown_amount = (
-            total_eval_sum - history_total_peak
-            if pd.notna(history_total_peak) else np.nan
-        )
-        total_drawdown_rate = (
-            total_drawdown_amount / history_total_peak * 100
-            if pd.notna(history_total_peak) and history_total_peak > 0
-            else np.nan
+        total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
+            total_eval_sum, history_total_peak
         )
         total_summary_row = {
             prefix: '전체 합산',
@@ -3464,16 +3465,19 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 holdings_summary['_all_time_peak'] = holdings_summary[
                     '보유종목'
                 ].map(holding_peaks)
+                valid_drawdown = (
+                    (holdings_summary['최종 기말 평가 금액 (원)'] > 0)
+                    & (holdings_summary['_all_time_peak'] > 0)
+                )
                 holdings_summary['고점 대비 하락 금액 (원)'] = (
                     holdings_summary['최종 기말 평가 금액 (원)']
                     - holdings_summary['_all_time_peak']
-                )
-                holdings_summary['고점 대비 하락률 (%)'] = np.where(
-                    holdings_summary['_all_time_peak'] > 0,
+                ).where(valid_drawdown)
+                holdings_summary['고점 대비 하락률 (%)'] = (
                     holdings_summary['고점 대비 하락 금액 (원)']
-                    / holdings_summary['_all_time_peak'] * 100,
-                    np.nan,
-                )
+                    / holdings_summary['_all_time_peak']
+                    * 100
+                ).where(valid_drawdown)
                 holdings_summary['점유율 (%)'] = np.where(
                     total_eval_sum > 0,
                     holdings_summary['최종 기말 평가 금액 (원)']
@@ -4315,13 +4319,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
             peak_eval = history_whose_peaks.get(w, np.nan)
-            drawdown_amount = (
-                final_eval - peak_eval
-                if pd.notna(peak_eval) else np.nan
-            )
-            drawdown_rate = (
-                drawdown_amount / peak_eval * 100
-                if pd.notna(peak_eval) and peak_eval > 0 else np.nan
+            drawdown_amount, drawdown_rate = calculate_drawdown(
+                final_eval, peak_eval
             )
             final_bj_year_profit = (
                 sub['BJ 올해 누적손익'].iloc[-1]
@@ -4358,14 +4357,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           del row['_eval']
 
         total_ret = calculate_combined_cumulative_return(agg_whose_summary)
-        total_drawdown_amount = (
-            total_eval_sum - history_total_peak
-            if pd.notna(history_total_peak) else np.nan
-        )
-        total_drawdown_rate = (
-            total_drawdown_amount / history_total_peak * 100
-            if pd.notna(history_total_peak) and history_total_peak > 0
-            else np.nan
+        total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
+            total_eval_sum, history_total_peak
         )
         total_bj_year_profit = sum(
             row[bj_year_profit_label]
