@@ -3117,7 +3117,6 @@ elif menu == "계좌기준 자산 점유율":
             category_columns = dict(share_chart_specs)
             bar_traces = []
             trace_selections = []
-            bar_annotations = []
             selected_specs = [
                 (title, category_columns[title])
                 for title in selected_categories
@@ -3145,7 +3144,6 @@ elif menu == "계좌기준 자산 점유율":
                     .reset_index(drop=True)
                 )
                 category_total = grouped_values["평가액(원)"].sum()
-                stacked_amount = 0.0
                 for item_index, row in grouped_values.iterrows():
                     item_name = row[group_column]
                     amount = float(row["평가액(원)"])
@@ -3155,43 +3153,17 @@ elif menu == "계좌기준 자산 점유율":
                         if category_total > 0
                         else 0
                     )
-                    segment_center = (
-                        stacked_amount + amount_in_ten_millions / 2
-                    )
-                    bar_annotations.append(
-                        dict(
-                            x=chart_title,
-                            y=segment_center,
-                            xref="x",
-                            yref="y",
-                            xshift=42,
-                            xanchor="left",
-                            yanchor="middle",
-                            text=(
-                                f"<b>{html.escape(item_name)}</b> · "
-                                f"{amount_in_ten_millions:,.2f}천만원 · "
-                                f"{share_percent:.1f}%"
-                            ),
-                            showarrow=False,
-                            align="left",
-                            font=dict(
-                                size=chart_text_size,
-                                color="#1f2937",
-                            ),
-                            width=220,
-                            bgcolor="rgba(255,255,255,0.94)",
-                            bordercolor="#d1d5db",
-                            borderwidth=1,
-                            borderpad=3,
-                        )
+                    show_in_legend = chart_title in (
+                        "분류4별",
+                        "보유항목별",
                     )
                     bar_traces.append(
                         go.Bar(
                             x=[chart_title],
                             y=[amount_in_ten_millions],
                             name=(
-                                f"{chart_title} · {item_name} | "
-                                f"{amount / 10_000_000:,.2f}천만원 | "
+                                f"{item_name} · "
+                                f"{amount_in_ten_millions:,.2f}천만원 · "
                                 f"{share_percent:.1f}%"
                             ),
                             customdata=[
@@ -3202,6 +3174,7 @@ elif menu == "계좌기준 자산 점유율":
                                 ]
                             ],
                             texttemplate=(
+                                "%{customdata[0]} · "
                                 "%{customdata[1]:,.2f}천만원 · "
                                 "%{customdata[2]:.1f}%"
                             ),
@@ -3219,6 +3192,9 @@ elif menu == "계좌기준 자산 점유율":
                                 )[item_index % 10]
                             ),
                             legendgroup=chart_title,
+                            legendgrouptitle_text=(
+                                chart_title if show_in_legend else None
+                            ),
                             hovertemplate=(
                                 f"<b>{chart_title}</b><br>"
                                 "%{customdata[0]}<br>"
@@ -3226,10 +3202,9 @@ elif menu == "계좌기준 자산 점유율":
                                 "점유율: %{customdata[2]:.2f}%"
                                 "<extra></extra>"
                             ),
-                            showlegend=False,
+                            showlegend=show_in_legend,
                         )
                     )
-                    stacked_amount += amount_in_ten_millions
                     trace_selections.append(
                         {
                             "category": chart_title,
@@ -3258,7 +3233,7 @@ elif menu == "계좌기준 자산 점유율":
                 stacked_bar.update_layout(
                     barmode="stack",
                     height=chart_height,
-                    margin=dict(t=20, l=16, r=16, b=56),
+                    margin=dict(t=20, l=16, r=250, b=56),
                     font=dict(
                         family="Malgun Gothic, Segoe UI, sans-serif",
                         size=13,
@@ -3274,10 +3249,20 @@ elif menu == "계좌기준 자산 점유율":
                         rangemode="tozero",
                         separatethousands=True,
                     ),
+                    legend=dict(
+                        x=1.02,
+                        y=1,
+                        xanchor="left",
+                        yanchor="top",
+                        font=dict(size=11),
+                        bgcolor="rgba(255,255,255,0.9)",
+                        bordercolor="#d1d5db",
+                        borderwidth=1,
+                        tracegroupgap=10,
+                    ),
                     uniformtext_minsize=8,
-                    uniformtext_mode="hide",
+                    uniformtext_mode="show",
                     hovermode="closest",
-                    annotations=bar_annotations,
                 )
             else:
                 stacked_bar = go.Figure()
