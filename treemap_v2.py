@@ -3036,23 +3036,11 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
-        chart_control_columns = st.columns([3, 1])
-        with chart_control_columns[0]:
-            chart_height = st.slider(
-                "차트 세로 크기",
-                min_value=620,
-                max_value=1400,
-                value=900,
-                step=100,
-                key="treemap_share_chart_height",
-            )
-        with chart_control_columns[1]:
-            st.write("")
-            reset_chart = st.button(
-                "RESET",
-                key="treemap_share_reset_chart",
-                use_container_width=True,
-            )
+        chart_height = 900
+        reset_chart = st.button(
+            "RESET",
+            key="treemap_share_reset_chart",
+        )
         reset_nonce_key = "treemap_share_chart_reset_nonce"
         if reset_nonce_key not in st.session_state:
             st.session_state[reset_nonce_key] = 0
@@ -3174,7 +3162,7 @@ elif menu == "계좌기준 자산 점유율":
                                 "점유율: %{customdata[2]:.2f}%"
                                 "<extra></extra>"
                             ),
-                            showlegend=True,
+                            showlegend=False,
                         )
                     )
                     trace_selections.append(
@@ -3205,7 +3193,7 @@ elif menu == "계좌기준 자산 점유율":
                 stacked_bar.update_layout(
                     barmode="stack",
                     height=chart_height,
-                    margin=dict(t=20, l=16, r=300, b=56),
+                    margin=dict(t=20, l=16, r=16, b=56),
                     font=dict(
                         family="Malgun Gothic, Segoe UI, sans-serif",
                         size=13,
@@ -3220,17 +3208,6 @@ elif menu == "계좌기준 자산 점유율":
                         title="평가액 (천만원)",
                         rangemode="tozero",
                         separatethousands=True,
-                    ),
-                    legend=dict(
-                        x=1.02,
-                        y=1,
-                        xanchor="left",
-                        yanchor="top",
-                        font=dict(size=12),
-                        bgcolor="rgba(255,255,255,0.9)",
-                        bordercolor="#d1d5db",
-                        borderwidth=1,
-                        tracegroupgap=10,
                     ),
                     uniformtext_minsize=9,
                     uniformtext_mode="show",
