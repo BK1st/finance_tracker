@@ -1000,25 +1000,26 @@ def style_trend_report_table(table):
   scale_groups = {}
   group_max_abs = {}
   wrapped_labels = {
-      '선택구간 누적 평가 손익 (원)': '선택구간 누적\n평가 손익 (원)',
-      '최종 기말 평가 금액 (원)': '최종 기말 평가\n금액 (원)',
-      '선택구간 누적 수익률 (%)': '선택구간 누적\n수익률 (%)',
-      '고점 대비 하락 금액 (원)': '고점 대비 하락\n금액 (원)',
-      '고점 대비 하락률 (%)': '고점 대비\n하락률 (%)',
-      'BJ 올해 누적 평가손익': 'BJ 올해 누적\n평가손익',
+      '선택구간 누적 평가 손익 (원)': '구간손익\n(원)',
+      '최종 기말 평가 금액 (원)': '평가액\n(원)',
+      '점유율 (%)': '비중\n(%)',
+      '선택구간 누적 수익률 (%)': '구간수익률\n(%)',
+      '고점 대비 하락 금액 (원)': '고점대비 하락액\n(원)',
+      '고점 대비 하락률 (%)': '고점대비 하락률\n(%)',
+      'BJ 올해 누적 평가손익': 'BJ 올해손익\n(원)',
       'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)': (
-          'BJ 올해 누적 평가손익\n(7/31 이후 환차손 제외 추정)'
+          'BJ 올해손익*\n(원)'
       ),
-      'BJ 올해 누적 수익률': 'BJ 올해 누적\n수익률',
+      'BJ 올해 누적 수익률': 'BJ 올해수익률\n(%)',
       'BJ 올해 누적 수익률 (7/31 이후 환차손 제외 추정)': (
-          'BJ 올해 누적 수익률\n(7/31 이후 환차손 제외 추정)'
+          'BJ 올해수익률*\n(%)'
       ),
   }
   for column in table.columns:
     if column not in numeric_columns:
       column_config[column] = st.column_config.TextColumn(
           label=wrapped_labels.get(str(column), str(column)),
-          width='medium',
+          width='small',
       )
   for column in numeric_columns:
     values = pd.to_numeric(table[column], errors='coerce')
@@ -2681,6 +2682,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       # 그룹 요약 차트 (계좌별, 증권사별, 계좌유형별, Category 4별, 보유항목별)
       # -------------------------------------------------------------------------
       def draw_group_summary_charts(raw_df, group_col, prefix):
+        history_eval_df = pd.DataFrame()
+        selected_accounts_filter = []
+        selected_cat4_filter = []
         st.markdown(f'### 📊 [{prefix}] 전체 종합 비교 분석')
         if (raw_df['whose'] == 'BJ').any():
           st.caption(
