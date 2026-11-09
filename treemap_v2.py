@@ -3036,7 +3036,7 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
-        chart_height = 450
+        chart_height = 650
         chart_text_size = max(9, min(14, round(chart_height / 40)))
         reset_chart = st.button(
             "RESET",
@@ -3092,7 +3092,6 @@ elif menu == "계좌기준 자산 점유율":
             category_columns = dict(share_chart_specs)
             bar_traces = []
             trace_selections = []
-            segment_records = []
             selected_specs = [
                 (title, category_columns[title])
                 for title in selected_categories
@@ -3127,17 +3126,6 @@ elif menu == "계좌기준 자산 점유율":
                         amount / category_total * 100
                         if category_total > 0
                         else 0
-                    )
-                    segment_records.append(
-                        {
-                            "분류": chart_title,
-                            "항목 · 금액 · 점유율": (
-                                f"{item_name} · "
-                                f"{amount / 10_000_000:,.2f}천만원 · "
-                                f"{share_percent:.1f}%"
-                            ),
-                            "_금액": amount,
-                        }
                     )
                     bar_traces.append(
                         go.Bar(
@@ -3386,34 +3374,6 @@ elif menu == "계좌기준 자산 점유율":
                     use_container_width=True,
                     hide_index=True,
                 )
-            else:
-                if segment_records:
-                    segment_table = pd.DataFrame(segment_records).sort_values(
-                        ["분류", "_금액"],
-                        ascending=[True, False],
-                    )
-                    detail_panel.markdown("**항목 · 금액 · 점유율**")
-                    detail_panel.dataframe(
-                        segment_table[
-                            ["분류", "항목 · 금액 · 점유율"]
-                        ],
-                        column_config={
-                            "분류": st.column_config.TextColumn(
-                                "분류", width="small"
-                            ),
-                            "항목 · 금액 · 점유율": (
-                                st.column_config.TextColumn(
-                                    "항목 · 금액 · 점유율",
-                                    width="large",
-                                )
-                            ),
-                        },
-                        use_container_width=True,
-                        hide_index=True,
-                        height=chart_height,
-                    )
-                else:
-                    detail_panel.info("표시할 항목이 없습니다.")
 
         st.session_state["treemap_share_active_selection"] = active_share_selection
 
