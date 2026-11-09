@@ -1018,7 +1018,7 @@ def style_trend_report_table(table):
     if column not in numeric_columns:
       column_config[column] = st.column_config.TextColumn(
           label=wrapped_labels.get(str(column), str(column)),
-          width='large',
+          width='medium',
       )
   for column in numeric_columns:
     values = pd.to_numeric(table[column], errors='coerce')
@@ -1086,7 +1086,7 @@ def style_trend_report_table(table):
       number_format = 'localized'
     column_config[column] = st.column_config.NumberColumn(
         label=wrapped_labels.get(column_name, column_name),
-        width='medium',
+        width='small',
         format=number_format,
     )
   return styled_table, column_config
@@ -2693,10 +2693,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           )
 
         # 계좌 필터 및 Category4 필터 조건 다중 선택 지원 (보유항목별 등)
-        if (
-            not history_eval_df.empty
-            and group_col in ['category4', 'item_name']
-        ):
+        if group_col in ['category4', 'item_name']:
           all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
           all_cat4 = sorted(raw_df['category4'].dropna().unique().tolist())
 
