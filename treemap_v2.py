@@ -1380,6 +1380,9 @@ if menu == analysis_menu and previous_menu != analysis_menu:
             "treemap_drilldown_selector": "drilldown",
             "tree_sort_by_col": "sort_by",
             "tree_sort_order": "sort_order",
+            "treemap_share_whose_filter": "share_whose",
+            "treemap_share_account_type_filter": "share_account_types",
+            "treemap_share_account_filter": "share_accounts",
         }
         for state_key, saved_key in preference_state_keys.items():
             if saved_key in saved_preferences:
@@ -2449,39 +2452,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                     key="tree_sort_order"
                 )
 
-            save_treemap_user_preferences(
-                logged_in_username,
-                {
-                    "whose": list(selected_whose_list),
-                    "owner_dates": {
-                        owner: selected_date
-                        for owner, selected_date in owner_selected_dates.items()
-                    },
-                    "use_historical_price": use_historical_price,
-                    "live_tracking": live_tracking,
-                    "regular_market_only_us": st.session_state.get(
-                        "regular_market_only_us", False
-                    ),
-                    "regular_market_only_kr": st.session_state.get(
-                        "regular_market_only_kr", False
-                    ),
-                    "target_eval_date": target_eval_date,
-                    "l1": l1,
-                    "l2": l2,
-                    "l3": l3,
-                    "l4": l4,
-                    "color_option": color_option,
-                    "custom_base_date": (
-                        custom_base_date.strftime("%Y-%m-%d")
-                        if custom_base_date
-                        else None
-                    ),
-                    "drilldown": selected_drill_path,
-                    "sort_by": sort_by_col,
-                    "sort_order": sort_order,
-                },
-            )
-
             is_reverse = ("내림차순" in sort_order)
 
             def _tree_metrics(group_df):
@@ -2772,6 +2742,228 @@ elif menu == "일별/시점별 보유 현황 분석":
                 "분류 타일 또는 실제 시장 티커가 없는 항목은 열리지 않습니다."
             )
             render_clickable_treemap(fig_treemap, treemap_chart_nodes)
+
+            st.markdown("---")
+            st.subheader("🍩 계좌 기준 자산 점유율")
+            st.caption(
+                "선택한 소유자·계좌유형·계좌의 평가액을 기준으로 각 항목별 비중을 비교합니다. "
+                "도넛 조각에 마우스를 올리면 항목명과 평가액을 확인할 수 있습니다."
+            )
+
+            share_filter_base = sub_df.copy()
+            share_filter_base["_share_account_key"] = (
+                share_filter_base["whose"].astype(str)
+                + " · "
+                + share_filter_base["account_num"].astype(str)
+            )
+
+            def available_share_values(frame, column):
+                return sorted(frame[column].dropna().astype(str).unique().tolist())
+
+            def prepare_share_filter(state_key, available_values):
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = list(available_values)
+                else:
+                    st.session_state[state_key] = [
+                        value
+                        for value in st.session_state[state_key]
+                        if value in available_values
+                    ]
+
+            share_owner_options = available_share_values(
+                share_filter_base, "whose"
+            )
+            prepare_share_filter(
+                "treemap_share_whose_filter", share_owner_options
+            )
+            share_filter_cols = st.columns(3)
+            with share_filter_cols[0]:
+                selected_share_owners = st.multiselect(
+                    "점유율 WHOSE 필터",
+                    options=share_owner_options,
+                    key="treemap_share_whose_filter",
+                )
+
+            owner_filtered_share_df = share_filter_base[
+                share_filter_base["whose"].astype(str).isin(
+                    selected_share_owners
+                )
+            ]
+            share_account_type_options = available_share_values(
+                owner_filtered_share_df, "account_type"
+            )
+            prepare_share_filter(
+                "treemap_share_account_type_filter",
+                share_account_type_options,
+            )
+            with share_filter_cols[1]:
+                selected_share_account_types = st.multiselect(
+                    "점유율 계좌유형 필터",
+                    options=share_account_type_options,
+                    key="treemap_share_account_type_filter",
+                )
+
+            account_type_filtered_share_df = owner_filtered_share_df[
+                owner_filtered_share_df["account_type"].astype(str).isin(
+                    selected_share_account_types
+                )
+            ]
+            share_account_options = available_share_values(
+                account_type_filtered_share_df, "_share_account_key"
+            )
+            prepare_share_filter(
+                "treemap_share_account_filter", share_account_options
+            )
+            with share_filter_cols[2]:
+                selected_share_accounts = st.multiselect(
+                    "점유율 계좌 필터",
+                    options=share_account_options,
+                    key="treemap_share_account_filter",
+                )
+
+            share_chart_df = account_type_filtered_share_df[
+                account_type_filtered_share_df["_share_account_key"].isin(
+                    selected_share_accounts
+                )
+            ].copy()
+
+            share_chart_specs = [
+                ("WHOSE별", "whose"),
+                ("계좌유형별 (일반/연금)", "account_type"),
+                ("분류2별", "category2"),
+                ("분류3별", "category3"),
+                ("분류4별", "category4"),
+                ("보유항목별", "item_name"),
+            ]
+            share_chart_cols = st.columns(3)
+            for index, (chart_title, group_column) in enumerate(
+                share_chart_specs
+            ):
+                with share_chart_cols[index % 3]:
+                    st.markdown(f"##### {chart_title}")
+                    if share_chart_df.empty:
+                        st.info("필터 조건에 해당하는 계좌가 없습니다.")
+                        continue
+
+                    chart_data = share_chart_df[
+                        [group_column, "평가액(원)"]
+                    ].copy()
+                    chart_data["평가액(원)"] = pd.to_numeric(
+                        chart_data["평가액(원)"], errors="coerce"
+                    )
+                    chart_data = chart_data[
+                        chart_data["평가액(원)"].notna()
+                        & (chart_data["평가액(원)"] > 0)
+                    ]
+                    chart_data[group_column] = (
+                        chart_data[group_column]
+                        .fillna("미지정")
+                        .astype(str)
+                        .replace("", "미지정")
+                    )
+                    chart_data = (
+                        chart_data.groupby(group_column, as_index=False)[
+                            "평가액(원)"
+                        ]
+                        .sum()
+                        .sort_values("평가액(원)", ascending=False)
+                    )
+                    total_share_value = chart_data["평가액(원)"].sum()
+                    if total_share_value <= 0:
+                        st.info("표시할 양수 평가액이 없습니다.")
+                        continue
+
+                    donut = go.Figure(
+                        go.Pie(
+                            labels=chart_data[group_column],
+                            values=chart_data["평가액(원)"],
+                            hole=0.56,
+                            sort=False,
+                            textinfo="label+percent",
+                            textposition="inside",
+                            insidetextorientation="radial",
+                            hovertemplate=(
+                                "<b>%{label}</b><br>"
+                                "평가액: ₩%{value:,.0f}<br>"
+                                "점유율: %{percent}<extra></extra>"
+                            ),
+                            marker=dict(
+                                line=dict(color="white", width=1.5)
+                            ),
+                            showlegend=False,
+                        )
+                    )
+                    donut.update_layout(
+                        height=360,
+                        margin=dict(t=8, l=8, r=8, b=8),
+                        uniformtext_minsize=9,
+                        uniformtext_mode="hide",
+                        annotations=[
+                            dict(
+                                text=(
+                                    f"<b>총 평가액</b><br>"
+                                    f"₩{total_share_value:,.0f}"
+                                ),
+                                x=0.5,
+                                y=0.5,
+                                showarrow=False,
+                                font=dict(size=13),
+                            )
+                        ],
+                    )
+                    st.plotly_chart(
+                        donut,
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key=f"treemap_share_donut_{index}",
+                    )
+
+            if (
+                pd.to_numeric(
+                    share_chart_df["평가액(원)"], errors="coerce"
+                )
+                .lt(0)
+                .any()
+            ):
+                st.caption(
+                    "도넛 점유율은 음수 평가액을 제외한 양수 평가액 기준입니다."
+                )
+
+            save_treemap_user_preferences(
+                logged_in_username,
+                {
+                    "whose": list(selected_whose_list),
+                    "owner_dates": {
+                        owner: selected_date
+                        for owner, selected_date in owner_selected_dates.items()
+                    },
+                    "use_historical_price": use_historical_price,
+                    "live_tracking": live_tracking,
+                    "regular_market_only_us": st.session_state.get(
+                        "regular_market_only_us", False
+                    ),
+                    "regular_market_only_kr": st.session_state.get(
+                        "regular_market_only_kr", False
+                    ),
+                    "target_eval_date": target_eval_date,
+                    "l1": l1,
+                    "l2": l2,
+                    "l3": l3,
+                    "l4": l4,
+                    "color_option": color_option,
+                    "custom_base_date": (
+                        custom_base_date.strftime("%Y-%m-%d")
+                        if custom_base_date
+                        else None
+                    ),
+                    "drilldown": selected_drill_path,
+                    "sort_by": sort_by_col,
+                    "sort_order": sort_order,
+                    "share_whose": selected_share_owners,
+                    "share_account_types": selected_share_account_types,
+                    "share_accounts": selected_share_accounts,
+                },
+            )
 
 # ---------------------------------------------------------
 # 메뉴 3: 데이터 백업 및 복구
