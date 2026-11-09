@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import io
+import json
 import re
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -101,6 +102,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS account_alias (
             account_num TEXT PRIMARY KEY,
             alias TEXT
+        )
+    ''')
+
+  c.execute('''
+        CREATE TABLE IF NOT EXISTS query_conditions (
+            page TEXT PRIMARY KEY,
+            conditions_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         )
     ''')
 
@@ -301,6 +310,44 @@ except Exception:
 
 def get_connection():
   return sqlite3.connect(DB_FILE)
+
+
+def load_query_conditions(page):
+  conn = get_connection()
+  try:
+    row = conn.execute(
+        'SELECT conditions_json FROM query_conditions WHERE page = ?',
+        (page,),
+    ).fetchone()
+  finally:
+    conn.close()
+  if row is None:
+    return {}
+  conditions = json.loads(row[0])
+  if not isinstance(conditions, dict):
+    raise ValueError(f'저장된 {page} 조회 조건 형식이 올바르지 않습니다.')
+  return conditions
+
+
+def save_query_conditions(page, conditions):
+  conditions_json = json.dumps(
+      conditions, ensure_ascii=False, separators=(',', ':')
+  )
+  conn = get_connection()
+  try:
+    conn.execute(
+        '''
+        INSERT INTO query_conditions (page, conditions_json, updated_at)
+        VALUES (?, ?, datetime('now', 'localtime'))
+        ON CONFLICT(page) DO UPDATE SET
+          conditions_json = excluded.conditions_json,
+          updated_at = excluded.updated_at
+        ''',
+        (page, conditions_json),
+    )
+    conn.commit()
+  finally:
+    conn.close()
 
 
 def get_account_aliases():
@@ -905,19 +952,82 @@ def get_summary_calculation_dates(
   return pd.DatetimeIndex(sorted(dates))
 
 
+def calculate_combined_cumulative_return(
+    metrics, profit_column='주기별 평가손익', base_column='합산기준액'
+):
+  if metrics.empty or not {profit_column, base_column, 'Date'}.issubset(
+      metrics.columns
+  ):
+    return np.nan
+  valid = metrics[
+      profit_column
+  ].notna() & metrics[base_column].notna() & (metrics[base_column] > 0)
+  periods = (
+      metrics.loc[valid]
+      .groupby('Date')[[profit_column, base_column]]
+      .sum()
+      .sort_index()
+  )
+  if periods.empty:
+    return np.nan
+  growth_factors = 1 + periods[profit_column] / periods[base_column]
+  return (growth_factors.prod() - 1) * 100
+
+
+def get_history_evaluation_values(
+    history_df, use_ex_fx=False, use_bj_fixed_fx=False
+):
+  if history_df.empty:
+    return history_df.assign(_history_eval=pd.Series(dtype=float))
+  result = history_df.copy()
+  value_column = '총평가금액_ex_fx' if use_ex_fx else '총평가금액'
+  result['_history_eval'] = result[value_column]
+  if (
+      use_ex_fx
+      and use_bj_fixed_fx
+      and '총평가금액_bj_ex_fx' in result.columns
+  ):
+    bj_mask = result['whose'] == 'BJ'
+    result.loc[bj_mask, '_history_eval'] = result.loc[
+        bj_mask, '총평가금액_bj_ex_fx'
+    ]
+  return result
+
+
 def style_trend_report_table(table):
   numeric_columns = table.select_dtypes(include='number').columns
   column_config = {}
   scale_groups = {}
   group_max_abs = {}
+  wrapped_labels = {
+      '선택구간 누적 평가 손익 (원)': '선택구간 누적\n평가 손익 (원)',
+      '최종 기말 평가 금액 (원)': '최종 기말 평가\n금액 (원)',
+      '선택구간 누적 수익률 (%)': '선택구간 누적\n수익률 (%)',
+      '고점 대비 하락 금액 (원)': '고점 대비 하락\n금액 (원)',
+      '고점 대비 하락률 (%)': '고점 대비\n하락률 (%)',
+      'BJ 올해 누적 평가손익': 'BJ 올해 누적\n평가손익',
+      'BJ 올해 누적 평가손익 (7/31 이후 환차손 제외 추정)': (
+          'BJ 올해 누적 평가손익\n(7/31 이후 환차손 제외 추정)'
+      ),
+      'BJ 올해 누적 수익률': 'BJ 올해 누적\n수익률',
+      'BJ 올해 누적 수익률 (7/31 이후 환차손 제외 추정)': (
+          'BJ 올해 누적 수익률\n(7/31 이후 환차손 제외 추정)'
+      ),
+  }
+  for column in table.columns:
+    if column not in numeric_columns:
+      column_config[column] = st.column_config.TextColumn(
+          label=wrapped_labels.get(str(column), str(column)),
+          width='large',
+      )
   for column in numeric_columns:
     values = pd.to_numeric(table[column], errors='coerce')
     column_name = str(column)
     if '점유율' in column_name:
       scale_group = 'share'
-    elif '수익률' in column_name:
+    elif '수익률' in column_name or '하락률' in column_name:
       scale_group = 'return'
-    elif '손익' in column_name:
+    elif '손익' in column_name or '하락 금액' in column_name:
       scale_group = 'profit'
     elif '평가금액' in column_name or '평가 금액' in column_name:
       scale_group = 'evaluation'
@@ -975,6 +1085,8 @@ def style_trend_report_table(table):
     else:
       number_format = 'localized'
     column_config[column] = st.column_config.NumberColumn(
+        label=wrapped_labels.get(column_name, column_name),
+        width='medium',
         format=number_format,
     )
   return styled_table, column_config
@@ -1427,6 +1539,44 @@ menu = st.sidebar.selectbox(
     ],
 )
 
+query_page = {
+    '트렌드 리포트': 'trend',
+    'SUMMARY': 'summary',
+}.get(menu)
+if query_page is None:
+  st.session_state['_active_query_page'] = None
+  st.session_state['_query_condition_restore_pending'] = False
+elif st.session_state.get('_active_query_page') != query_page:
+  saved_conditions = load_query_conditions(query_page)
+  if saved_conditions:
+    restored_values = {
+        'trend_sel_whose': 'whose',
+        'trend_sel_account_types': 'account_types',
+        'trend_sel_category2': 'category2',
+        'trend_sel_category4': 'category4',
+        'trend_sel_accs': 'accounts',
+        'trend_view_types': 'view_types',
+        'trend_sel_bm': 'benchmarks',
+        'trend_freq_str': 'frequency',
+    }
+    for state_key, saved_key in restored_values.items():
+      if saved_key in saved_conditions:
+        st.session_state[state_key] = saved_conditions[saved_key]
+    for date_name in ('start_date', 'end_date'):
+      saved_date = saved_conditions.get(date_name)
+      if saved_date:
+        parsed_date = date.fromisoformat(saved_date)
+        if query_page == 'summary':
+          st.session_state[f'summary_{date_name}'] = parsed_date
+          st.session_state[f'summary_{date_name}_input'] = parsed_date
+        else:
+          st.session_state[f'trend_{date_name}'] = parsed_date
+          st.session_state[f'trend_{date_name}_input'] = parsed_date
+  st.session_state['_query_condition_restore_pending'] = bool(
+      saved_conditions
+  )
+  st.session_state['_active_query_page'] = query_page
+
 alias_map = get_account_aliases()
 
 bm_ticker_map = {
@@ -1518,6 +1668,12 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
     if 'trend_sel_whose' not in st.session_state:
       st.session_state['trend_sel_whose'] = all_whose_options
+    else:
+      st.session_state['trend_sel_whose'] = [
+          value
+          for value in st.session_state['trend_sel_whose']
+          if value in all_whose_options
+      ]
 
     selected_whose = st.multiselect(
         '👤 WHOSE 선택 (우선순위)',
@@ -1563,11 +1719,17 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
     category2_options = sorted(whose_items_df['category2_filter'].unique().tolist())
     category4_options = sorted(whose_items_df['category4_filter'].unique().tolist())
 
-    if st.session_state.get('_trend_filter_whose_sig') != whose_sig:
+    restore_saved_filters = st.session_state.get(
+        '_query_condition_restore_pending', False
+    )
+    if (
+        st.session_state.get('_trend_filter_whose_sig') != whose_sig
+        and not restore_saved_filters
+    ):
       st.session_state['trend_sel_account_types'] = account_type_options
       st.session_state['trend_sel_category2'] = category2_options
       st.session_state['trend_sel_category4'] = category4_options
-      st.session_state['_trend_filter_whose_sig'] = whose_sig
+    st.session_state['_trend_filter_whose_sig'] = whose_sig
 
     filter_options = {
         'trend_sel_account_types': account_type_options,
@@ -1639,9 +1801,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         tuple(selected_category2),
         tuple(selected_category4),
     )
-    if st.session_state.get('_trend_account_filter_sig') != account_filter_sig:
+    if (
+        st.session_state.get('_trend_account_filter_sig') != account_filter_sig
+        and not restore_saved_filters
+    ):
       st.session_state['trend_sel_accs'] = acc_options
-      st.session_state['_trend_account_filter_sig'] = account_filter_sig
     else:
       valid_accs = [
           lbl
@@ -1649,12 +1813,14 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           if lbl in acc_options
       ]
       st.session_state['trend_sel_accs'] = valid_accs
+    st.session_state['_trend_account_filter_sig'] = account_filter_sig
 
     selected_acc_labels = st.multiselect(
         '조회할 계좌 선택 (WHOSE 연동)',
         options=acc_options,
         key='trend_sel_accs',
     )
+    st.session_state['_query_condition_restore_pending'] = False
 
     with st.form('trend_control_form'):
       if menu == 'SUMMARY':
@@ -1755,6 +1921,21 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         st.session_state['trend_freq_str'] = option_freq
         st.session_state['trend_start_date'] = start_date
         st.session_state['trend_end_date'] = end_date
+      save_query_conditions(
+          query_page,
+          {
+              'whose': list(selected_whose),
+              'account_types': list(selected_account_types),
+              'category2': list(selected_category2),
+              'category4': list(selected_category4),
+              'accounts': list(selected_acc_labels),
+              'view_types': list(view_types),
+              'benchmarks': list(selected_bm),
+              'frequency': option_freq,
+              'start_date': start_date.isoformat(),
+              'end_date': end_date.isoformat(),
+          },
+      )
 
       selected_accounts = []
       for lbl in selected_acc_labels:
@@ -1799,6 +1980,15 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
+      record_dates = pd.to_datetime(
+          filtered_pf_df['record_date'], errors='coerce'
+      ).dropna()
+      if menu == '트렌드 리포트' and not record_dates.empty:
+        history_start_date = record_dates.min()
+        history_end_date = max(pd.Timestamp(end_date), record_dates.max())
+      else:
+        history_start_date = pd.Timestamp(start_date)
+        history_end_date = pd.Timestamp(end_date)
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
       if menu == 'SUMMARY':
@@ -1880,7 +2070,10 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         )
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
-        s_str = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+        s_str = min(
+            pd.Timestamp(start_date) - pd.Timedelta(days=10),
+            history_start_date - pd.Timedelta(days=10),
+        ).strftime('%Y-%m-%d')
         if (
             selected_bj_accounts
             and pd.Timestamp(end_date) >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
@@ -1889,9 +2082,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM) - pd.Timedelta(days=10)
           ).strftime('%Y-%m-%d')
           s_str = min(s_str, bj_history_start)
-        e_str = (pd.to_datetime(end_date) + pd.Timedelta(days=2)).strftime(
-            '%Y-%m-%d'
-        )
+        e_str = (history_end_date + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
             fetch_tickers, s_str, e_str, force_refresh=True
         )
@@ -1903,6 +2094,25 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             filtered_pf_df['record_date'],
             market_data.index,
         )
+
+      if menu == '트렌드 리포트':
+        history_dates = pd.DatetimeIndex(
+            pd.to_datetime(market_data.index, errors='coerce')
+        ).dropna().normalize().unique()
+        history_dates = history_dates[
+            (history_dates >= history_start_date.normalize())
+            & (history_dates <= history_end_date.normalize())
+        ]
+        if (
+            pd.Timestamp(end_date).normalize()
+            >= history_start_date.normalize()
+        ):
+          history_dates = history_dates.append(
+              pd.DatetimeIndex([pd.Timestamp(end_date).normalize()])
+          )
+        history_dates = pd.DatetimeIndex(sorted(set(history_dates)))
+      else:
+        history_dates = pd.DatetimeIndex([])
 
       first_t_str = target_dates[0].strftime('%Y-%m-%d')
       usd_krw_first = None
@@ -1942,6 +2152,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         bj_fixed_fx_rate = usd_krw_first
 
       base_records = []
+      history_eval_records = []
       for acc in selected_accounts:
         acc_meta = filtered_pf_df[
             filtered_pf_df['account_num'].astype(str) == acc
@@ -2020,6 +2231,104 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           account_pf_all_sorted['currency'] = account_pf_all_sorted['currency'].map(normalize_currency)
         unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker', 'currency'])
         all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
+
+        for history_date in history_dates:
+          history_str = history_date.strftime('%Y-%m-%d')
+          if account_pf_all.empty:
+            continue
+          earliest_snapshot_date = account_pf_all['record_date'].min()
+          if history_str < earliest_snapshot_date:
+            continue
+          historical_snapshots = account_pf_all[
+              account_pf_all['record_date'] <= history_str
+          ]
+          if historical_snapshots.empty:
+            continue
+          snapshot_date = historical_snapshots['record_date'].max()
+          historical_holdings = historical_snapshots[
+              historical_snapshots['record_date'] == snapshot_date
+          ]
+
+          fx_rate = None
+          if 'KRW=X' in market_data.columns and not market_data.empty:
+            fx_rate = market_data['KRW=X'].asof(history_date)
+          if pd.isna(fx_rate) or fx_rate is None or fx_rate <= 0:
+            fx_values = (
+                market_data['KRW=X'].dropna()
+                if 'KRW=X' in market_data.columns else pd.Series(dtype=float)
+            )
+            fx_rate = float(fx_values.iloc[-1]) if not fx_values.empty else 1350.0
+
+          for _, holding in historical_holdings.iterrows():
+            quantity = pd.to_numeric(holding.get('quantity'), errors='coerce')
+            quantity = float(quantity) if pd.notna(quantity) else 0.0
+            if quantity == 0:
+              continue
+            currency = normalize_currency(holding.get('currency'))
+            fallback_price = pd.to_numeric(
+                holding.get('current_price'), errors='coerce'
+            )
+            fallback_price = (
+                float(fallback_price) if pd.notna(fallback_price) else 0.0
+            )
+            ticker = format_ticker(holding.get('ticker'))
+            price = 0.0
+            if ticker is None:
+              price = fallback_price
+            elif ticker in market_data.columns:
+              ticker_prices = market_data[ticker].dropna()
+              historical_prices = ticker_prices[
+                  ticker_prices.index <= history_date
+              ]
+              if not historical_prices.empty:
+                price = float(historical_prices.iloc[-1])
+              elif not ticker_prices.empty:
+                price = float(ticker_prices.iloc[0])
+            if pd.isna(price) or price == 0:
+              price = fallback_price
+
+            category2 = normalize_filter_value(
+                holding.get('category2'), '미분류'
+            )
+            category4 = normalize_filter_value(
+                holding.get('category4'), '미분류'
+            )
+            if (
+                category2 not in selected_category2
+                or category4 not in selected_category4
+            ):
+              continue
+            item_name = get_display_item_name(
+                holding.get('item_name'),
+                currency,
+                holding.get('category1'),
+                category4,
+            )
+            local_value = quantity * price
+            value = local_value * fx_rate if currency == 'USD' else local_value
+            ex_fx_value = (
+                local_value * usd_krw_first
+                if currency == 'USD' else local_value
+            )
+            bj_ex_fx_value = (
+                local_value * bj_fixed_fx_rate
+                if currency == 'USD' else local_value
+            )
+            history_eval_records.append({
+                'Date': history_str,
+                'account_num': acc_label,
+                'broker': broker_name,
+                'account_type': acc_type,
+                'category2': category2,
+                'category4': category4,
+                'item_name': item_name,
+                'whose': whose_val,
+                '총평가금액': value,
+                '총평가금액_ex_fx': ex_fx_value,
+                '총평가금액_bj_ex_fx': (
+                    bj_ex_fx_value if whose_val == 'BJ' else ex_fx_value
+                ),
+            })
 
         for t_date in target_dates:
           t_str = t_date.strftime('%Y-%m-%d')
@@ -2281,6 +2590,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
       result_prefix = 'summary' if menu == 'SUMMARY' else 'trend'
       st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
+      st.session_state[f'{result_prefix}_history_eval_df'] = pd.DataFrame(
+          history_eval_records
+      )
       st.session_state[f'{result_prefix}_bm_calc'] = bm_calc_dict
       st.session_state[f'{result_prefix}_market_sessions'] = [
           pd.Timestamp(session).strftime('%Y-%m-%d')
@@ -2381,7 +2693,10 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           )
 
         # 계좌 필터 및 Category4 필터 조건 다중 선택 지원 (보유항목별 등)
-        if group_col in ['category4', 'item_name']:
+        if (
+            not history_eval_df.empty
+            and group_col in ['category4', 'item_name']
+        ):
           all_accs = sorted(raw_df['account_num'].dropna().unique().tolist())
           all_cat4 = sorted(raw_df['category4'].dropna().unique().tolist())
 
@@ -2837,6 +3152,32 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 inplace=True,
             )
 
+          if 'prev_eval' not in grp_agg.columns:
+            grp_agg['prev_eval'] = grp_agg.groupby(group_col)[
+                '총평가금액'
+            ].shift(1)
+          if 'period_start_base' not in grp_agg.columns:
+            grp_agg['prev_principal'] = grp_agg.groupby(group_col)[
+                '원금'
+            ].shift(1)
+            grp_agg['period_cash_flow'] = (
+                grp_agg['원금'] - grp_agg['prev_principal']
+            )
+            grp_agg['period_start_base'] = (
+                grp_agg['prev_eval'].fillna(grp_agg['총평가금액'])
+                + grp_agg['period_cash_flow'].fillna(0)
+            )
+          if group_col in [
+              'account_num', 'broker', 'account_type'
+          ] and '주기기준액' in grp_agg.columns:
+            grp_agg['합산기준액'] = grp_agg['주기기준액']
+          elif group_col == 'category2':
+            grp_agg['합산기준액'] = grp_agg['prev_eval'].where(
+                grp_agg['prev_eval'] > 0, grp_agg['period_start_base']
+            )
+          else:
+            grp_agg['합산기준액'] = grp_agg['period_start_base']
+
           return grp_agg
 
         grp_agg_def = get_grp_agg(False)
@@ -2857,7 +3198,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         st.caption(
             '수익률·손익은 0 기준으로 양수는 녹색, 음수는 적색으로 표시합니다. '
             '평가금액·점유율은 파란색으로 표시하고, 같은 지표 단위 안에서 값이 클수록 '
-            '배경색이 진해집니다.'
+            '배경색이 진해집니다. 고점 대비 하락은 저장된 전체 기간의 최고 평가액과 '
+            '선택한 종료일 평가액을 비교하며, 음수는 고점 아래임을 뜻합니다.'
         )
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         show_bj_ex_fx_estimate = ex_summary
@@ -2873,12 +3215,47 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         )
         
         grp_agg_summary = get_grp_agg(ex_summary)
+        history_eval_df = st.session_state.get(
+            'trend_history_eval_df', pd.DataFrame()
+        ).copy()
+        if group_col in ['category4', 'item_name']:
+          if selected_accounts_filter:
+            history_eval_df = history_eval_df[
+                history_eval_df['account_num'].isin(selected_accounts_filter)
+            ]
+          if selected_cat4_filter:
+            history_eval_df = history_eval_df[
+                history_eval_df['category4'].isin(selected_cat4_filter)
+            ]
+          history_eval_df = history_eval_df[
+              ~history_eval_df['item_name'].str.contains('현금', na=False)
+          ]
+        history_eval_df = get_history_evaluation_values(
+            history_eval_df,
+            use_ex_fx=ex_summary,
+            use_bj_fixed_fx=group_col in [
+                'account_num', 'broker', 'account_type', 'category2'
+            ],
+        )
+        history_group_peaks = (
+            history_eval_df.groupby(group_col)['_history_eval']
+            .max()
+            if not history_eval_df.empty else pd.Series(dtype=float)
+        )
+        history_total_peak = (
+            history_eval_df.groupby('Date')['_history_eval']
+            .sum()
+            .max()
+            if not history_eval_df.empty else np.nan
+        )
 
         summary_table_data = []
         total_eval_sum = 0
         total_pl_sum = 0
-        total_return_base_sum = 0
         total_bj_year_base_sum = 0
+        show_bj_year_columns = group_col not in [
+            'category2', 'category4', 'item_name'
+        ]
 
         for grp in groups:
           sub = grp_agg_summary[grp_agg_summary[group_col] == grp]
@@ -2891,17 +3268,15 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               final_eval = sub['총평가금액'].iloc[-1]
               
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
-            
-            if ex_summary and '원금_ex_fx' in raw_df.columns:
-              final_principal = sub_latest['원금_ex_fx'].sum() if not sub_latest.empty else 0
-            else:
-              final_principal = sub_latest['원금'].sum() if not sub_latest.empty else 0
-            has_bj_baseline = (
-                sub['has_bj_baseline'].iloc[-1]
-                if 'has_bj_baseline' in sub.columns else False
+            peak_eval = history_group_peaks.get(grp, np.nan)
+            drawdown_amount = (
+                final_eval - peak_eval
+                if pd.notna(peak_eval) else np.nan
             )
-            if pd.notna(has_bj_baseline) and bool(has_bj_baseline):
-              final_principal = sub['선택구간 기준액'].iloc[-1]
+            drawdown_rate = (
+                drawdown_amount / peak_eval * 100
+                if pd.notna(peak_eval) and peak_eval > 0 else np.nan
+            )
 
             final_bj_year_profit = (
                 sub['BJ 올해 누적손익'].iloc[-1]
@@ -2918,49 +3293,63 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
-            total_return_base_sum += final_principal
             if pd.notna(final_bj_year_base):
               total_bj_year_base_sum += final_bj_year_base
 
-            summary_table_data.append({
+            summary_row = {
                 prefix: grp,
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
-                bj_year_profit_label: final_bj_year_profit,
-                bj_year_return_label: final_bj_year_return,
+                '고점 대비 하락 금액 (원)': drawdown_amount,
+                '고점 대비 하락률 (%)': drawdown_rate,
                 '_eval': final_eval,
-                '_principal': final_principal,
-            })
+            }
+            if show_bj_year_columns:
+              summary_row[bj_year_profit_label] = final_bj_year_profit
+              summary_row[bj_year_return_label] = final_bj_year_return
+            summary_table_data.append(summary_row)
 
-        total_bj_year_profit = sum(
-            row[bj_year_profit_label]
-            for row in summary_table_data
-            if pd.notna(row[bj_year_profit_label])
-        )
-        total_bj_year_return = (
-            total_bj_year_profit / total_bj_year_base_sum * 100
-            if total_bj_year_base_sum > 0 else np.nan
-        )
+        if show_bj_year_columns:
+          total_bj_year_profit = sum(
+              row[bj_year_profit_label]
+              for row in summary_table_data
+              if pd.notna(row[bj_year_profit_label])
+          )
+          total_bj_year_return = (
+              total_bj_year_profit / total_bj_year_base_sum * 100
+              if total_bj_year_base_sum > 0 else np.nan
+          )
+        else:
+          total_bj_year_profit = total_bj_year_return = np.nan
 
         for row in summary_table_data:
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
           del row['_eval']
-          del row['_principal']
 
-        total_ret = (
-            total_pl_sum / total_return_base_sum * 100
-            if total_return_base_sum > 0 else 0
+        total_ret = calculate_combined_cumulative_return(grp_agg_summary)
+        total_drawdown_amount = (
+            total_eval_sum - history_total_peak
+            if pd.notna(history_total_peak) else np.nan
         )
-        summary_table_data.append({
+        total_drawdown_rate = (
+            total_drawdown_amount / history_total_peak * 100
+            if pd.notna(history_total_peak) and history_total_peak > 0
+            else np.nan
+        )
+        total_summary_row = {
             prefix: '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
-            bj_year_profit_label: total_bj_year_profit,
-            bj_year_return_label: total_bj_year_return,
+            '고점 대비 하락 금액 (원)': total_drawdown_amount,
+            '고점 대비 하락률 (%)': total_drawdown_rate,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
-        })
+        }
+        if show_bj_year_columns:
+          total_summary_row[bj_year_profit_label] = total_bj_year_profit
+          total_summary_row[bj_year_return_label] = total_bj_year_return
+        summary_table_data.append(total_summary_row)
 
         summary_df = pd.DataFrame(summary_table_data)
         cols = [
@@ -2969,9 +3358,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             '최종 기말 평가 금액 (원)',
             '점유율 (%)',
             '선택구간 누적 수익률 (%)',
-            bj_year_profit_label,
-            bj_year_return_label,
+            '고점 대비 하락 금액 (원)',
+            '고점 대비 하락률 (%)',
         ]
+        if show_bj_year_columns:
+          cols.extend([bj_year_profit_label, bj_year_return_label])
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
 
         summary_table, summary_column_config = style_trend_report_table(
@@ -2983,6 +3374,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               summary_table,
               column_config=summary_column_config,
               use_container_width=True,
+              hide_index=True,
               on_select='rerun',
               selection_mode='single-row',
               key=f'group_summary_selection_{prefix}',
@@ -3051,6 +3443,28 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                     })
                     .copy()
                 )
+                holding_peaks = (
+                    history_eval_df[
+                        history_eval_df['category4'] == selected_category
+                    ]
+                    .groupby('item_name')['_history_eval']
+                    .max()
+                    if not history_eval_df.empty
+                    else pd.Series(dtype=float)
+                )
+                holdings_summary['_all_time_peak'] = holdings_summary[
+                    '보유종목'
+                ].map(holding_peaks)
+                holdings_summary['고점 대비 하락 금액 (원)'] = (
+                    holdings_summary['최종 기말 평가 금액 (원)']
+                    - holdings_summary['_all_time_peak']
+                )
+                holdings_summary['고점 대비 하락률 (%)'] = np.where(
+                    holdings_summary['_all_time_peak'] > 0,
+                    holdings_summary['고점 대비 하락 금액 (원)']
+                    / holdings_summary['_all_time_peak'] * 100,
+                    np.nan,
+                )
                 holdings_summary['점유율 (%)'] = np.where(
                     total_eval_sum > 0,
                     holdings_summary['최종 기말 평가 금액 (원)']
@@ -3068,6 +3482,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                         '최종 기말 평가 금액 (원)',
                         '점유율 (%)',
                         '선택구간 누적 수익률 (%)',
+                        '고점 대비 하락 금액 (원)',
+                        '고점 대비 하락률 (%)',
                     ]
                 ]
                 holdings_summary_table, holdings_column_config = (
@@ -3084,6 +3500,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               summary_table,
               column_config=summary_column_config,
               use_container_width=True,
+              hide_index=True,
           )
         st.write('---')
 
@@ -3720,6 +4137,10 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               / grp_agg.loc[sh_mask, 'sh_adjusted_period_base'] * 100,
               np.nan,
           )
+          grp_agg['합산기준액'] = grp_agg['period_start_base']
+          grp_agg.loc[sh_mask, '합산기준액'] = grp_agg.loc[
+              sh_mask, 'sh_adjusted_period_base'
+          ]
           
           grp_agg['growth_factor'] = 1 + (grp_agg['주기별 수익률'].fillna(0) / 100)
           grp_agg['누적_성장지수'] = grp_agg.groupby('whose')['growth_factor'].cumprod()
@@ -3767,6 +4188,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           grp_agg['BJ 올해 누적손익'] = np.nan
           grp_agg['BJ 올해 누적기준액'] = np.nan
           grp_agg['BJ 올해 누적 수익률'] = np.nan
+          grp_agg.loc[grp_agg['whose'] == 'BJ', '합산기준액'] = np.nan
           for row_index, row in grp_agg[grp_agg['whose'] == 'BJ'].iterrows():
             bj_metrics = bj_by_date.get(row['Date'])
             if bj_metrics is None:
@@ -3778,6 +4200,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
             grp_agg.at[row_index, '주기별 평가손익'] = bj_metrics[
                 'bj_period_profit'
+            ]
+            grp_agg.at[row_index, '합산기준액'] = bj_metrics[
+                'bj_period_base'
             ]
             year_profit = bj_metrics['bj_cumulative_profit']
             selection_profit = bj_metrics['bj_selection_cumulative_profit']
@@ -3848,12 +4273,25 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         )
         
         agg_whose_summary = get_whose_agg(ex_whose_summary)
-        latest_date = raw_df['Date'].max()
+        history_eval_df = get_history_evaluation_values(
+            st.session_state.get(
+                'trend_history_eval_df', pd.DataFrame()
+            ),
+            use_ex_fx=ex_whose_summary,
+            use_bj_fixed_fx=True,
+        )
+        history_whose_peaks = (
+            history_eval_df.groupby('whose')['_history_eval'].max()
+            if not history_eval_df.empty else pd.Series(dtype=float)
+        )
+        history_total_peak = (
+            history_eval_df.groupby('Date')['_history_eval'].sum().max()
+            if not history_eval_df.empty else np.nan
+        )
 
         whose_summary_data = []
         total_eval_sum = 0
         total_pl_sum = 0
-        total_principal_sum = 0
         total_bj_year_base_sum = 0
 
         for w in whose_list:
@@ -3862,24 +4300,15 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             final_p_loss = sub['선택구간 누적손익'].iloc[-1]
             final_eval = sub['총평가금액'].iloc[-1]
             final_ret = sub['구간별 누적수익률'].iloc[-1]
-            
-            if ex_whose_summary and '원금_ex_fx' in raw_df.columns:
-              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금_ex_fx'].sum() if not sub_raw.empty else 0
-            else:
-              sub_raw = raw_df[(raw_df['whose'] == w) & (raw_df['Date'] == latest_date)]
-              final_principal = sub_raw['원금'].sum() if not sub_raw.empty else 0
-            if (
-                w == 'BJ'
-                and 'bj_selection_base' in sub.columns
-                and pd.notna(sub['bj_selection_base'].iloc[-1])
-            ):
-              final_principal = (
-                  sub['bj_selection_base'].iloc[-1]
-                  if pd.Timestamp(start_date)
-                  >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM)
-                  else sub['bj_base'].iloc[-1]
-              )
+            peak_eval = history_whose_peaks.get(w, np.nan)
+            drawdown_amount = (
+                final_eval - peak_eval
+                if pd.notna(peak_eval) else np.nan
+            )
+            drawdown_rate = (
+                drawdown_amount / peak_eval * 100
+                if pd.notna(peak_eval) and peak_eval > 0 else np.nan
+            )
             final_bj_year_profit = (
                 sub['BJ 올해 누적손익'].iloc[-1]
                 if 'BJ 올해 누적손익' in sub.columns else np.nan
@@ -3895,7 +4324,6 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
             total_eval_sum += final_eval
             total_pl_sum += final_p_loss if pd.notna(final_p_loss) else 0
-            total_principal_sum += final_principal
             if pd.notna(final_bj_year_base):
               total_bj_year_base_sum += final_bj_year_base
 
@@ -3904,6 +4332,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
+                '고점 대비 하락 금액 (원)': drawdown_amount,
+                '고점 대비 하락률 (%)': drawdown_rate,
                 bj_year_profit_label: final_bj_year_profit,
                 bj_year_return_label: final_bj_year_return,
                 '_eval': final_eval,
@@ -3913,7 +4343,16 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
           del row['_eval']
 
-        total_ret = (total_pl_sum / total_principal_sum * 100) if total_principal_sum > 0 else 0
+        total_ret = calculate_combined_cumulative_return(agg_whose_summary)
+        total_drawdown_amount = (
+            total_eval_sum - history_total_peak
+            if pd.notna(history_total_peak) else np.nan
+        )
+        total_drawdown_rate = (
+            total_drawdown_amount / history_total_peak * 100
+            if pd.notna(history_total_peak) and history_total_peak > 0
+            else np.nan
+        )
         total_bj_year_profit = sum(
             row[bj_year_profit_label]
             for row in whose_summary_data
@@ -3928,6 +4367,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
+            '고점 대비 하락 금액 (원)': total_drawdown_amount,
+            '고점 대비 하락률 (%)': total_drawdown_rate,
             bj_year_profit_label: total_bj_year_profit,
             bj_year_return_label: total_bj_year_return,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
@@ -3940,6 +4381,8 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             '최종 기말 평가 금액 (원)',
             '점유율 (%)',
             '선택구간 누적 수익률 (%)',
+            '고점 대비 하락 금액 (원)',
+            '고점 대비 하락률 (%)',
             bj_year_profit_label,
             bj_year_return_label,
         ]
@@ -3948,10 +4391,16 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         whose_summary_table, whose_column_config = style_trend_report_table(
             whose_summary_df
         )
+        st.caption(
+            '합산 수익률은 기간별 수익손익과 기준액을 합산해 복리 계산합니다. '
+            '고점 대비 하락은 저장된 전체 기간의 최고 평가액과 선택한 종료일 '
+            '평가액을 비교합니다.'
+        )
         st.dataframe(
             whose_summary_table,
             column_config=whose_column_config,
             use_container_width=True,
+            hide_index=True,
         )
         st.write('---')
 
