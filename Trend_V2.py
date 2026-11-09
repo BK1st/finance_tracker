@@ -3239,7 +3239,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             ],
         )
         history_group_peaks = (
-            history_eval_df.groupby(group_col)['_history_eval']
+            history_eval_df.groupby(
+                ['Date', group_col], dropna=False
+            )['_history_eval']
+            .sum()
+            .groupby(level=1, dropna=False)
             .max()
             if not history_eval_df.empty else pd.Series(dtype=float)
         )
@@ -3444,13 +3448,17 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
                     })
                     .copy()
                 )
+                holding_history = history_eval_df[
+                    history_eval_df['category4'] == selected_category
+                ]
                 holding_peaks = (
-                    history_eval_df[
-                        history_eval_df['category4'] == selected_category
-                    ]
-                    .groupby('item_name')['_history_eval']
+                    holding_history.groupby(
+                        ['Date', 'item_name'], dropna=False
+                    )['_history_eval']
+                    .sum()
+                    .groupby(level=1, dropna=False)
                     .max()
-                    if not history_eval_df.empty
+                    if not holding_history.empty
                     else pd.Series(dtype=float)
                 )
                 holdings_summary['_all_time_peak'] = holdings_summary[
@@ -4282,7 +4290,12 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             use_bj_fixed_fx=True,
         )
         history_whose_peaks = (
-            history_eval_df.groupby('whose')['_history_eval'].max()
+            history_eval_df.groupby(
+                ['Date', 'whose'], dropna=False
+            )['_history_eval']
+            .sum()
+            .groupby(level=1, dropna=False)
+            .max()
             if not history_eval_df.empty else pd.Series(dtype=float)
         )
         history_total_peak = (
