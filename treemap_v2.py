@@ -3037,7 +3037,7 @@ elif menu == "계좌기준 자산 점유율":
                 saved_visible_categories[scope_label] = applied_categories
 
         chart_height = 650
-        chart_text_size = max(9, min(14, round(chart_height / 40)))
+        chart_text_size = 12
         reset_chart = st.button(
             "RESET",
             key="treemap_share_reset_chart",
@@ -3140,9 +3140,13 @@ elif menu == "계좌기준 자산 점유율":
                                 [item_name, amount / 10_000_000, share_percent]
                             ],
                             texttemplate=(
-                                "%{customdata[0]} · "
-                                "%{customdata[1]:,.2f}천만원 · "
-                                "%{customdata[2]:.1f}%"
+                                (
+                                    "%{customdata[0]} · "
+                                    "%{customdata[1]:,.2f}천만원 · "
+                                    "%{customdata[2]:.1f}%"
+                                )
+                                if share_percent >= 6
+                                else ""
                             ),
                             textposition="inside",
                             insidetextanchor="middle",
@@ -3212,8 +3216,8 @@ elif menu == "계좌기준 자산 점유율":
                         rangemode="tozero",
                         separatethousands=True,
                     ),
-                    uniformtext_minsize=9,
-                    uniformtext_mode="show",
+                    uniformtext_minsize=10,
+                    uniformtext_mode="hide",
                     hovermode="closest",
                 )
             else:
@@ -3237,8 +3241,7 @@ elif menu == "계좌기준 자산 점유율":
                         )
                     ],
                 )
-            chart_column, detail_panel = st.columns([2.0, 1.5])
-            chart_selection = chart_column.plotly_chart(
+            chart_selection = st.plotly_chart(
                 stacked_bar,
                 use_container_width=True,
                 config={
@@ -3340,11 +3343,11 @@ elif menu == "계좌기준 자산 점유율":
                 detail_table = detail_table.rename(
                     columns={detail_column: detail_label}
                 )
-                detail_panel.markdown(
+                st.markdown(
                     f"**📋 {active_share_selection.get('category')} · "
                     f"{active_group} {detail_label} 상세**"
                 )
-                detail_panel.dataframe(
+                st.dataframe(
                     detail_table[
                         [
                             detail_label,
