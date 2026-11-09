@@ -3036,11 +3036,36 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
-        chart_height = 650
-        chart_text_size = 10
-        reset_chart = st.button(
+        zoom_level_key = "treemap_share_chart_zoom_level"
+        if zoom_level_key not in st.session_state:
+            st.session_state[zoom_level_key] = 1
+        zoom_controls = st.columns([1, 1, 1, 5])
+        zoom_in = zoom_controls[0].button(
+            "확대 +", key="treemap_share_zoom_in"
+        )
+        zoom_out = zoom_controls[1].button(
+            "축소 −", key="treemap_share_zoom_out"
+        )
+        reset_chart = zoom_controls[2].button(
             "RESET",
             key="treemap_share_reset_chart",
+        )
+        if zoom_in:
+            st.session_state[zoom_level_key] = min(
+                3, st.session_state[zoom_level_key] + 1
+            )
+        if zoom_out:
+            st.session_state[zoom_level_key] = max(
+                1, st.session_state[zoom_level_key] - 1
+            )
+        if reset_chart:
+            st.session_state[zoom_level_key] = 1
+        chart_zoom_level = st.session_state[zoom_level_key]
+        chart_height = 650 * chart_zoom_level
+        chart_text_size = 10 + (chart_zoom_level - 1) * 2
+        zoom_controls[3].caption(
+            f"차트 배율: {chart_zoom_level}× "
+            "(막대 높이와 글씨 크기가 함께 조정됩니다)"
         )
         reset_nonce_key = "treemap_share_chart_reset_nonce"
         if reset_nonce_key not in st.session_state:
@@ -3092,6 +3117,7 @@ elif menu == "계좌기준 자산 점유율":
             category_columns = dict(share_chart_specs)
             bar_traces = []
             trace_selections = []
+            bar_annotations = []
             selected_specs = [
                 (title, category_columns[title])
                 for title in selected_categories
@@ -3119,27 +3145,66 @@ elif menu == "계좌기준 자산 점유율":
                     .reset_index(drop=True)
                 )
                 category_total = grouped_values["평가액(원)"].sum()
+                stacked_amount = 0.0
                 for item_index, row in grouped_values.iterrows():
                     item_name = row[group_column]
                     amount = float(row["평가액(원)"])
+                    amount_in_ten_millions = amount / 10_000_000
                     share_percent = (
                         amount / category_total * 100
                         if category_total > 0
                         else 0
                     )
+                    segment_center = (
+                        stacked_amount + amount_in_ten_millions / 2
+                    )
+                    bar_annotations.append(
+                        dict(
+                            x=chart_title,
+                            y=segment_center,
+                            xref="x",
+                            yref="y",
+                            xshift=42,
+                            xanchor="left",
+                            yanchor="middle",
+                            text=(
+                                f"<b>{html.escape(item_name)}</b> · "
+                                f"{amount_in_ten_millions:,.2f}천만원 · "
+                                f"{share_percent:.1f}%"
+                            ),
+                            showarrow=False,
+                            align="left",
+                            font=dict(
+                                size=chart_text_size,
+                                color="#1f2937",
+                            ),
+                            width=220,
+                            bgcolor="rgba(255,255,255,0.94)",
+                            bordercolor="#d1d5db",
+                            borderwidth=1,
+                            borderpad=3,
+                        )
+                    )
                     bar_traces.append(
                         go.Bar(
                             x=[chart_title],
-                            y=[amount / 10_000_000],
+                            y=[amount_in_ten_millions],
                             name=(
                                 f"{chart_title} · {item_name} | "
                                 f"{amount / 10_000_000:,.2f}천만원 | "
                                 f"{share_percent:.1f}%"
                             ),
                             customdata=[
-                                [item_name, amount / 10_000_000, share_percent]
+                                [
+                                    item_name,
+                                    amount_in_ten_millions,
+                                    share_percent,
+                                ]
                             ],
-                            texttemplate="%{customdata[0]}",
+                            texttemplate=(
+                                "%{customdata[1]:,.2f}천만원 · "
+                                "%{customdata[2]:.1f}%"
+                            ),
                             textposition="inside",
                             insidetextanchor="middle",
                             textfont=dict(
@@ -3164,6 +3229,7 @@ elif menu == "계좌기준 자산 점유율":
                             showlegend=False,
                         )
                     )
+                    stacked_amount += amount_in_ten_millions
                     trace_selections.append(
                         {
                             "category": chart_title,
@@ -3209,8 +3275,9 @@ elif menu == "계좌기준 자산 점유율":
                         separatethousands=True,
                     ),
                     uniformtext_minsize=8,
-                    uniformtext_mode="show",
+                    uniformtext_mode="hide",
                     hovermode="closest",
+                    annotations=bar_annotations,
                 )
             else:
                 stacked_bar = go.Figure()
@@ -3240,12 +3307,7 @@ elif menu == "계좌기준 자산 점유율":
                 config={
                     "displayModeBar": True,
                     "displaylogo": False,
-                    "modeBarButtonsToAdd": [
-                        "zoom2d",
-                        "pan2d",
-                        "resetScale2d",
-                    ],
-                    "scrollZoom": True,
+                    "modeBarButtonsToAdd": ["pan2d", "resetScale2d"],
                 },
                 key=(
                     f"treemap_share_stacked_{scope_index}_"
