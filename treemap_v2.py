@@ -1309,19 +1309,6 @@ if st.sidebar.button(
         else:
             st.sidebar.success(summary)
 
-# 메뉴 항목 정의 (관리자인 경우 '관리자 페이지' 추가)
-menu_options = [
-    "자산 입력 및 관리",
-    "일별/시점별 보유 현황 분석",
-    "계좌기준 자산 점유율",
-    "💾 데이터 백업 및 복구",
-]
-if is_current_user_admin:
-    menu_options.append("⚙️ 관리자 페이지")
-
-menu = st.sidebar.selectbox("메뉴 선택", menu_options)
-
-
 def load_treemap_user_preferences(username):
     conn = get_connection()
     try:
@@ -1363,11 +1350,18 @@ def save_treemap_user_preferences(username, preferences):
 
 analysis_menu = "일별/시점별 보유 현황 분석"
 share_analysis_menu = "계좌기준 자산 점유율"
-previous_menu = st.session_state.get("_treemap_previous_menu")
-if (
-    menu in (analysis_menu, share_analysis_menu)
-    and previous_menu not in (analysis_menu, share_analysis_menu)
-):
+
+
+def restore_treemap_preferences_on_menu_change():
+    selected_menu = st.session_state.get("main_menu_select")
+    previous_menu = st.session_state.get("_treemap_previous_menu")
+    if (
+        selected_menu not in (analysis_menu, share_analysis_menu)
+        or previous_menu in (analysis_menu, share_analysis_menu)
+    ):
+        st.session_state["_treemap_previous_menu"] = selected_menu
+        return
+
     saved_preferences = load_treemap_user_preferences(logged_in_username)
     if saved_preferences:
         preference_state_keys = {
@@ -1405,7 +1399,27 @@ if (
                     st.session_state[f"select_date_{owner}"] = (
                         parsed_date.strftime("%Y-%m-%d")
                     )
-st.session_state["_treemap_previous_menu"] = menu
+    st.session_state["_treemap_previous_menu"] = selected_menu
+
+
+# 메뉴 항목 정의 (관리자인 경우 '관리자 페이지' 추가)
+menu_options = [
+    "자산 입력 및 관리",
+    analysis_menu,
+    share_analysis_menu,
+    "💾 데이터 백업 및 복구",
+]
+if is_current_user_admin:
+    menu_options.append("⚙️ 관리자 페이지")
+
+menu = st.sidebar.selectbox(
+    "메뉴 선택",
+    menu_options,
+    key="main_menu_select",
+    on_change=restore_treemap_preferences_on_menu_change,
+)
+if "_treemap_previous_menu" not in st.session_state:
+    st.session_state["_treemap_previous_menu"] = menu
 
 # ---------------------------------------------------------
 # 메뉴 1: 자산 입력 및 관리
