@@ -3036,48 +3036,8 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
-        zoom_level_key = "treemap_share_chart_zoom_level"
-        if zoom_level_key not in st.session_state:
-            st.session_state[zoom_level_key] = 1
-        zoom_controls = st.columns([1, 1, 1, 5])
-        zoom_in = zoom_controls[0].button(
-            "확대 +", key="treemap_share_zoom_in"
-        )
-        zoom_out = zoom_controls[1].button(
-            "축소 −", key="treemap_share_zoom_out"
-        )
-        reset_chart = zoom_controls[2].button(
-            "RESET",
-            key="treemap_share_reset_chart",
-        )
-        if zoom_in:
-            st.session_state[zoom_level_key] = min(
-                3, st.session_state[zoom_level_key] + 1
-            )
-        if zoom_out:
-            st.session_state[zoom_level_key] = max(
-                1, st.session_state[zoom_level_key] - 1
-            )
-        if reset_chart:
-            st.session_state[zoom_level_key] = 1
-        chart_zoom_level = st.session_state[zoom_level_key]
-        chart_height = 650 * chart_zoom_level
-        chart_text_size = 10 + (chart_zoom_level - 1) * 2
-        zoom_controls[3].caption(
-            f"차트 배율: {chart_zoom_level}× "
-            "(막대 높이와 글씨 크기가 함께 조정됩니다)"
-        )
-        reset_nonce_key = "treemap_share_chart_reset_nonce"
-        if reset_nonce_key not in st.session_state:
-            st.session_state[reset_nonce_key] = 0
-        if reset_chart:
-            active_share_selection = None
-            st.session_state["treemap_share_active_selection"] = None
-            for scope_index, _ in enumerate(share_scope_specs):
-                st.session_state[
-                    f"_treemap_share_last_selection_{scope_index}"
-                ] = ()
-            st.session_state[reset_nonce_key] += 1
+        chart_height = 650
+        chart_text_size = 10
 
         valid_share_columns = {
             column for _, column in share_chart_specs
@@ -3289,13 +3249,12 @@ elif menu == "계좌기준 자산 점유율":
                 stacked_bar,
                 use_container_width=True,
                 config={
-                    "displayModeBar": True,
+                    "displayModeBar": False,
                     "displaylogo": False,
-                    "modeBarButtonsToAdd": ["pan2d", "resetScale2d"],
+                    "scrollZoom": True,
                 },
                 key=(
                     f"treemap_share_stacked_{scope_index}_"
-                    f"{st.session_state[reset_nonce_key]}_"
                     + "_".join(
                         str(index)
                         for index, title in enumerate(
