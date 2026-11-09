@@ -1107,6 +1107,7 @@ def style_trend_report_table(table):
 
 def render_summary_page(
     calc_df,
+    history_eval_df,
     benchmark_data,
     as_of_date,
     market_sessions,
@@ -1141,6 +1142,8 @@ def render_summary_page(
       '수익률·손익은 0 기준으로 양수는 녹색, 음수는 적색으로 표시하고, '
       '평가금액·점유율은 파란색으로 표시합니다. 색의 농도는 표 안의 같은 지표 단위 '
       '공통 기준이며, 숫자값 기준 정렬이 가능합니다. '
+      '고점대비 하락은 저장된 전체 기간의 날짜별 합산 평가액 고점과 비교하며, '
+      '현재 평가액이 0원 이하인 경우에는 표시하지 않습니다. '
       '현금성 자산의 수익률·평가손익은 표시하지 않습니다.'
   )
   use_ex_fx = st.toggle(
@@ -1168,6 +1171,30 @@ def render_summary_page(
   cash_asset_mask = summary_data['item_name'].str.contains('현금', na=False)
   summary_data.loc[cash_asset_mask, '_summary_profit'] = np.nan
   summary_data['_summary_eval'] = summary_data['_summary_eval'].fillna(0)
+
+  history_data = history_eval_df.copy()
+  if not history_data.empty:
+    history_data['Date'] = pd.to_datetime(
+        history_data['Date'], errors='coerce'
+    ).dt.normalize()
+    history_data['whose'] = history_data['whose'].fillna('미지정').astype(str)
+    if use_ex_fx:
+      history_data['_history_eval'] = numeric_column(
+          history_data, '총평가금액_ex_fx'
+      ).where(
+          history_data['whose'] != 'BJ',
+          numeric_column(history_data, '총평가금액_bj_ex_fx'),
+      )
+    else:
+      history_data['_history_eval'] = numeric_column(
+          history_data, '총평가금액'
+      )
+    history_data['_history_eval'] = history_data['_history_eval'].fillna(0)
+    for column in (
+        'account_num', 'account_type', 'category4', 'item_name'
+    ):
+      if column in history_data.columns:
+        history_data[column] = history_data[column].fillna('미지정').astype(str)
 
   account_daily = (
       summary_data.groupby(
@@ -1256,13 +1283,40 @@ def render_summary_page(
     current = latest_rows.groupby(group_column, dropna=False)[
         '_summary_eval'
     ].sum()
-    table_rows = {
-        str(group): {
-            label: str(group),
-            '평가금액 (원)': float(value),
-        }
-        for group, value in current.items()
-    }
+    drawdown_history = history_data
+    if group_column == '_owner_total':
+      drawdown_history = history_data[
+          history_data['whose'].isin(['BJ', 'SH'])
+      ].copy()
+      drawdown_history[group_column] = 'BJ+SH 전체 합산'
+    if (
+        not drawdown_history.empty
+        and group_column in drawdown_history.columns
+    ):
+      history_by_date = (
+          drawdown_history.groupby(
+              [group_column, 'Date'], dropna=False
+          )['_history_eval']
+          .sum()
+          .reset_index()
+      )
+      peak_by_group = history_by_date.groupby(
+          group_column, dropna=False
+      )['_history_eval'].max()
+    else:
+      peak_by_group = pd.Series(dtype=float)
+
+    table_rows = {}
+    for group, value in current.items():
+      drawdown_amount, drawdown_rate = calculate_drawdown(
+          value, peak_by_group.get(group, np.nan)
+      )
+      table_rows[str(group)] = {
+          label: str(group),
+          '평가금액 (원)': float(value),
+          '고점 대비 하락 금액 (원)': drawdown_amount,
+          '고점 대비 하락률 (%)': drawdown_rate,
+      }
 
     for period_label, period_start, period_end in period_windows:
       cutoff = period_start - pd.Timedelta(days=1)
@@ -1350,6 +1404,8 @@ def render_summary_page(
         row = {
             label: benchmark_label,
             '평가금액 (원)': np.nan,
+            '고점 대비 하락 금액 (원)': np.nan,
+            '고점 대비 하락률 (%)': np.nan,
         }
         for period_label, period_start, period_end in period_windows:
           row[f'평가손익 ({period_label}) (원)'] = np.nan
@@ -1366,7 +1422,12 @@ def render_summary_page(
         list(benchmark_names) + ordered_groups
         if include_benchmarks else ordered_groups
     )
-    columns = [label, '평가금액 (원)']
+    columns = [
+        label,
+        '평가금액 (원)',
+        '고점 대비 하락 금액 (원)',
+        '고점 대비 하락률 (%)',
+    ]
     columns.extend(
         f'수익률 ({period_label}) (%)'
         for period_label, _, _ in period_windows
@@ -1996,7 +2057,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       record_dates = pd.to_datetime(
           filtered_pf_df['record_date'], errors='coerce'
       ).dropna()
-      if menu == '트렌드 리포트' and not record_dates.empty:
+      if menu in ('SUMMARY', '트렌드 리포트') and not record_dates.empty:
         history_start_date = record_dates.min()
         history_end_date = max(pd.Timestamp(end_date), record_dates.max())
       else:
@@ -2108,7 +2169,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             market_data.index,
         )
 
-      if menu == '트렌드 리포트':
+      if menu in ('SUMMARY', '트렌드 리포트'):
         history_dates = pd.DatetimeIndex(
             pd.to_datetime(market_data.index, errors='coerce')
         ).dropna().normalize().unique()
@@ -2621,6 +2682,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       else:
         render_summary_page(
             st.session_state['summary_calc_df'],
+            st.session_state.get(
+                'summary_history_eval_df', pd.DataFrame()
+            ),
             st.session_state.get('summary_bm_calc', {}),
             st.session_state.get('summary_end_date', today),
             st.session_state.get('summary_market_sessions', []),
