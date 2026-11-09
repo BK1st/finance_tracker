@@ -3036,7 +3036,8 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
-        chart_height = 900
+        chart_height = 450
+        chart_text_size = max(9, min(14, round(chart_height / 40)))
         reset_chart = st.button(
             "RESET",
             key="treemap_share_reset_chart",
@@ -3091,6 +3092,7 @@ elif menu == "계좌기준 자산 점유율":
             category_columns = dict(share_chart_specs)
             bar_traces = []
             trace_selections = []
+            segment_records = []
             selected_specs = [
                 (title, category_columns[title])
                 for title in selected_categories
@@ -3126,6 +3128,17 @@ elif menu == "계좌기준 자산 점유율":
                         if category_total > 0
                         else 0
                     )
+                    segment_records.append(
+                        {
+                            "분류": chart_title,
+                            "항목 · 금액 · 점유율": (
+                                f"{item_name} · "
+                                f"{amount / 10_000_000:,.2f}천만원 · "
+                                f"{share_percent:.1f}%"
+                            ),
+                            "_금액": amount,
+                        }
+                    )
                     bar_traces.append(
                         go.Bar(
                             x=[chart_title],
@@ -3139,13 +3152,15 @@ elif menu == "계좌기준 자산 점유율":
                                 [item_name, amount / 10_000_000, share_percent]
                             ],
                             texttemplate=(
-                                "%{customdata[0]}<br>"
-                                "%{customdata[1]:,.2f}천만원<br>"
+                                "%{customdata[0]} · "
+                                "%{customdata[1]:,.2f}천만원 · "
                                 "%{customdata[2]:.1f}%"
                             ),
                             textposition="inside",
                             insidetextanchor="middle",
-                            textfont=dict(size=11, color="#ffffff"),
+                            textfont=dict(
+                                size=chart_text_size, color="#ffffff"
+                            ),
                             marker=dict(
                                 color=(
                                     "#1d4ed8", "#0f766e", "#92400e",
@@ -3234,7 +3249,7 @@ elif menu == "계좌기준 자산 점유율":
                         )
                     ],
                 )
-            chart_column, detail_panel = st.columns([2.2, 1.3])
+            chart_column, detail_panel = st.columns([2.0, 1.5])
             chart_selection = chart_column.plotly_chart(
                 stacked_bar,
                 use_container_width=True,
@@ -3372,9 +3387,33 @@ elif menu == "계좌기준 자산 점유율":
                     hide_index=True,
                 )
             else:
-                detail_panel.info(
-                    "차트의 막대 항목을 선택하면 세부 내역이 여기에 표시됩니다."
-                )
+                if segment_records:
+                    segment_table = pd.DataFrame(segment_records).sort_values(
+                        ["분류", "_금액"],
+                        ascending=[True, False],
+                    )
+                    detail_panel.markdown("**항목 · 금액 · 점유율**")
+                    detail_panel.dataframe(
+                        segment_table[
+                            ["분류", "항목 · 금액 · 점유율"]
+                        ],
+                        column_config={
+                            "분류": st.column_config.TextColumn(
+                                "분류", width="small"
+                            ),
+                            "항목 · 금액 · 점유율": (
+                                st.column_config.TextColumn(
+                                    "항목 · 금액 · 점유율",
+                                    width="large",
+                                )
+                            ),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        height=chart_height,
+                    )
+                else:
+                    detail_panel.info("표시할 항목이 없습니다.")
 
         st.session_state["treemap_share_active_selection"] = active_share_selection
 
