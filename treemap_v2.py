@@ -3350,7 +3350,7 @@ chartSpecs.forEach((spec, chartIndex) => {{
     graph,
     spec.figure.data,
     spec.figure.layout,
-    {{ responsive: true, displayModeBar: false, scrollZoom: true }}
+    {{ responsive: true, displayModeBar: true, scrollZoom: true }}
   ).then((plot) => {{
     plot.on("plotly_relayout", (event) => {{
       if (event["yaxis.autorange"]) {{
