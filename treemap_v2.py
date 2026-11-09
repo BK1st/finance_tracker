@@ -6,7 +6,6 @@ import sqlite3
 import urllib.request
 from urllib.parse import quote
 from datetime import date, datetime, timedelta
-from numbers import Integral
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -2803,12 +2802,12 @@ elif menu == "일별/시점별 보유 현황 분석":
 # 메뉴 3: 계좌기준 자산 점유율
 # ---------------------------------------------------------
 elif menu == "계좌기준 자산 점유율":
-    st.header("🍩 계좌기준 자산 점유율")
+    st.header("📊 계좌기준 자산 점유율")
     st.caption(
-        "각 자산 분류의 점유율과 금액을 확인하고, 도넛 조각을 선택하면 "
-        "해당 분류에 포함된 보유종목별 점유율과 금액을 확인할 수 있습니다. "
+        "각 기준별 평가액을 누적 세로 막대로 비교하고, 막대 항목을 선택하면 "
+        "포함된 보유종목별 금액과 점유율을 확인할 수 있습니다. "
         "평가액은 소유자별 최신 입력일 기준이며, 관리자 화면에는 BJ+SH·BJ·SH "
-        "각 기준의 6개 차트가 한 번에 표시됩니다."
+        "각 기준의 차트가 표시됩니다."
     )
 
     conn = get_connection()
@@ -2962,19 +2961,33 @@ elif menu == "계좌기준 자산 점유율":
             typed_share_df["_share_account_key"].isin(selected_share_accounts)
         ].copy()
         share_chart_specs = [
-            ("WHOSE별", "whose"),
+            ("WHOSE", "whose"),
             ("계좌유형별 (일반/연금)", "account_type"),
-            ("분류2별", "category2"),
+            ("분류2별 (달러/원화)", "category2"),
             ("분류3별", "category3"),
             ("분류4별", "category4"),
             ("보유항목별", "item_name"),
         ]
+        share_preferences = load_treemap_user_preferences(
+            logged_in_username
+        )
+        saved_visible_categories = share_preferences.get(
+            "share_visible_categories", {}
+        )
+        if not isinstance(saved_visible_categories, dict):
+            saved_visible_categories = {}
+        valid_share_columns = {
+            column for _, column in share_chart_specs
+        }
         active_share_selection = st.session_state.get(
             "treemap_share_active_selection"
         )
         if active_share_selection and (
-            active_share_selection.get("scope")
-            >= len(share_scope_specs)
+            not isinstance(active_share_selection, dict)
+            or active_share_selection.get("scope")
+            not in range(len(share_scope_specs))
+            or active_share_selection.get("column")
+            not in valid_share_columns
         ):
             active_share_selection = None
 
@@ -2985,342 +2998,345 @@ elif menu == "계좌기준 자산 점유율":
             scope_share_df = share_chart_df[
                 share_chart_df["whose"].isin(scope_owners)
             ].copy()
-            chart_columns = st.columns(3)
-
-            for chart_index, (chart_title, group_column) in enumerate(
-                share_chart_specs
+            visible_key = (
+                f"treemap_share_visible_categories_{scope_index}"
+            )
+            if visible_key not in st.session_state:
+                saved_categories = saved_visible_categories.get(
+                    scope_label, [title for title, _ in share_chart_specs]
+                )
+                st.session_state[visible_key] = [
+                    title
+                    for title, _ in share_chart_specs
+                    if title in saved_categories
+                ]
+            selected_categories = st.multiselect(
+                f"{scope_label} 차트에 표시할 분류",
+                options=[title for title, _ in share_chart_specs],
+                key=visible_key,
+            )
+            if (
+                active_share_selection
+                and active_share_selection.get("scope") == scope_index
+                and active_share_selection.get("category")
+                not in selected_categories
             ):
-                with chart_columns[chart_index % 3]:
-                    st.markdown(f"### {chart_title}")
-                    chart_data = scope_share_df[
-                        [group_column, "평가액(원)"]
-                    ].copy()
-                    chart_data["평가액(원)"] = pd.to_numeric(
-                        chart_data["평가액(원)"], errors="coerce"
-                    )
-                    chart_data = chart_data[
-                        chart_data["평가액(원)"].notna()
-                        & (chart_data["평가액(원)"] > 0)
-                    ]
-                    chart_data[group_column] = (
-                        chart_data[group_column]
-                        .fillna("미지정")
-                        .astype(str)
-                        .replace("", "미지정")
-                    )
-                    chart_data = (
-                        chart_data.groupby(group_column, as_index=False)[
-                            "평가액(원)"
-                        ]
-                        .sum()
-                        .sort_values("평가액(원)", ascending=False)
-                        .reset_index(drop=True)
-                    )
-                    chart_data["평가액(원)"] = chart_data[
-                        "평가액(원)"
-                    ].replace([float("inf"), float("-inf")], 0).fillna(0)
-                    chart_data = chart_data[
-                        chart_data["평가액(원)"] > 0
-                    ].reset_index(drop=True)
-                    if chart_data.empty:
-                        donut = go.Figure(go.Pie(
-                            labels=[],
-                            values=[],
-                            hole=0.58,
-                            showlegend=False,
-                        ))
-                        donut.update_layout(
-                            height=410,
-                            margin=dict(t=8, l=8, r=8, b=8),
-                            annotations=[
-                                dict(
-                                    text="데이터 없음",
-                                    x=0.5,
-                                    y=0.5,
-                                    showarrow=False,
-                                    font=dict(size=16),
-                                )
-                            ],
-                        )
-                        chart_id = (
-                            scope_index * len(share_chart_specs) + chart_index
-                        )
-                        st.plotly_chart(
-                            donut,
-                            use_container_width=True,
-                            config={"displayModeBar": False},
-                            key=(
-                                f"treemap_share_donut_"
-                                f"{scope_index}_{chart_index}"
-                            ),
-                            on_select="rerun",
-                            selection_mode="points",
-                        )
-                        selection_state_key = (
-                            f"_treemap_share_last_selection_{chart_id}"
-                        )
-                        st.session_state[selection_state_key] = ()
-                        if (
-                            active_share_selection
-                            and active_share_selection.get("scope")
-                            == scope_index
-                            and active_share_selection.get("chart")
-                            == chart_index
-                        ):
-                            active_share_selection = None
-                        continue
+                active_share_selection = None
+            saved_visible_categories[scope_label] = selected_categories
 
+            positive_scope_df = scope_share_df[
+                scope_share_df["평가액(원)"] > 0
+            ].copy()
+            category_columns = dict(share_chart_specs)
+            detail_records = []
+            bar_traces = []
+            trace_selections = []
+            selected_specs = [
+                (title, category_columns[title])
+                for title in selected_categories
+            ]
+            for chart_title, group_column in selected_specs:
+                grouped_values = (
+                    positive_scope_df.groupby(
+                        group_column, dropna=False
+                    )["평가액(원)"]
+                    .sum()
+                    .reset_index()
+                )
+                grouped_values[group_column] = (
+                    grouped_values[group_column]
+                    .fillna("미지정")
+                    .astype(str)
+                    .replace("", "미지정")
+                )
+                grouped_values = (
+                    grouped_values.groupby(group_column, as_index=False)[
+                        "평가액(원)"
+                    ]
+                    .sum()
+                    .sort_values("평가액(원)", ascending=False)
+                    .reset_index(drop=True)
+                )
+                category_total = grouped_values["평가액(원)"].sum()
+                for item_index, row in grouped_values.iterrows():
+                    item_name = row[group_column]
+                    amount = float(row["평가액(원)"])
+                    share_percent = (
+                        amount / category_total * 100
+                        if category_total > 0
+                        else 0
+                    )
+                    detail_records.append(
+                        {
+                            "분류": chart_title,
+                            "항목": item_name,
+                            "금액 (천만원)": amount / 10_000_000,
+                            "점유율 (%)": share_percent,
+                        }
+                    )
+                    bar_traces.append(
+                        go.Bar(
+                            x=[chart_title],
+                            y=[amount / 10_000_000],
+                            name=item_name,
+                            customdata=[
+                                [item_name, amount / 10_000_000, share_percent]
+                            ],
+                            texttemplate=(
+                                "%{customdata[0]}<br>"
+                                "%{customdata[1]:,.2f}천만원<br>"
+                                "%{customdata[2]:.1f}%"
+                            ),
+                            textposition="inside",
+                            insidetextanchor="middle",
+                            textfont=dict(size=11, color="#ffffff"),
+                            marker=dict(
+                                color=(
+                                    "#2563eb", "#0f766e", "#d97706",
+                                    "#7c3aed", "#dc2626", "#0891b2",
+                                    "#4d7c0f", "#c026d3", "#475569",
+                                    "#ea580c",
+                                )[item_index % 10]
+                            ),
+                            hovertemplate=(
+                                f"<b>{chart_title}</b><br>"
+                                "%{customdata[0]}<br>"
+                                "평가액: %{customdata[1]:,.2f}천만원<br>"
+                                "점유율: %{customdata[2]:.2f}%"
+                                "<extra></extra>"
+                            ),
+                            showlegend=False,
+                        )
+                    )
+                    trace_selections.append(
+                        {
+                            "category": chart_title,
+                            "column": group_column,
+                            "group": item_name,
+                        }
+                    )
+
+            if (
+                active_share_selection
+                and active_share_selection.get("scope") == scope_index
+                and not any(
+                    selection["category"]
+                    == active_share_selection.get("category")
+                    and selection["column"]
+                    == active_share_selection.get("column")
+                    and selection["group"]
+                    == active_share_selection.get("group")
+                    for selection in trace_selections
+                )
+            ):
+                active_share_selection = None
+
+            chart_column, detail_column_ui = st.columns([2.2, 1.3])
+            with chart_column:
+                if bar_traces:
+                    stacked_bar = go.Figure(data=bar_traces)
+                    stacked_bar.update_layout(
+                        barmode="stack",
+                        height=540,
+                        margin=dict(t=20, l=16, r=12, b=56),
+                        font=dict(
+                            family="Malgun Gothic, Segoe UI, sans-serif",
+                            size=13,
+                        ),
+                        xaxis=dict(
+                            title="분류 기준",
+                            categoryorder="array",
+                            categoryarray=selected_categories,
+                            tickangle=-15,
+                        ),
+                        yaxis=dict(
+                            title="평가액 (천만원)",
+                            rangemode="tozero",
+                            separatethousands=True,
+                        ),
+                        uniformtext_minsize=9,
+                        uniformtext_mode="hide",
+                        hovermode="closest",
+                    )
+                else:
+                    stacked_bar = go.Figure()
+                    stacked_bar.update_layout(
+                        height=540,
+                        margin=dict(t=20, l=16, r=12, b=56),
+                        annotations=[
+                            dict(
+                                text=(
+                                    "표시할 분류를 선택하세요."
+                                    if not selected_categories
+                                    else "표시할 데이터가 없습니다."
+                                ),
+                                x=0.5,
+                                y=0.5,
+                                xref="paper",
+                                yref="paper",
+                                showarrow=False,
+                                font=dict(size=16),
+                            )
+                        ],
+                    )
+                chart_selection = st.plotly_chart(
+                    stacked_bar,
+                    use_container_width=True,
+                    config={"displayModeBar": False},
+                    key=f"treemap_share_stacked_{scope_index}",
+                    on_select="rerun",
+                    selection_mode="points",
+                )
+                selected_points = chart_selection.selection.points
+                selected_point_indices = tuple(
+                    point.get("curve_number")
+                    for point in selected_points
+                )
+                selection_state_key = (
+                    f"_treemap_share_last_selection_{scope_index}"
+                )
+                previous_point_indices = st.session_state.get(
+                    selection_state_key, ()
+                )
+                if selected_point_indices != previous_point_indices:
+                    st.session_state[selection_state_key] = (
+                        selected_point_indices
+                    )
+                    if selected_point_indices:
+                        trace_index = selected_point_indices[0]
+                        if (
+                            isinstance(trace_index, int)
+                            and 0 <= trace_index < len(trace_selections)
+                        ):
+                            active_share_selection = {
+                                "scope": scope_index,
+                                **trace_selections[trace_index],
+                            }
+                    elif (
+                        active_share_selection
+                        and active_share_selection.get("scope")
+                        == scope_index
+                    ):
+                        active_share_selection = None
+
+                if (
+                    active_share_selection
+                    and active_share_selection.get("scope") == scope_index
+                ):
+                    active_group = active_share_selection.get("group")
+                    group_column = active_share_selection.get("column")
                     detail_column = (
                         "_share_account_key"
                         if group_column == "item_name"
                         else "item_name"
                     )
                     detail_label = (
-                        "계좌"
-                        if group_column == "item_name"
-                        else "보유종목"
+                        "계좌" if group_column == "item_name" else "보유종목"
                     )
-                    positive_scope_df = scope_share_df[
-                        scope_share_df["평가액(원)"] > 0
+                    detail_rows = positive_scope_df[
+                        positive_scope_df[group_column].astype(str)
+                        == str(active_group)
                     ]
-                    scope_total_value = positive_scope_df[
-                        "평가액(원)"
-                    ].sum()
-                    grouped_details = (
-                        positive_scope_df[
-                            [group_column, detail_column, "평가액(원)"]
-                        ]
-                        .groupby(
-                            [group_column, detail_column],
-                            as_index=False,
-                            dropna=False,
+                    detail_table = (
+                        detail_rows.groupby(
+                            detail_column, as_index=False
                         )["평가액(원)"]
                         .sum()
+                        .sort_values("평가액(원)", ascending=False)
                     )
-                    details_by_group = {}
-                    for group_value, group_details in grouped_details.groupby(
-                        group_column, sort=False
-                    ):
-                        group_total_value = group_details["평가액(원)"].sum()
-                        detail_lines = []
-                        for _, detail_row in group_details.sort_values(
-                            "평가액(원)", ascending=False
-                        ).iterrows():
-                            detail_value = detail_row["평가액(원)"]
-                            detail_name = html.escape(
-                                str(detail_row[detail_column])
-                            )
-                            scope_share = (
-                                detail_value / scope_total_value * 100
-                                if scope_total_value > 0
-                                else 0
-                            )
-                            group_share = (
-                                detail_value / group_total_value * 100
-                                if group_total_value > 0
-                                else 0
-                            )
-                            detail_lines.append(
-                                f"{detail_name}: "
-                                f"{detail_value / 10_000_000:,.2f}천만원 "
-                                f"(전체 {scope_share:.1f}%, "
-                                f"항목 내 {group_share:.1f}%)"
-                            )
-                        details_by_group[str(group_value)] = (
-                            "<br>".join(detail_lines)
-                        )
-
-                    customdata = []
-                    text_sizes = []
-                    chart_total_value = chart_data["평가액(원)"].sum()
-                    for group_value, amount_value in zip(
-                        chart_data[group_column].astype(str),
-                        chart_data["평가액(원)"],
-                    ):
-                        group_share = (
-                            amount_value / chart_total_value
-                            if chart_total_value > 0
-                            else 0
-                        )
-                        customdata.append(
+                    detail_total = detail_table["평가액(원)"].sum()
+                    scope_total = positive_scope_df["평가액(원)"].sum()
+                    detail_table["전체 점유율 (%)"] = (
+                        detail_table["평가액(원)"] / scope_total * 100
+                        if scope_total > 0
+                        else 0
+                    )
+                    detail_table["선택항목 내 점유율 (%)"] = (
+                        detail_table["평가액(원)"] / detail_total * 100
+                        if detail_total > 0
+                        else 0
+                    )
+                    detail_table["평가액 (천만원)"] = (
+                        detail_table["평가액(원)"] / 10_000_000
+                    )
+                    detail_table = detail_table.rename(
+                        columns={detail_column: detail_label}
+                    )
+                    st.markdown(
+                        f"**📋 {active_share_selection.get('category')} · "
+                        f"{active_group} {detail_label} 상세**"
+                    )
+                    st.dataframe(
+                        detail_table[
                             [
-                                amount_value / 10_000_000,
-                                details_by_group.get(group_value, ""),
+                                detail_label,
+                                "평가액 (천만원)",
+                                "전체 점유율 (%)",
+                                "선택항목 내 점유율 (%)",
                             ]
-                        )
-                        text_sizes.append(
-                            19 if group_share >= 0.1
-                            else 17 if group_share >= 0.03
-                            else 15 if group_share >= 0.01
-                            else 13
-                        )
-                    donut = go.Figure(
-                        go.Pie(
-                            labels=chart_data[group_column],
-                            values=chart_data["평가액(원)"],
-                            customdata=customdata,
-                            hole=0.58,
-                            sort=False,
-                            texttemplate=(
-                                "<b>%{label}</b><br>"
-                                "%{customdata[0]:.2f}천만원"
-                            ),
-                            textposition="inside",
-                            insidetextorientation="horizontal",
-                            textfont=dict(
-                                family="Malgun Gothic, Segoe UI, sans-serif",
-                                size=text_sizes,
-                                color="#111111",
-                            ),
-                            hovertemplate=(
-                                "<b>%{label}</b><br>"
-                                "점유율: %{percent:.1%}<br>"
-                                "평가액: %{customdata[0]:.2f}천만원"
-                                f"<br><br><b>{detail_label} 상세</b><br>"
-                                "%{customdata[1]}"
-                                "<extra></extra>"
-                            ),
-                            marker=dict(line=dict(color="white", width=2)),
-                            showlegend=False,
-                        )
-                    )
-                    donut.update_layout(
-                        height=450,
-                        margin=dict(t=8, l=8, r=8, b=8),
-                        uniformtext_minsize=13,
-                        uniformtext_mode="show",
-                    )
-                    chart_id = scope_index * len(share_chart_specs) + chart_index
-                    chart_selection = st.plotly_chart(
-                        donut,
-                        use_container_width=True,
-                        config={"displayModeBar": False},
-                        key=f"treemap_share_donut_{scope_index}_{chart_index}",
-                        on_select="rerun",
-                        selection_mode="points",
-                    )
-                    selected_points = chart_selection.selection.points
-                    selected_point_indices = tuple(
-                        point.get("point_index", point.get("point_number"))
-                        for point in selected_points
-                    )
-                    selection_state_key = (
-                        f"_treemap_share_last_selection_{chart_id}"
-                    )
-                    previous_point_indices = st.session_state.get(
-                        selection_state_key, ()
-                    )
-                    if selected_point_indices != previous_point_indices:
-                        st.session_state[selection_state_key] = (
-                            selected_point_indices
-                        )
-                        if selected_point_indices:
-                            point_index = selected_point_indices[0]
-                            if (
-                                isinstance(point_index, Integral)
-                                and 0 <= point_index < len(chart_data)
-                            ):
-                                active_share_selection = {
-                                    "scope": scope_index,
-                                    "chart": chart_index,
-                                    "group": chart_data.iloc[
-                                        int(point_index)
-                                    ][group_column],
-                                }
-                        elif (
-                            active_share_selection
-                            and active_share_selection.get("scope")
-                            == scope_index
-                            and active_share_selection.get("chart")
-                            == chart_index
-                        ):
-                            active_share_selection = None
-                    if (
-                        active_share_selection
-                        and active_share_selection.get("scope")
-                        == scope_index
-                        and active_share_selection.get("chart")
-                        == chart_index
-                    ):
-                        active_group = active_share_selection.get("group")
-                        if active_group in chart_data[group_column].values:
-                            st.markdown(
-                                f"**📋 {active_group} "
-                                f"{detail_label} 상세**"
-                            )
-                            detail_rows = positive_scope_df[
-                                positive_scope_df[group_column].astype(str)
-                                == str(active_group)
-                            ]
-                            detail_table = (
-                                detail_rows.groupby(
-                                    detail_column, as_index=False
-                                )["평가액(원)"]
-                                .sum()
-                                .sort_values(
-                                    "평가액(원)", ascending=False
+                        ],
+                        column_config={
+                            "평가액 (천만원)": (
+                                st.column_config.NumberColumn(
+                                    "평가액 (천만원)", format="%,.2f"
                                 )
-                            )
-                            detail_total = detail_table[
-                                "평가액(원)"
-                            ].sum()
-                            detail_table["점유율 (%)"] = (
-                                detail_table["평가액(원)"]
-                                / scope_total_value
-                                * 100
-                                if scope_total_value > 0
-                                else 0
-                            )
-                            detail_table["선택항목 내 점유율 (%)"] = (
-                                detail_table["평가액(원)"]
-                                / detail_total
-                                * 100
-                                if detail_total > 0
-                                else 0
-                            )
-                            detail_table["평가액 (천만원)"] = (
-                                detail_table["평가액(원)"] / 10_000_000
-                            )
-                            detail_table = detail_table.rename(
-                                columns={detail_column: detail_label}
-                            )
-                            st.dataframe(
-                                detail_table[
-                                    [
-                                        detail_label,
-                                        "평가액 (천만원)",
-                                        "점유율 (%)",
-                                        "선택항목 내 점유율 (%)",
-                                    ]
-                                ],
-                                column_config={
-                                    detail_label: st.column_config.TextColumn(
-                                        detail_label, width="medium"
-                                    ),
-                                    "평가액 (천만원)": (
-                                        st.column_config.NumberColumn(
-                                            "평가액 (천만원)",
-                                            format="%,.2f",
-                                        )
-                                    ),
-                                    "점유율 (%)": (
-                                        st.column_config.NumberColumn(
-                                            "전체 점유율 (%)",
-                                            format="%.2f%%",
-                                        )
-                                    ),
-                                    "선택항목 내 점유율 (%)": (
-                                        st.column_config.NumberColumn(
-                                            "선택항목 내 점유율 (%)",
-                                            format="%.2f%%",
-                                        )
-                                    ),
-                                },
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-                        else:
-                            active_share_selection = None
+                            ),
+                            "전체 점유율 (%)": (
+                                st.column_config.NumberColumn(
+                                    "전체 점유율 (%)", format="%.2f%%"
+                                )
+                            ),
+                            "선택항목 내 점유율 (%)": (
+                                st.column_config.NumberColumn(
+                                    "선택항목 내 점유율 (%)",
+                                    format="%.2f%%",
+                                )
+                            ),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            with detail_column_ui:
+                st.markdown("**항목별 금액 · 점유율**")
+                if detail_records:
+                    details_df = pd.DataFrame(detail_records)
+                    details_df["분류"] = pd.Categorical(
+                        details_df["분류"],
+                        categories=selected_categories,
+                        ordered=True,
+                    )
+                    details_df = details_df.sort_values(
+                        ["분류", "금액 (천만원)"],
+                        ascending=[True, False],
+                    )
+                    st.dataframe(
+                        details_df,
+                        column_config={
+                            "분류": st.column_config.TextColumn(
+                                "분류", width="small"
+                            ),
+                            "항목": st.column_config.TextColumn(
+                                "항목", width="medium"
+                            ),
+                            "금액 (천만원)": (
+                                st.column_config.NumberColumn(
+                                    "금액 (천만원)", format="%,.2f"
+                                )
+                            ),
+                            "점유율 (%)": (
+                                st.column_config.NumberColumn(
+                                    "점유율 (%)", format="%.2f%%"
+                                )
+                            ),
+                        },
+                        use_container_width=True,
+                        hide_index=True,
+                        height=540,
+                    )
+                else:
+                    st.info("표시할 항목이 없습니다.")
+
         st.session_state["treemap_share_active_selection"] = active_share_selection
 
         if (share_chart_df["평가액(원)"] < 0).any():
@@ -3328,13 +3344,11 @@ elif menu == "계좌기준 자산 점유율":
                 "점유율은 양수 평가액 기준이며, 음수 평가액은 차트와 비율에서 제외됩니다."
             )
 
-        share_preferences = load_treemap_user_preferences(
-            logged_in_username
-        )
         share_preferences.update({
             "share_whose": selected_share_owners,
             "share_account_types": selected_share_account_types,
             "share_accounts": selected_share_accounts,
+            "share_visible_categories": saved_visible_categories,
         })
         save_treemap_user_preferences(
             logged_in_username, share_preferences
