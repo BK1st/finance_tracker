@@ -3065,28 +3065,114 @@ elif menu == "계좌기준 자산 점유율":
                             active_share_selection = None
                         continue
 
-                    chart_data["금액(천만원)"] = (
-                        chart_data["평가액(원)"] / 10_000_000
+                    detail_column = (
+                        "_share_account_key"
+                        if group_column == "item_name"
+                        else "item_name"
                     )
+                    detail_label = (
+                        "계좌"
+                        if group_column == "item_name"
+                        else "보유종목"
+                    )
+                    positive_scope_df = scope_share_df[
+                        scope_share_df["평가액(원)"] > 0
+                    ]
+                    scope_total_value = positive_scope_df[
+                        "평가액(원)"
+                    ].sum()
+                    grouped_details = (
+                        positive_scope_df[
+                            [group_column, detail_column, "평가액(원)"]
+                        ]
+                        .groupby(
+                            [group_column, detail_column],
+                            as_index=False,
+                            dropna=False,
+                        )["평가액(원)"]
+                        .sum()
+                    )
+                    details_by_group = {}
+                    for group_value, group_details in grouped_details.groupby(
+                        group_column, sort=False
+                    ):
+                        group_total_value = group_details["평가액(원)"].sum()
+                        detail_lines = []
+                        for _, detail_row in group_details.sort_values(
+                            "평가액(원)", ascending=False
+                        ).iterrows():
+                            detail_value = detail_row["평가액(원)"]
+                            detail_name = html.escape(
+                                str(detail_row[detail_column])
+                            )
+                            scope_share = (
+                                detail_value / scope_total_value * 100
+                                if scope_total_value > 0
+                                else 0
+                            )
+                            group_share = (
+                                detail_value / group_total_value * 100
+                                if group_total_value > 0
+                                else 0
+                            )
+                            detail_lines.append(
+                                f"{detail_name}: "
+                                f"{detail_value / 10_000_000:,.2f}천만원 "
+                                f"(전체 {scope_share:.1f}%, "
+                                f"항목 내 {group_share:.1f}%)"
+                            )
+                        details_by_group[str(group_value)] = (
+                            "<br>".join(detail_lines)
+                        )
+
+                    customdata = []
+                    text_sizes = []
+                    chart_total_value = chart_data["평가액(원)"].sum()
+                    for group_value, amount_value in zip(
+                        chart_data[group_column].astype(str),
+                        chart_data["평가액(원)"],
+                    ):
+                        group_share = (
+                            amount_value / chart_total_value
+                            if chart_total_value > 0
+                            else 0
+                        )
+                        customdata.append(
+                            [
+                                amount_value / 10_000_000,
+                                details_by_group.get(group_value, ""),
+                            ]
+                        )
+                        text_sizes.append(
+                            16 if group_share >= 0.1
+                            else 13 if group_share >= 0.03
+                            else 10 if group_share >= 0.01
+                            else 8
+                        )
                     donut = go.Figure(
                         go.Pie(
                             labels=chart_data[group_column],
                             values=chart_data["평가액(원)"],
-                            customdata=chart_data["금액(천만원)"],
+                            customdata=customdata,
                             hole=0.58,
                             sort=False,
-                            texttemplate="<b>%{customdata:.2f}천만원</b>",
+                            texttemplate=(
+                                "<b>%{label}</b><br>"
+                                "%{customdata[0]:.2f}천만원"
+                            ),
                             textposition="inside",
                             insidetextorientation="horizontal",
                             textfont=dict(
                                 family="Malgun Gothic, Segoe UI, sans-serif",
-                                size=16,
+                                size=text_sizes,
                                 color="#111111",
                             ),
                             hovertemplate=(
                                 "<b>%{label}</b><br>"
                                 "점유율: %{percent:.1%}<br>"
-                                "평가액: %{customdata:.2f}천만원"
+                                "평가액: %{customdata[0]:.2f}천만원"
+                                f"<br><br><b>{detail_label} 상세</b><br>"
+                                "%{customdata[1]}"
                                 "<extra></extra>"
                             ),
                             marker=dict(line=dict(color="white", width=2)),
@@ -3096,7 +3182,7 @@ elif menu == "계좌기준 자산 점유율":
                     donut.update_layout(
                         height=410,
                         margin=dict(t=8, l=8, r=8, b=8),
-                        uniformtext_minsize=14,
+                        uniformtext_minsize=8,
                         uniformtext_mode="show",
                     )
                     chart_id = scope_index * len(share_chart_specs) + chart_index
@@ -3166,9 +3252,19 @@ elif menu == "계좌기준 자산 점유율":
             and selected_share_owner_scope is not None
         ):
             st.markdown("---")
+            detail_column = (
+                "_share_account_key"
+                if selected_group_column == "item_name"
+                else "item_name"
+            )
+            detail_label = (
+                "계좌"
+                if selected_group_column == "item_name"
+                else "보유종목"
+            )
             st.subheader(
                 f"📋 {selected_share_owner_scope} · {selected_chart_title}: "
-                f"{selected_chart_group} 보유종목 상세"
+                f"{selected_chart_group} {detail_label} 상세"
             )
             selected_scope_owners = next(
                 owners
@@ -3187,7 +3283,7 @@ elif menu == "계좌기준 자산 점유율":
             ].copy()
             detail_rows = detail_rows[detail_rows["평가액(원)"] > 0]
             detail_table = (
-                detail_rows.groupby("item_name", as_index=False)[
+                detail_rows.groupby(detail_column, as_index=False)[
                     "평가액(원)"
                 ]
                 .sum()
@@ -3205,10 +3301,12 @@ elif menu == "계좌기준 자산 점유율":
             detail_table["금액 (천만원)"] = (
                 detail_table["평가액(원)"] / 10_000_000
             )
-            detail_table = detail_table.rename(columns={"item_name": "보유종목"})
+            detail_table = detail_table.rename(
+                columns={detail_column: detail_label}
+            )
             detail_display = detail_table[
                 [
-                    "보유종목",
+                    detail_label,
                     "금액 (천만원)",
                     "점유율 (%)",
                     "선택항목 내 점유율 (%)",
