@@ -110,6 +110,13 @@ def init_db():
                 is_admin INTEGER DEFAULT 0
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS treemap_user_preferences (
+                username TEXT PRIMARY KEY,
+                conditions_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
 
         # 최초 실행 시 기본 계정 생성 (admin / 1234, user1 / 1234, user2 / 1234)
         cursor.execute("SELECT COUNT(*) FROM users")
@@ -1312,6 +1319,85 @@ if is_current_user_admin:
 
 menu = st.sidebar.selectbox("메뉴 선택", menu_options)
 
+
+def load_treemap_user_preferences(username):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT conditions_json FROM treemap_user_preferences WHERE username = ?",
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return {}
+    preferences = json.loads(row[0])
+    if not isinstance(preferences, dict):
+        raise ValueError("저장된 TREEMAP 조회 조건 형식이 올바르지 않습니다.")
+    return preferences
+
+
+def save_treemap_user_preferences(username, preferences):
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO treemap_user_preferences
+                (username, conditions_json, updated_at)
+            VALUES (?, ?, datetime('now', 'localtime'))
+            ON CONFLICT(username) DO UPDATE SET
+                conditions_json = excluded.conditions_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                username,
+                json.dumps(preferences, ensure_ascii=False, separators=(",", ":")),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+analysis_menu = "일별/시점별 보유 현황 분석"
+previous_menu = st.session_state.get("_treemap_previous_menu")
+if menu == analysis_menu and previous_menu != analysis_menu:
+    saved_preferences = load_treemap_user_preferences(logged_in_username)
+    if saved_preferences:
+        preference_state_keys = {
+            "treemap_sel_whose": "whose",
+            "treemap_use_hist": "use_historical_price",
+            "treemap_live_tracking": "live_tracking",
+            "regular_market_only_us": "regular_market_only_us",
+            "regular_market_only_kr": "regular_market_only_kr",
+            "treemap_hist_date": "target_eval_date",
+            "treemap_l1": "l1",
+            "treemap_l2": "l2",
+            "treemap_l3": "l3",
+            "treemap_l4": "l4",
+            "treemap_color_option": "color_option",
+            "treemap_custom_base_date": "custom_base_date",
+            "treemap_drilldown_selector": "drilldown",
+            "tree_sort_by_col": "sort_by",
+            "tree_sort_order": "sort_order",
+        }
+        for state_key, saved_key in preference_state_keys.items():
+            if saved_key in saved_preferences:
+                value = saved_preferences[saved_key]
+                if saved_key in {"target_eval_date", "custom_base_date"}:
+                    value = _parse_iso_date(value)
+                if value is not None:
+                    st.session_state[state_key] = value
+        owner_dates = saved_preferences.get("owner_dates", {})
+        if isinstance(owner_dates, dict):
+            for owner, selected_date in owner_dates.items():
+                parsed_date = _parse_iso_date(selected_date)
+                if parsed_date:
+                    st.session_state[f"select_date_{owner}"] = (
+                        parsed_date.strftime("%Y-%m-%d")
+                    )
+st.session_state["_treemap_previous_menu"] = menu
+
 # ---------------------------------------------------------
 # 메뉴 1: 자산 입력 및 관리
 # ---------------------------------------------------------
@@ -2363,6 +2449,39 @@ elif menu == "일별/시점별 보유 현황 분석":
                     key="tree_sort_order"
                 )
 
+            save_treemap_user_preferences(
+                logged_in_username,
+                {
+                    "whose": list(selected_whose_list),
+                    "owner_dates": {
+                        owner: selected_date
+                        for owner, selected_date in owner_selected_dates.items()
+                    },
+                    "use_historical_price": use_historical_price,
+                    "live_tracking": live_tracking,
+                    "regular_market_only_us": st.session_state.get(
+                        "regular_market_only_us", False
+                    ),
+                    "regular_market_only_kr": st.session_state.get(
+                        "regular_market_only_kr", False
+                    ),
+                    "target_eval_date": target_eval_date,
+                    "l1": l1,
+                    "l2": l2,
+                    "l3": l3,
+                    "l4": l4,
+                    "color_option": color_option,
+                    "custom_base_date": (
+                        custom_base_date.strftime("%Y-%m-%d")
+                        if custom_base_date
+                        else None
+                    ),
+                    "drilldown": selected_drill_path,
+                    "sort_by": sort_by_col,
+                    "sort_order": sort_order,
+                },
+            )
+
             is_reverse = ("내림차순" in sort_order)
 
             def _tree_metrics(group_df):
@@ -2504,9 +2623,34 @@ elif menu == "일별/시점별 보유 현황 분석":
                                 grp_rate = (grp_profit / grp_past_eval * 100) if grp_past_eval != 0 else 0.0
 
                             if depth == len(active_group_cols) - 1:
-                                if len(sub_grp["formatted_ticker"].dropna().unique()) <= 1 and len(sub_grp["current_price"].dropna().unique()) == 1:
-                                    price_sym = "$" if row["currency"] == "USD" else "₩"
-                                    disp_price = f"{price_sym}{row['current_price']:,.2f}" if row["currency"] == "USD" else f"{price_sym}{row['current_price']:,.0f}"
+                                ticker_values = (
+                                    sub_grp["formatted_ticker"]
+                                    .dropna()
+                                    .astype(str)
+                                    .unique()
+                                )
+                                price_values = pd.to_numeric(
+                                    sub_grp["current_price"], errors="coerce"
+                                ).dropna().unique()
+                                currency_values = (
+                                    sub_grp["currency"]
+                                    .dropna()
+                                    .astype(str)
+                                    .unique()
+                                )
+                                if (
+                                    len(ticker_values) <= 1
+                                    and len(price_values) == 1
+                                    and len(currency_values) == 1
+                                ):
+                                    price = float(price_values[0])
+                                    currency = currency_values[0]
+                                    price_sym = "$" if currency == "USD" else "₩"
+                                    disp_price = (
+                                        f"{price_sym}{price:,.2f}"
+                                        if currency == "USD"
+                                        else f"{price_sym}{price:,.0f}"
+                                    )
                                 else:
                                     disp_price = "-"
                             else:
@@ -2590,6 +2734,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                     ),
                     texttemplate=(
                         "<b>%{label}</b><br>"
+                        "<span style='font-size: 12px;'>현재가 %{customdata[1]}</span><br>"
                         "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
                         "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
                     ),
