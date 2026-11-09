@@ -3036,6 +3036,35 @@ elif menu == "계좌기준 자산 점유율":
                 )
                 saved_visible_categories[scope_label] = applied_categories
 
+        chart_control_columns = st.columns([3, 1])
+        with chart_control_columns[0]:
+            chart_height = st.slider(
+                "차트 세로 크기",
+                min_value=620,
+                max_value=1400,
+                value=900,
+                step=100,
+                key="treemap_share_chart_height",
+            )
+        with chart_control_columns[1]:
+            st.write("")
+            reset_chart = st.button(
+                "RESET",
+                key="treemap_share_reset_chart",
+                use_container_width=True,
+            )
+        reset_nonce_key = "treemap_share_chart_reset_nonce"
+        if reset_nonce_key not in st.session_state:
+            st.session_state[reset_nonce_key] = 0
+        if reset_chart:
+            active_share_selection = None
+            st.session_state["treemap_share_active_selection"] = None
+            for scope_index, _ in enumerate(share_scope_specs):
+                st.session_state[
+                    f"_treemap_share_last_selection_{scope_index}"
+                ] = ()
+            st.session_state[reset_nonce_key] += 1
+
         valid_share_columns = {
             column for _, column in share_chart_specs
         }
@@ -3175,8 +3204,8 @@ elif menu == "계좌기준 자산 점유율":
                 stacked_bar = go.Figure(data=bar_traces)
                 stacked_bar.update_layout(
                     barmode="stack",
-                    height=620,
-                    margin=dict(t=20, l=16, r=350, b=56),
+                    height=chart_height,
+                    margin=dict(t=20, l=16, r=300, b=56),
                     font=dict(
                         family="Malgun Gothic, Segoe UI, sans-serif",
                         size=13,
@@ -3210,7 +3239,7 @@ elif menu == "계좌기준 자산 점유율":
             else:
                 stacked_bar = go.Figure()
                 stacked_bar.update_layout(
-                    height=540,
+                    height=chart_height,
                     margin=dict(t=20, l=16, r=16, b=56),
                     annotations=[
                         dict(
@@ -3228,12 +3257,23 @@ elif menu == "계좌기준 자산 점유율":
                         )
                     ],
                 )
-            chart_selection = st.plotly_chart(
+            chart_column, detail_panel = st.columns([2.2, 1.3])
+            chart_selection = chart_column.plotly_chart(
                 stacked_bar,
                 use_container_width=True,
-                config={"displayModeBar": False},
+                config={
+                    "displayModeBar": True,
+                    "displaylogo": False,
+                    "modeBarButtonsToAdd": [
+                        "zoom2d",
+                        "pan2d",
+                        "resetScale2d",
+                    ],
+                    "scrollZoom": True,
+                },
                 key=(
                     f"treemap_share_stacked_{scope_index}_"
+                    f"{st.session_state[reset_nonce_key]}_"
                     + "_".join(
                         str(index)
                         for index, title in enumerate(
@@ -3320,11 +3360,11 @@ elif menu == "계좌기준 자산 점유율":
                 detail_table = detail_table.rename(
                     columns={detail_column: detail_label}
                 )
-                st.markdown(
+                detail_panel.markdown(
                     f"**📋 {active_share_selection.get('category')} · "
                     f"{active_group} {detail_label} 상세**"
                 )
-                st.dataframe(
+                detail_panel.dataframe(
                     detail_table[
                         [
                             detail_label,
@@ -3353,6 +3393,10 @@ elif menu == "계좌기준 자산 점유율":
                     },
                     use_container_width=True,
                     hide_index=True,
+                )
+            else:
+                detail_panel.info(
+                    "차트의 막대 항목을 선택하면 세부 내역이 여기에 표시됩니다."
                 )
 
         st.session_state["treemap_share_active_selection"] = active_share_selection
