@@ -3285,8 +3285,7 @@ elif menu == "계좌기준 자산 점유율":
                         )
                     ],
                 )
-            chart_column, detail_panel = st.columns([2.0, 1.3])
-            chart_selection = chart_column.plotly_chart(
+            chart_selection = st.plotly_chart(
                 stacked_bar,
                 use_container_width=True,
                 config={
@@ -3383,11 +3382,11 @@ elif menu == "계좌기준 자산 점유율":
                 detail_table = detail_table.rename(
                     columns={detail_column: detail_label}
                 )
-                detail_panel.markdown(
+                st.markdown(
                     f"**📋 {active_share_selection.get('category')} · "
                     f"{active_group} {detail_label} 상세**"
                 )
-                detail_panel.dataframe(
+                st.dataframe(
                     detail_table[
                         [
                             detail_label,
