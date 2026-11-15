@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from plotly.colors import qualitative
 from plotly.subplots import make_subplots
 
 # -----------------------------------------------------------------------------
@@ -5141,10 +5142,39 @@ if menu in (
               horizontal=True,
               key='daily_eval_chart_layout',
           )
+        appearance_options = st.columns(2)
+        with appearance_options[0]:
+          unify_chart_y_axis = st.checkbox(
+              '모든 차트 Y축 범위 통일',
+              help='현재 분석 데이터 전체의 일자별 합계를 기준으로 모든 차트의 Y축 범위를 맞춥니다.',
+              key='daily_eval_unify_y_axis',
+          )
+        with appearance_options[1]:
+          unify_chart_colors = st.checkbox(
+              '범례 항목별 색상 통일',
+              help='같은 항목은 분류 기준이나 차트가 달라도 같은 색으로 표시합니다.',
+              key='daily_eval_unify_legend_colors',
+          )
 
         if analysis_df.empty:
           st.info('분석할 평가 데이터가 없습니다.')
         else:
+          category_names = sorted({
+              str(value)
+              for column in analysis_dimensions.values()
+              for value in analysis_df[column].dropna().unique()
+          })
+          shared_color_map = {
+              name: qualitative.Plotly[index % len(qualitative.Plotly)]
+              for index, name in enumerate(category_names)
+          }
+          shared_y_max = analysis_df.groupby('Date')[
+              '총평가금액'
+          ].sum().max()
+          if pd.isna(shared_y_max):
+            shared_y_max = 0.0
+          shared_y_max = max(float(shared_y_max), 1.0)
+
           chart_containers = (
               st.columns(chart_count)
               if chart_layout == '좌우'
@@ -5265,11 +5295,16 @@ if menu in (
                 group_data = chart_data[
                     chart_data[dimension_column] == group
                 ]
+                trace_color = (
+                    shared_color_map[str(group)]
+                    if unify_chart_colors else None
+                )
                 if chart_type == '누적 세로 막대':
                   figure.add_trace(go.Bar(
                       x=group_data['Date'],
                       y=group_data['총평가금액'],
                       name=str(group),
+                      marker_color=trace_color,
                       hovertemplate=(
                           '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
                       ),
@@ -5280,6 +5315,8 @@ if menu in (
                       y=group_data['총평가금액'],
                       name=str(group),
                       mode='lines+markers',
+                      marker_color=trace_color,
+                      line_color=trace_color,
                       hovertemplate=(
                           '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
                       ),
@@ -5305,7 +5342,14 @@ if menu in (
                   categoryorder='array',
                   categoryarray=date_order,
               )
-              figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
+              figure.update_yaxes(
+                  tickprefix='₩',
+                  tickformat=',.0f',
+                  range=(
+                      [0, shared_y_max]
+                      if unify_chart_y_axis else None
+                  ),
+              )
               render_resizable_plotly_chart(
                   figure, key=f'daily_eval_chart_{chart_index}'
               )
