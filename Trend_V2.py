@@ -1633,6 +1633,7 @@ menu = st.sidebar.selectbox(
     '메뉴 선택',
     [
         '트렌드 리포트',
+        '일자별 총 평가 금액 항목별 분석',
         'SUMMARY',
         '계좌 별칭 관리',
         '종목 분류 관리',
@@ -1643,10 +1644,106 @@ menu = st.sidebar.selectbox(
     ],
 )
 
+def menu_state_scope(menu_name):
+  if menu_name in ('트렌드 리포트', '일자별 총 평가 금액 항목별 분석'):
+    return 'trend'
+  if menu_name == 'SUMMARY':
+    return 'summary'
+  if menu_name == '원금 및 입출금 관리':
+    return 'cash_flow'
+  return menu_name
+
+
+def is_persistable_widget_value(value):
+  scalar_types = (str, int, float, bool, date, datetime, type(None))
+  if isinstance(value, scalar_types):
+    return True
+  if isinstance(value, (list, tuple)):
+    return all(is_persistable_widget_value(item) for item in value)
+  if isinstance(value, dict):
+    return all(
+        isinstance(key, (str, int, float, bool))
+        and is_persistable_widget_value(item)
+        for key, item in value.items()
+    )
+  return False
+
+
+previous_menu = st.session_state.get('_active_menu')
+if previous_menu != menu:
+  previous_scope = menu_state_scope(previous_menu)
+  current_scope = menu_state_scope(menu)
+  if previous_scope:
+    state_key = f'_menu_widget_state_{previous_scope}'
+    saved_widget_state = dict(st.session_state.get(state_key, {}))
+    prefixes_by_scope = {
+        'trend': (
+            'trend_', 'live_', 'pos_', 'stack_', 'sub_', 'ex_',
+            'acc_filter_', 'cat4_filter_', 'total_stack_', 'fig_',
+            'group_summary_', 'trend_report_views', 'daily_eval_',
+        ),
+        'summary': ('summary_',),
+        'cash_flow': (
+            'cf_', 'cash_flow_', 'init_p_', 'bj_year_end_value_',
+        ),
+    }
+    prefixes = prefixes_by_scope.get(previous_scope)
+    for key, value in list(st.session_state.items()):
+      matches_scope = (
+          key.startswith(prefixes)
+          if prefixes is not None
+          else not key.startswith(('_', '$'))
+      )
+      if matches_scope and is_persistable_widget_value(value):
+        saved_widget_state[key] = value
+    st.session_state[state_key] = saved_widget_state
+  if current_scope:
+    saved_widget_state = st.session_state.get(
+        f'_menu_widget_state_{current_scope}', {}
+    )
+    for key, value in saved_widget_state.items():
+      st.session_state[key] = value
+  st.session_state['_active_menu'] = menu
+
+
+def save_active_query_conditions(page):
+  conditions = load_query_conditions(page)
+  value_map = {
+      'trend_sel_whose': 'whose',
+      'trend_sel_account_types': 'account_types',
+      'trend_sel_category2': 'category2',
+      'trend_sel_category4': 'category4',
+      'trend_sel_accs': 'accounts',
+      'trend_view_types': 'view_types',
+      'trend_sel_bm': 'benchmarks',
+      'trend_freq_str': 'frequency',
+  }
+  for state_key, saved_key in value_map.items():
+    if state_key in st.session_state:
+      conditions[saved_key] = st.session_state[state_key]
+  prefix = 'summary' if page == 'summary' else 'trend'
+  for date_name in ('start_date', 'end_date'):
+    state_key = f'{prefix}_{date_name}_input'
+    value = st.session_state.get(
+        state_key, st.session_state.get(f'{prefix}_{date_name}')
+    )
+    if isinstance(value, (date, datetime)):
+      conditions[date_name] = value.isoformat()
+    elif isinstance(value, str) and value:
+      conditions[date_name] = value[:10]
+  if conditions:
+    save_query_conditions(page, conditions)
+
+
 query_page = {
     '트렌드 리포트': 'trend',
+    '일자별 총 평가 금액 항목별 분석': 'trend',
     'SUMMARY': 'summary',
 }.get(menu)
+previous_query_page = st.session_state.get('_active_query_page')
+if previous_query_page and previous_query_page != query_page:
+  save_active_query_conditions(previous_query_page)
+
 if query_page is None:
   st.session_state['_active_query_page'] = None
   st.session_state['_query_condition_restore_pending'] = False
@@ -1707,10 +1804,17 @@ bm_styles = {
 # -----------------------------------------------------------------------------
 # 메뉴 1: 트렌드 리포트
 # -----------------------------------------------------------------------------
-if menu in ('트렌드 리포트', 'SUMMARY'):
+if menu in (
+    '트렌드 리포트',
+    '일자별 총 평가 금액 항목별 분석',
+    'SUMMARY',
+):
   st.header(
       '📊 기간별 자산·지수 비교'
-      if menu == 'SUMMARY' else '📊 원금 vs 평가액 트렌드 분석'
+      if menu == 'SUMMARY'
+      else '📊 일자별 총 평가 금액 항목별 분석'
+      if menu == '일자별 총 평가 금액 항목별 분석'
+      else '📊 원금 vs 평가액 트렌드 분석'
   )
 
   conn = get_connection()
@@ -1926,7 +2030,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
     )
     st.session_state['_query_condition_restore_pending'] = False
 
-    with st.form('trend_control_form'):
+    with st.container():
       if menu == 'SUMMARY':
         st.info(
             '비교 지수: S&P 500, 나스닥 종합, 나스닥 100, 다우 존스. '
@@ -1936,6 +2040,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         selected_bm = list(summary_benchmark_map)
         option_freq = '일간 (매일)'
       else:
+        st.session_state.setdefault('trend_view_types', all_view_types)
         saved_benchmarks = st.session_state.get(
             'trend_sel_bm', bm_options
         )
@@ -1946,18 +2051,19 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         ]
         if not trend_benchmark_default:
           trend_benchmark_default = bm_options
+        st.session_state['trend_sel_bm'] = trend_benchmark_default
         f_col1, f_col2 = st.columns([3, 3])
 
         with f_col1:
           view_types = st.multiselect(
               '표시할 트렌드 관점 선택',
               options=all_view_types,
-              default=st.session_state.get('trend_view_types', all_view_types),
+              key='trend_view_types',
           )
           selected_bm = st.multiselect(
               '📈 비교 벤치마크 지수 선택 (차트에 함께 표시)',
               options=bm_options,
-              default=trend_benchmark_default,
+              key='trend_sel_bm',
               help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
           )
 
@@ -1967,11 +2073,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           )
           if saved_freq not in freq_options:
             saved_freq = '일간 (주말 제외)'
-
+          st.session_state['trend_freq_str'] = saved_freq
           option_freq = st.selectbox(
               '트렌드 주기 선택',
               options=freq_options,
-              index=freq_options.index(saved_freq),
+              key='trend_freq_str',
           )
 
       d_col1, d_col2 = st.columns(2)
@@ -2009,7 +2115,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         )
 
       st.write('---')
-      run_button = st.form_submit_button('🚀 데이터 계산 실행 (Run)')
+      run_button = st.button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
       st.session_state['trend_view_types'] = view_types
@@ -2087,7 +2193,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       record_dates = pd.to_datetime(
           filtered_pf_df['record_date'], errors='coerce'
       ).dropna()
-      if menu in ('SUMMARY', '트렌드 리포트') and not record_dates.empty:
+      if menu in (
+          'SUMMARY',
+          '트렌드 리포트',
+          '일자별 총 평가 금액 항목별 분석',
+      ) and not record_dates.empty:
         history_start_date = record_dates.min()
         history_end_date = max(pd.Timestamp(end_date), record_dates.max())
       else:
@@ -2095,61 +2205,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         history_end_date = pd.Timestamp(end_date)
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
-      if menu == 'SUMMARY':
-        fetch_tickers.extend(summary_benchmark_map.values())
+      fetch_tickers.extend(summary_benchmark_map.values())
       selected_bj_accounts = [
           account for account in selected_accounts
           if whose_mapping.get(account) == 'BJ'
       ]
-      if selected_bj_accounts:
-        diagnostics = cf_df.copy()
-        if not diagnostics.empty:
-          diagnostics['_account_key'] = diagnostics['account_num'].map(
-              normalize_account_num
-          )
-          diagnostics['_flow_type'] = diagnostics['flow_type'].map(
-              normalize_cash_flow_type
-          )
-          diagnostics['_trans_date'] = pd.to_datetime(
-              diagnostics['trans_date'], errors='coerce'
-          )
-          diagnostics['_amount_krw'] = diagnostics['amount'].map(
-              parse_cash_flow_amount
-          )
-          selected_account_keys = {
-              normalize_account_num(account)
-              for account in selected_bj_accounts
-          }
-          diagnostics = diagnostics[
-              diagnostics['_account_key'].isin(selected_account_keys)
-              & (diagnostics['_trans_date'] > pd.Timestamp(BJ_YEAR_END_BASELINE_DATE))
-              & (diagnostics['_trans_date'] <= pd.Timestamp(end_date))
-          ]
-          valid_flows = diagnostics.dropna(
-              subset=['_trans_date', '_amount_krw']
-          )
-          deposits = valid_flows.loc[
-              valid_flows['_flow_type'] == '입금', '_amount_krw'
-          ].sum()
-          withdrawals = valid_flows.loc[
-              valid_flows['_flow_type'] == '출금', '_amount_krw'
-          ].sum()
-          recognized_flow_count = valid_flows['_flow_type'].isin(
-              ['입금', '출금']
-          ).sum()
-          ignored_flow_count = len(diagnostics) - recognized_flow_count
-        else:
-          deposits = withdrawals = 0.0
-          recognized_flow_count = ignored_flow_count = 0
-        st.info(
-            'BJ 현금흐름 진단 (KRW): '
-            f'{recognized_flow_count}건 매칭, '
-            f'입금 {deposits:,.0f}원, 출금 {withdrawals:,.0f}원, '
-            f'순입금 {deposits - withdrawals:,.0f}원. '
-            '미매칭/금액 오류/알 수 없는 유형은 '
-            f'{ignored_flow_count}건입니다. '
-            '입출금 금액은 원화로 처리되며, USD 보유자산만 환율을 적용합니다.'
-        )
       saved_baselines = dict(zip(
           year_end_value_df['account_num'].astype(str),
           year_end_value_df['baseline_amount'],
@@ -2165,15 +2225,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             '계산됩니다. 원금 및 입출금 관리에서 기준액을 입력해 주세요: '
             + ', '.join(missing_bj_baselines)
         )
-      if selected_bj_accounts and pd.Timestamp(end_date) >= pd.Timestamp(BJ_PORTFOLIO_ASSUMED_FROM):
-        st.info(
-            'BJ 계좌: 2025-12-31 기준액으로 올해 누적손익을 계산하고, '
-            '2026-07-31 이전은 주기별 손익을 미관측으로 처리합니다. '
-            'Category 2 손익은 2026-07-31 이후만 표시하며 연말~7월 구간은 '
-            'Category 2에 배분하지 않습니다. Category 4·보유 항목별과 SH 계좌는 기존 방식입니다.'
-        )
 
       with st.spinner('최신 시세를 수집하고 트렌드를 계산 중입니다...'):
+        fetch_tickers = list(dict.fromkeys(fetch_tickers))
         s_str = min(
             pd.Timestamp(start_date) - pd.Timedelta(days=10),
             history_start_date - pd.Timedelta(days=10),
@@ -2199,7 +2253,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             market_data.index,
         )
 
-      if menu in ('SUMMARY', '트렌드 리포트'):
+      if menu in (
+          'SUMMARY',
+          '트렌드 리포트',
+          '일자별 총 평가 금액 항목별 분석',
+      ):
         history_dates = pd.DatetimeIndex(
             pd.to_datetime(market_data.index, errors='coerce')
         ).dropna().normalize().unique()
@@ -2700,7 +2758,27 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           )
           bm_calc_dict[bm_label] = bm_df
 
+      trend_index_returns = {}
+      if menu != 'SUMMARY':
+        for benchmark_label, ticker in summary_benchmark_map.items():
+          index_return = np.nan
+          if ticker in market_data.columns and not market_data.empty:
+            prices = pd.to_numeric(
+                market_data[ticker], errors='coerce'
+            ).dropna().sort_index()
+            start_price = prices.asof(pd.Timestamp(start_date))
+            end_price = prices.asof(pd.Timestamp(end_date))
+            if (
+                pd.notna(start_price)
+                and pd.notna(end_price)
+                and start_price > 0
+            ):
+              index_return = (end_price / start_price - 1) * 100
+          trend_index_returns[benchmark_label] = index_return
+
       result_prefix = 'summary' if menu == 'SUMMARY' else 'trend'
+      if result_prefix == 'trend':
+        st.session_state['trend_index_returns'] = trend_index_returns
       st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
       st.session_state[f'{result_prefix}_history_eval_df'] = pd.DataFrame(
           history_eval_records
@@ -2737,22 +2815,27 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
       bm_calc_dict = st.session_state.get('trend_bm_calc', {})
       active_views = st.session_state.get('trend_view_types', all_view_types)
 
-      st.write('---')
-      st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
+      layout_setting = '1열 (기존 세로 배치)'
+      global_legend_pos = st.session_state.get(
+          'live_legend_pos', '하단 배치'
+      )
+      if menu != '일자별 총 평가 금액 항목별 분석':
+        st.write('---')
+        st.subheader('🖥️ 화면 디스플레이 설정 (실시간 반영)')
 
-      disp_col1, disp_col2 = st.columns([2.5, 2.5])
+        disp_col1, disp_col2 = st.columns([2.5, 2.5])
 
-      with disp_col1:
-        layout_setting = st.selectbox(
-            '🖥️ 차트 Layout 선택',
-            options=[
-                '1열 (기존 세로 배치)',
-                '2열 (좌우 2개 분할)',
-                '3열 (좌우 3개 분할)',
-            ],
-            index=0,
-            key='live_chart_layout',
-        )
+        with disp_col1:
+          layout_setting = st.selectbox(
+              '🖥️ 차트 Layout 선택',
+              options=[
+                  '1열 (기존 세로 배치)',
+                  '2열 (좌우 2개 분할)',
+                  '3열 (좌우 3개 분할)',
+              ],
+              index=0,
+              key='live_chart_layout',
+          )
 
       def on_global_legend_change():
         new_val = st.session_state.get('live_legend_pos')
@@ -2776,15 +2859,16 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
         val = st.session_state.get(key_name, current_global_val)
         return options_list.index(val) if val in options_list else 0
 
-      with disp_col2:
-        global_legend_pos = st.selectbox(
-            '📌 공통 범례(Legend) 기본 배치',
-            options=['하단 배치', '우측 배치', '숨김'],
-            index=0,
-            key='live_legend_pos',
-            on_change=on_global_legend_change,
-            help='기본 범례 위치를 선택합니다. 각 차트별로 개별 변경도 가능합니다.',
-        )
+      if menu != '일자별 총 평가 금액 항목별 분석':
+        with disp_col2:
+          global_legend_pos = st.selectbox(
+              '📌 공통 범례(Legend) 기본 배치',
+              options=['하단 배치', '우측 배치', '숨김'],
+              index=0,
+              key='live_legend_pos',
+              on_change=on_global_legend_change,
+              help='기본 범례 위치를 선택합니다. 각 차트별로 개별 변경도 가능합니다.',
+          )
 
       num_cols = 1
       if '2열' in layout_setting:
@@ -3441,6 +3525,19 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
           del row['_eval']
 
+        for benchmark_label, benchmark_return in st.session_state.get(
+            'trend_index_returns', {}
+        ).items():
+          summary_table_data.append({
+              prefix: benchmark_label,
+              '선택구간 누적 평가 손익 (원)': np.nan,
+              '최종 기말 평가 금액 (원)': np.nan,
+              '점유율 (%)': np.nan,
+              '선택구간 누적 수익률 (%)': benchmark_return,
+              '고점 대비 하락 금액 (원)': np.nan,
+              '고점 대비 하락률 (%)': np.nan,
+          })
+
         total_ret = calculate_combined_cumulative_return(grp_agg_summary)
         total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
             total_eval_sum, history_total_peak
@@ -3939,7 +4036,7 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               fig_cum_ret, key=f'trend_grp_cum_ret_{prefix}'
           )
 
-        if group_col in [
+        if menu != '트렌드 리포트' and group_col in [
             'account_num',
             'account_type',
             'category2',
@@ -4458,6 +4555,21 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
           row['점유율 (%)'] = (row['_eval'] / total_eval_sum * 100) if total_eval_sum > 0 else 0
           del row['_eval']
 
+        for benchmark_label, benchmark_return in st.session_state.get(
+            'trend_index_returns', {}
+        ).items():
+          whose_summary_data.append({
+              'WHOSE': benchmark_label,
+              '선택구간 누적 평가 손익 (원)': np.nan,
+              '최종 기말 평가 금액 (원)': np.nan,
+              '점유율 (%)': np.nan,
+              '선택구간 누적 수익률 (%)': benchmark_return,
+              '고점 대비 하락 금액 (원)': np.nan,
+              '고점 대비 하락률 (%)': np.nan,
+              bj_year_profit_label: np.nan,
+              bj_year_return_label: np.nan,
+          })
+
         total_ret = calculate_combined_cumulative_return(agg_whose_summary)
         total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
             total_eval_sum, history_total_peak
@@ -4825,6 +4937,9 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
             render_resizable_plotly_chart(fig3a, key='trend_w_fig3a')
           render_resizable_plotly_chart(fig3b, key='trend_w_fig3b')
 
+        if menu == '트렌드 리포트':
+            return
+
         st.write('---')
         st.markdown('### 📊 [전체 합산] 일자별 총 평가 금액 항목별 분석')
         
@@ -4916,7 +5031,118 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
 
         render_resizable_plotly_chart(fig_total_stack, key='fig_total_stack_chart')
 
-      if active_views:
+      if menu == '일자별 총 평가 금액 항목별 분석':
+        st.subheader('📊 일자별 총 평가 금액 항목별 분석')
+        analysis_dimensions = {
+            'WHOSE별': 'whose',
+            '계좌별': 'account_num',
+            '증권사별': 'broker',
+            '계좌유형별': 'account_type',
+            'CATEGORY2별': 'category2',
+            'CATEGORY4별': 'category4',
+            '보유항목별': 'item_name',
+        }
+        analysis_columns = st.columns([1.3, 3.2, 1.8])
+        with analysis_columns[0]:
+          selected_dimension = st.selectbox(
+              '분류 기준 선택',
+              options=list(analysis_dimensions),
+              key='daily_eval_dimension',
+          )
+        dimension_column = analysis_dimensions[selected_dimension]
+        analysis_df = calc_df.copy()
+        analysis_df[dimension_column] = (
+            analysis_df[dimension_column].fillna('미분류').astype(str)
+        )
+        dimension_options = sorted(
+            analysis_df[dimension_column].dropna().unique().tolist()
+        )
+        selection_signature = (dimension_column, tuple(dimension_options))
+        if st.session_state.get('_daily_eval_selection_signature') != selection_signature:
+          st.session_state['daily_eval_groups'] = dimension_options
+          st.session_state['_daily_eval_selection_signature'] = (
+              selection_signature
+          )
+        else:
+          st.session_state['daily_eval_groups'] = [
+              value
+              for value in st.session_state.get(
+                  'daily_eval_groups', dimension_options
+              )
+              if value in dimension_options
+          ]
+        with analysis_columns[1]:
+          selected_groups = st.multiselect(
+              '표시 항목 선택',
+              options=dimension_options,
+              key='daily_eval_groups',
+          )
+        with analysis_columns[2]:
+          chart_type = st.radio(
+              '차트 유형 선택',
+              options=['누적 세로 막대', '꺾은선 그래프'],
+              horizontal=True,
+              key='daily_eval_chart_type',
+          )
+
+        if not selected_groups:
+          st.info('표시할 항목을 하나 이상 선택해 주세요.')
+        else:
+          analysis_df['Date'] = pd.to_datetime(
+              analysis_df['Date'], errors='coerce'
+          ).dt.strftime('%Y-%m-%d')
+          analysis_df['총평가금액'] = pd.to_numeric(
+              analysis_df['총평가금액'], errors='coerce'
+          ).fillna(0)
+          chart_data = (
+              analysis_df[
+                  analysis_df[dimension_column].isin(selected_groups)
+              ]
+              .groupby(['Date', dimension_column], dropna=False)[
+                  '총평가금액'
+              ]
+              .sum()
+              .reset_index()
+              .dropna(subset=['Date'])
+          )
+          date_order = sorted(chart_data['Date'].unique().tolist())
+          figure = go.Figure()
+          for group in selected_groups:
+            group_data = chart_data[
+                chart_data[dimension_column] == group
+            ]
+            if chart_type == '누적 세로 막대':
+              figure.add_trace(go.Bar(
+                  x=group_data['Date'],
+                  y=group_data['총평가금액'],
+                  name=str(group),
+                  hovertemplate='₩%{y:,.0f}<extra>%{fullData.name}</extra>',
+              ))
+            else:
+              figure.add_trace(go.Scatter(
+                  x=group_data['Date'],
+                  y=group_data['총평가금액'],
+                  name=str(group),
+                  mode='lines+markers',
+                  hovertemplate='₩%{y:,.0f}<extra>%{fullData.name}</extra>',
+              ))
+          figure.update_layout(
+              title=f'일자별 총 평가 금액 ({selected_dimension})',
+              barmode='stack' if chart_type == '누적 세로 막대' else None,
+              hovermode='closest',
+              height=600,
+              yaxis_title='총 평가금액 (KRW)',
+          )
+          figure.update_xaxes(
+              type='category',
+              categoryorder='array',
+              categoryarray=date_order,
+          )
+          figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
+          render_resizable_plotly_chart(
+              figure, key='daily_eval_chart'
+          )
+      elif active_views:
         tabs_key = 'trend_report_views'
         default_tab = st.session_state.get(tabs_key, active_views[0])
         if default_tab not in active_views:
@@ -4941,6 +5167,11 @@ if menu in ('트렌드 리포트', 'SUMMARY'):
               draw_group_summary_charts(calc_df, 'item_name', '보유항목별')
       else:
         st.info('표시할 트렌드 관점을 선택해 주세요.')
+    elif menu == '일자별 총 평가 금액 항목별 분석':
+      st.info(
+          '트렌드 리포트와 동일하게 조회 조건을 선택하고 '
+          '데이터 계산 실행을 눌러주세요.'
+      )
 
 # -----------------------------------------------------------------------------
 # 메뉴 2: 계좌 별칭 관리
@@ -4960,7 +5191,7 @@ elif menu == '계좌 별칭 관리':
     alias_dict = dict(zip(current_aliases['account_num'], current_aliases['alias']))
 
     st.markdown('##### 각 계좌 번호별로 직관적인 별칭을 부여할 수 있습니다.')
-    with st.form('alias_form'):
+    with st.container():
       updated_aliases = {}
       for _, row in pf_df.iterrows():
         b_name = row['broker']
@@ -4974,7 +5205,7 @@ elif menu == '계좌 별칭 관리':
         )
         updated_aliases[acc_num] = new_val
 
-      submitted = st.form_submit_button('💾 별칭 저장')
+      submitted = st.button('💾 별칭 저장')
       if submitted:
         conn = get_connection()
         c = conn.cursor()
@@ -5176,7 +5407,7 @@ elif menu == '원금 및 입출금 관리':
     if pf_accs.empty:
       st.info('포트폴리오에 등록된 계좌가 없습니다.')
     else:
-      with st.form('init_principal_form'):
+      with st.container():
         new_init_vals = {}
         for _, row in pf_accs.iterrows():
           b_name = row['broker']
@@ -5186,7 +5417,7 @@ elif menu == '원금 및 입출금 관리':
           curr_val = float(init_p_dict.get(acc_num, 0.0))
 
           val = st.number_input(
-              f'{disp_name} 최초 원금 (원)',
+              f'{disp_name} 최초 원금 (KRW ₩)',
               value=curr_val,
               step=100000.0,
               format='%.0f',
@@ -5194,7 +5425,7 @@ elif menu == '원금 및 입출금 관리':
           )
           new_init_vals[acc_num] = (b_name, val)
 
-        sub_p = st.form_submit_button('💾 최초 원금 저장')
+        sub_p = st.button('💾 최초 원금 저장')
         if sub_p:
           conn = get_connection()
           c = conn.cursor()
@@ -5275,7 +5506,7 @@ elif menu == '원금 및 입출금 관리':
 
     # 신규 등록 폼
     with st.expander('➕ 신규 입출금 내역 간편 등록', expanded=False):
-      with st.form('add_cash_flow_form'):
+      with st.container():
         col_cf1, col_cf2, col_cf3 = st.columns([2, 1, 1])
         with col_cf1:
           selected_account_label = st.selectbox(
@@ -5284,19 +5515,25 @@ elif menu == '원금 및 입출금 관리':
               key='cash_flow_account_selector',
           )
           cf_note = st.text_input(
-              '비고 (예: 추가 시드 입금, 생활비 출금 등)'
+              '비고 (예: 추가 시드 입금, 생활비 출금 등)',
+              key='cash_flow_note',
           )
         with col_cf2:
-          cf_date = st.date_input('거래 일자', value=date.today())
+          cf_date = st.date_input(
+              '거래 일자', value=date.today(), key='cash_flow_date'
+          )
           flow_type = st.radio(
-              '구분', options=['입금', '출금'], horizontal=True
+              '구분',
+              options=['입금', '출금'],
+              horizontal=True,
+              key='cash_flow_type',
           )
         with col_cf3:
           cf_amount = st.number_input(
-              '금액 (원)', min_value=0.0, value=0.0,
-              step=100000.0, format='%.0f',
+              '금액 (KRW ₩)', min_value=0.0, value=0.0,
+              step=100000.0, format='%.0f', key='cash_flow_amount',
           )
-          save_cash_flow = st.form_submit_button('➕ 입출금 내역 저장')
+          save_cash_flow = st.button('➕ 입출금 내역 저장')
 
         if save_cash_flow:
           if not account_options or selected_account_label not in account_by_label:
@@ -5572,7 +5809,7 @@ elif menu == '원금 및 입출금 관리':
       for column in df.columns:
         metric_name = column[-1] if isinstance(column, tuple) else column
         if metric_name in metric_names:
-          format_map[column] = '{:,.0f}원'
+          format_map[column] = '₩{:,.0f}'
       return format_map
 
     # Account-level principal = initial principal + lifetime net cash flow.
@@ -5770,7 +6007,7 @@ elif menu == '원금 및 입출금 관리':
       )
       st.dataframe(
           account_summary_source.style.format({
-              col: '{:,.0f}원' for col in
+              col: '₩{:,.0f}' for col in
               [
                   '입금 누적액', '출금 누적액', '순입출금 누적액',
                   '최초 원금', '전체 기간 순입출금', '전체 원금',
@@ -5807,6 +6044,20 @@ elif menu == '원금 및 입출금 관리':
       year_filter_opts = sorted([int(y) for y in cf_df['year'].dropna().unique() if pd.notna(y)], reverse=True)
       month_filter_opts = list(range(1, 13))
 
+      cash_flow_filter_options = {
+          'cf_flt_whose': whose_filter_opts,
+          'cf_flt_type': type_filter_opts,
+          'cf_flt_accs': acc_filter_opts,
+          'cf_flt_years': year_filter_opts,
+          'cf_flt_months': month_filter_opts,
+      }
+      for key, options in cash_flow_filter_options.items():
+        st.session_state[key] = [
+            value
+            for value in st.session_state.get(key, [])
+            if value in options
+        ]
+
       st.markdown('##### 🔍 입출금 내역 다중 필터링 (필터 미선택 시 전체 표시)')
       flt_c1, flt_c2, flt_c3, flt_c4, flt_c5 = st.columns(5)
       with flt_c1:
@@ -5840,9 +6091,9 @@ elif menu == '원금 및 입출금 관리':
 
       sm1, sm2, sm3, sm4 = st.columns(4)
       sm1.metric('조회 내역', f'{len(filtered_cf):,}건')
-      sm2.metric('총 입금액', f'{dep_sum:,.0f}원')
-      sm3.metric('총 출금액', f'{wth_sum:,.0f}원')
-      sm4.metric('순입금액 (입금-출금)', f'{net_sum:,.0f}원', delta=f'{net_sum:,.0f}원' if net_sum != 0 else None)
+      sm2.metric('총 입금액', f'₩{dep_sum:,.0f}')
+      sm3.metric('총 출금액', f'₩{wth_sum:,.0f}')
+      sm4.metric('순입금액 (입금-출금)', f'₩{net_sum:,.0f}', delta=f'₩{net_sum:,.0f}' if net_sum != 0 else None)
 
       st.write('---')
       st.markdown('##### 📝 입출금 내역 웹 직접 수정 (Data Editor)')
@@ -5875,7 +6126,7 @@ elif menu == '원금 및 입출금 관리':
               'broker': st.column_config.TextColumn('증권사 (참조)'),
               'account_num': st.column_config.SelectboxColumn('계좌번호', options=all_possible_acc_nums, required=True),
               'flow_type': st.column_config.SelectboxColumn('구분', options=['입금', '출금'], required=True),
-              'amount': st.column_config.NumberColumn('금액 (원)', format='%,.0f', required=True),
+              'amount': st.column_config.NumberColumn('금액 (KRW ₩)', format='₩%,.0f', required=True),
               'note': st.column_config.TextColumn('비고'),
           }
       )
@@ -5926,7 +6177,7 @@ elif menu == '원금 및 입출금 관리':
           del_target_id = st.selectbox(
               '특정 ID 내역 바로 삭제',
               options=filtered_cf['id'].astype(int).tolist(),
-              format_func=lambda rid: f"ID {rid} | {filtered_cf.loc[filtered_cf['id']==rid, 'trans_date'].iloc[0]} | {filtered_cf.loc[filtered_cf['id']==rid, 'flow_type'].iloc[0]} | {filtered_cf.loc[filtered_cf['id']==rid, 'amount_clean'].iloc[0]:,.0f}원 ({filtered_cf.loc[filtered_cf['id']==rid, 'account_num'].iloc[0]})",
+              format_func=lambda rid: f"ID {rid} | {filtered_cf.loc[filtered_cf['id']==rid, 'trans_date'].iloc[0]} | {filtered_cf.loc[filtered_cf['id']==rid, 'flow_type'].iloc[0]} | ₩{filtered_cf.loc[filtered_cf['id']==rid, 'amount_clean'].iloc[0]:,.0f} ({filtered_cf.loc[filtered_cf['id']==rid, 'account_num'].iloc[0]})",
               key='cf_direct_del_selector'
           )
           if st.button('🗑️ 선택한 ID 삭제'):
@@ -5975,7 +6226,7 @@ elif menu == '원금 및 입출금 관리':
     if baseline_accounts.empty:
       st.info('등록된 BJ 계좌가 없습니다.')
     else:
-      with st.form('bj_year_end_value_form'):
+      with st.container():
         account_values = {}
         for _, row in baseline_accounts.iterrows():
           account_num = row['account_num']
@@ -5988,7 +6239,7 @@ elif menu == '원금 및 입출금 관리':
           account_values[account_num] = (
               broker,
               st.number_input(
-                  f'{account_label} 평가금액 (원)',
+                  f'{account_label} 평가금액 (KRW ₩)',
                   min_value=0.0,
                   value=float(baseline_values.get(account_num, 0.0)),
                   step=100000.0,
@@ -5997,7 +6248,7 @@ elif menu == '원금 및 입출금 관리':
               ),
           )
 
-        save_year_end_values = st.form_submit_button('💾 BJ 기준 평가액 저장')
+        save_year_end_values = st.button('💾 BJ 기준 평가액 저장')
         if save_year_end_values:
           conn = get_connection()
           cursor = conn.cursor()
