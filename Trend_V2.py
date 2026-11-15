@@ -5179,6 +5179,11 @@ if menu in (
                   horizontal=True,
                   key=f'daily_eval_chart_{chart_index}_type',
               )
+              legend_position = st.selectbox(
+                  '범례 위치',
+                  options=['하단 배치', '우측 배치', '숨김'],
+                  key=f'daily_eval_chart_{chart_index}_legend',
+              )
               if not selected_items:
                 st.info('표시할 항목을 하나 이상 선택해 주세요.')
                 continue
@@ -5220,6 +5225,9 @@ if menu in (
                           '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
                       ),
                   ))
+              legend_config, show_legend, chart_margin = (
+                  build_legend_config(legend_position)
+              )
               figure.update_layout(
                   title=f'일자별 총 평가 금액 ({selected_dimension})',
                   barmode=(
@@ -5229,6 +5237,9 @@ if menu in (
                   hovermode='closest',
                   height=600,
                   yaxis_title='총 평가금액 (KRW)',
+                  legend=legend_config,
+                  showlegend=show_legend,
+                  margin=chart_margin,
               )
               figure.update_xaxes(
                   type='category',
