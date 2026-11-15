@@ -5146,7 +5146,7 @@ if menu in (
         with appearance_options[0]:
           unify_chart_y_axis = st.checkbox(
               '모든 차트 Y축 범위 통일',
-              help='현재 분석 데이터 전체의 일자별 합계를 기준으로 모든 차트의 Y축 범위를 맞춥니다.',
+              help='표시되는 차트 중 가장 큰 금액에 맞춰 모든 차트의 Y축 범위를 자동으로 맞춥니다.',
               key='daily_eval_unify_y_axis',
           )
         with appearance_options[1]:
@@ -5154,6 +5154,17 @@ if menu in (
               '범례 항목별 색상 통일',
               help='같은 항목은 분류 기준이나 차트가 달라도 같은 색으로 표시합니다.',
               key='daily_eval_unify_legend_colors',
+          )
+        manual_y_max = 0.0
+        if unify_chart_y_axis:
+          manual_y_max = st.number_input(
+              'Y축 최대값 직접 지정 (원, 0=자동)',
+              min_value=0.0,
+              value=0.0,
+              step=1000000.0,
+              format='%.0f',
+              help='0이면 표시되는 차트 중 가장 큰 금액을 기준으로 자동 설정합니다.',
+              key='daily_eval_manual_y_max',
           )
 
         if analysis_df.empty:
@@ -5168,18 +5179,14 @@ if menu in (
               name: qualitative.Plotly[index % len(qualitative.Plotly)]
               for index, name in enumerate(category_names)
           }
-          shared_y_max = analysis_df.groupby('Date')[
-              '총평가금액'
-          ].sum().max()
-          if pd.isna(shared_y_max):
-            shared_y_max = 0.0
-          shared_y_max = max(float(shared_y_max), 1.0)
 
           chart_containers = (
               st.columns(chart_count)
               if chart_layout == '좌우'
               else [st.container() for _ in range(chart_count)]
           )
+          chart_figures = []
+          chart_max_values = []
           for chart_index, chart_container in enumerate(
               chart_containers, start=1
           ):
@@ -5289,6 +5296,15 @@ if menu in (
                   .reset_index()
                   .dropna(subset=['Date'])
               )
+              if chart_type == '누적 세로 막대':
+                chart_max_value = chart_data.groupby('Date')[
+                    '총평가금액'
+                ].sum().max()
+              else:
+                chart_max_value = chart_data['총평가금액'].max()
+              if not pd.isna(chart_max_value):
+                chart_max_values.append(float(chart_max_value))
+
               date_order = sorted(chart_data['Date'].unique().tolist())
               figure = go.Figure()
               for group in selected_items:
@@ -5342,14 +5358,20 @@ if menu in (
                   categoryorder='array',
                   categoryarray=date_order,
               )
-              figure.update_yaxes(
-                  tickprefix='₩',
-                  tickformat=',.0f',
-                  range=(
-                      [0, shared_y_max]
-                      if unify_chart_y_axis else None
-                  ),
+              figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
+              chart_figures.append(
+                  (chart_container, chart_index, figure)
               )
+          if unify_chart_y_axis and chart_figures:
+            shared_y_max = (
+                manual_y_max
+                if manual_y_max > 0
+                else max(max(chart_max_values, default=0.0), 1.0)
+            )
+            for _, _, figure in chart_figures:
+              figure.update_yaxes(range=[0, shared_y_max])
+          for chart_container, chart_index, figure in chart_figures:
+            with chart_container:
               render_resizable_plotly_chart(
                   figure, key=f'daily_eval_chart_{chart_index}'
               )
