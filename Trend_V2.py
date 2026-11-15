@@ -5127,30 +5127,6 @@ if menu in (
             analysis_df['총평가금액'], errors='coerce'
         ).fillna(0)
 
-        st.markdown('##### 🔎 모수 금액 필터')
-        filter_columns = st.columns(3)
-        selected_filters = {}
-        for index, (column, label) in enumerate(filter_options.items()):
-          options = sorted(analysis_df[column].unique().tolist())
-          key = f'daily_eval_filter_{column}'
-          st.session_state[key] = [
-              value
-              for value in st.session_state.get(key, [])
-              if value in options
-          ]
-          with filter_columns[index % len(filter_columns)]:
-            selected_filters[column] = st.multiselect(
-                f'{label} 필터 (미선택 시 전체)',
-                options=options,
-                key=key,
-            )
-        filtered_analysis_df = analysis_df
-        for column, selected_values in selected_filters.items():
-          if selected_values:
-            filtered_analysis_df = filtered_analysis_df[
-                filtered_analysis_df[column].isin(selected_values)
-            ]
-
         chart_settings = st.columns([1, 2])
         with chart_settings[0]:
           chart_count = st.selectbox(
@@ -5166,8 +5142,8 @@ if menu in (
               key='daily_eval_chart_layout',
           )
 
-        if filtered_analysis_df.empty:
-          st.info('선택한 필터 조건에 해당하는 평가 데이터가 없습니다.')
+        if analysis_df.empty:
+          st.info('분석할 평가 데이터가 없습니다.')
         else:
           chart_containers = (
               st.columns(chart_count)
@@ -5179,6 +5155,35 @@ if menu in (
           ):
             with chart_container:
               st.markdown(f'##### 분석 차트 {chart_index}')
+              st.markdown('###### 🔎 모수 금액 필터')
+              filter_columns = st.columns(3)
+              filtered_analysis_df = analysis_df
+              for index, (column, label) in enumerate(filter_options.items()):
+                options = sorted(analysis_df[column].unique().tolist())
+                key = (
+                    f'daily_eval_chart_{chart_index}_filter_{column}'
+                )
+                st.session_state[key] = [
+                    value
+                    for value in st.session_state.get(key, [])
+                    if value in options
+                ]
+                with filter_columns[index % len(filter_columns)]:
+                  selected_values = st.multiselect(
+                      f'{label} 필터 (미선택 시 전체)',
+                      options=options,
+                      key=key,
+                  )
+                if selected_values:
+                  filtered_analysis_df = filtered_analysis_df[
+                      filtered_analysis_df[column].isin(selected_values)
+                  ]
+              if filtered_analysis_df.empty:
+                st.info(
+                    '선택한 모수 금액 필터 조건에 해당하는 평가 데이터가 없습니다.'
+                )
+                continue
+
               control_columns = st.columns([1.5, 2.5])
               dimension_key = (
                   f'daily_eval_chart_{chart_index}_dimension'
