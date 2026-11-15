@@ -437,10 +437,171 @@ def parse_cash_flow_amount(amount):
   return -float(parsed_amount) if is_negative else float(parsed_amount)
 
 
+def build_cash_flow_index(cash_flow_df):
+  if cash_flow_df.empty:
+    return {}
+
+  indexed_flows = cash_flow_df[
+      ['account_num', 'trans_date', 'amount', 'flow_type']
+  ].copy()
+  indexed_flows['_account_num'] = indexed_flows['account_num'].map(
+      normalize_account_num
+  )
+  indexed_flows['_trans_date'] = pd.to_datetime(
+      indexed_flows['trans_date'], errors='coerce'
+  )
+  indexed_flows['_amount'] = indexed_flows['amount'].map(
+      parse_cash_flow_amount
+  )
+  indexed_flows['_flow_type'] = indexed_flows['flow_type'].map(
+      normalize_cash_flow_type
+  )
+  indexed_flows = indexed_flows[
+      indexed_flows['_trans_date'].notna()
+      & indexed_flows['_amount'].notna()
+      & indexed_flows['_flow_type'].isin(['입금', '출금'])
+  ].sort_values('_trans_date')
+
+  cash_flow_index = {}
+  for account_num, account_flows in indexed_flows.groupby(
+      '_account_num', sort=False
+  ):
+    dates = account_flows['_trans_date'].to_numpy(dtype='datetime64[ns]')
+    amounts = account_flows['_amount'].to_numpy(dtype=float)
+    flow_types = account_flows['_flow_type'].to_numpy()
+    deposits = np.where(flow_types == '입금', amounts, 0.0)
+    withdrawals = np.where(flow_types == '출금', amounts, 0.0)
+    signed_amounts = deposits - withdrawals
+    cash_flow_index[account_num] = {
+        'dates': dates,
+        'signed_amounts': signed_amounts,
+        'signed_prefix': np.concatenate(([0.0], np.cumsum(signed_amounts))),
+        'deposit_prefix': np.concatenate(([0.0], np.cumsum(deposits))),
+        'withdrawal_prefix': np.concatenate(
+            ([0.0], np.cumsum(withdrawals))
+        ),
+    }
+  return cash_flow_index
+
+
+def cash_flow_amount_through(indexed_flows, finish_date, amount_type):
+  if indexed_flows is None:
+    return 0.0
+  end_index = np.searchsorted(
+      indexed_flows['dates'],
+      np.datetime64(pd.Timestamp(finish_date), 'ns'),
+      side='right',
+  )
+  return float(indexed_flows[f'{amount_type}_prefix'][end_index])
+
+
+def cash_flow_amount_between(indexed_flows, start_date, finish_date):
+  if indexed_flows is None:
+    return 0.0
+  dates = indexed_flows['dates']
+  start_index = np.searchsorted(
+      dates, np.datetime64(pd.Timestamp(start_date), 'ns'), side='right'
+  )
+  end_index = np.searchsorted(
+      dates, np.datetime64(pd.Timestamp(finish_date), 'ns'), side='right'
+  )
+  if end_index <= start_index:
+    return 0.0
+  return float(
+      indexed_flows['signed_prefix'][end_index]
+      - indexed_flows['signed_prefix'][start_index]
+  )
+
+
+def weighted_cash_flow_amount_between(indexed_flows, start_date, finish_date):
+  if indexed_flows is None:
+    return 0.0
+  start_ns = pd.Timestamp(start_date).value
+  finish_ns = pd.Timestamp(finish_date).value
+  duration_ns = finish_ns - start_ns
+  if duration_ns <= 0:
+    return 0.0
+
+  dates = indexed_flows['dates']
+  start_index = np.searchsorted(
+      dates, np.datetime64(pd.Timestamp(start_date), 'ns'), side='right'
+  )
+  end_index = np.searchsorted(
+      dates, np.datetime64(pd.Timestamp(finish_date), 'ns'), side='right'
+  )
+  if end_index <= start_index:
+    return 0.0
+  flow_dates_ns = dates[start_index:end_index].astype('int64')
+  weights = (finish_ns - flow_dates_ns) / duration_ns
+  return float(
+      np.sum(indexed_flows['signed_amounts'][start_index:end_index] * weights)
+  )
+
+
+def build_snapshot_index(account_df):
+  if account_df.empty:
+    return {
+        'dates': pd.DatetimeIndex([]),
+        'records': {},
+    }
+  snapshot_records = {
+      snapshot_date: snapshot_df.to_dict('records')
+      for snapshot_date, snapshot_df in account_df.groupby(
+          'record_date', sort=True
+      )
+  }
+  return {
+      'dates': pd.DatetimeIndex(snapshot_records.keys()),
+      'records': snapshot_records,
+  }
+
+
+def get_snapshot_date_at_or_before(
+    snapshot_index, target_date, fallback_earliest
+):
+  dates = snapshot_index['dates']
+  if dates.empty:
+    return None
+  position = dates.searchsorted(pd.Timestamp(target_date), side='right') - 1
+  if position < 0:
+    return dates[0] if fallback_earliest else None
+  return dates[position]
+
+
+def build_market_price_index(market_data):
+  price_index = {}
+  for ticker in market_data.columns:
+    prices = pd.to_numeric(market_data[ticker], errors='coerce').dropna()
+    if prices.empty:
+      continue
+    prices = prices.sort_index()
+    price_index[ticker] = {
+        'dates': prices.index.to_numpy(dtype='datetime64[ns]'),
+        'values': prices.to_numpy(dtype=float),
+    }
+  return price_index
+
+
+def lookup_market_price(price_index, ticker, target_date, fallback_first=False):
+  ticker_data = price_index.get(ticker)
+  if ticker_data is None:
+    return None
+  position = np.searchsorted(
+      ticker_data['dates'],
+      np.datetime64(pd.Timestamp(target_date), 'ns'),
+      side='right',
+  ) - 1
+  if position < 0:
+    if not fallback_first:
+      return None
+    position = 0
+  return float(ticker_data['values'][position])
+
+
 def build_bj_account_performance(
-    account_df, market_data, cash_flow_df, baseline_amount, target_dates,
-    end_date, frequency, query_start_date, summary_mode=False,
-    selection_only=False,
+    account_num, market_price_index, cash_flow_index, snapshot_index,
+    baseline_amount, target_dates, end_date, frequency, query_start_date,
+    summary_mode=False, selection_only=False,
 ):
   query_start = pd.Timestamp(query_start_date)
   cutoff = (
@@ -477,78 +638,22 @@ def build_bj_account_performance(
   calc_dates.add(cutoff)
   calc_dates = sorted(calc_dates)
 
-  account_df = account_df.copy()
-  account_df['record_date'] = pd.to_datetime(account_df['record_date'])
-  account_df = account_df.sort_values('record_date')
-  account_num = normalize_account_num(account_df['account_num'].iloc[0])
-  account_cash_flows = cash_flow_df[
-      cash_flow_df['account_num'].map(normalize_account_num) == account_num
-  ].copy() if not cash_flow_df.empty else pd.DataFrame()
-  if not account_cash_flows.empty:
-    account_cash_flows['trans_date'] = pd.to_datetime(
-        account_cash_flows['trans_date'], errors='coerce'
-    )
-    account_cash_flows['_amount_krw'] = account_cash_flows[
-        'amount'
-    ].map(parse_cash_flow_amount)
-    account_cash_flows = account_cash_flows.dropna(
-        subset=['trans_date', '_amount_krw']
-    )
-    account_cash_flows['_flow_type'] = account_cash_flows[
-        'flow_type'
-    ].map(normalize_cash_flow_type)
+  account_num = normalize_account_num(account_num)
+  account_cash_flows = cash_flow_index.get(account_num)
 
   def market_price(ticker, target_date):
-    if ticker not in market_data.columns:
-      return None
-    prices = market_data[ticker].dropna()
-    if prices.empty:
-      return None
-    prices = prices[pd.to_datetime(prices.index) <= target_date]
-    if prices.empty:
-      return None
-    return float(prices.iloc[-1])
-
-  def cash_flows_between(start_date, finish_date):
-    if account_cash_flows.empty:
-      return pd.DataFrame()
-    return account_cash_flows[
-        (account_cash_flows['trans_date'] > start_date)
-        & (account_cash_flows['trans_date'] <= finish_date)
-        & account_cash_flows['_flow_type'].isin(['입금', '출금'])
-    ].copy()
-
-  def signed_net_flow(flows):
-    if flows.empty:
-      return 0.0
-    signed_amounts = np.where(
-        flows['_flow_type'] == '입금',
-        flows['_amount_krw'],
-        -flows['_amount_krw'],
-    )
-    return float(np.sum(signed_amounts))
+    return lookup_market_price(market_price_index, ticker, target_date)
 
   def weighted_net_flow(start_date, finish_date):
-    flows = cash_flows_between(start_date, finish_date)
-    if flows.empty:
-      return 0.0
-    duration_days = (finish_date - start_date).total_seconds() / 86400
-    if duration_days <= 0:
-      return 0.0
-    weights = (
-        (finish_date - flows['trans_date']).dt.total_seconds()
-        / (duration_days * 86400)
-    ).clip(0, 1)
-    signed_amounts = np.where(
-        flows['_flow_type'] == '입금',
-        flows['_amount_krw'],
-        -flows['_amount_krw'],
+    return weighted_cash_flow_amount_between(
+        account_cash_flows, start_date, finish_date
     )
-    return float(np.sum(signed_amounts * weights.to_numpy()))
 
   def cumulative_net_flow(finish_date):
-    return signed_net_flow(
-        cash_flows_between(pd.Timestamp(BJ_YEAR_END_BASELINE_DATE), finish_date)
+    return cash_flow_amount_between(
+        account_cash_flows,
+        pd.Timestamp(BJ_YEAR_END_BASELINE_DATE),
+        finish_date,
     )
 
   def adjusted_return_base(opening_value, start_date, finish_date):
@@ -568,15 +673,10 @@ def build_bj_account_performance(
   selection_start_eval = None
 
   for target_date in calc_dates:
-    holdings = account_df[account_df['record_date'] <= target_date]
-    if holdings.empty:
-      earliest_snapshot_date = account_df['record_date'].min()
-      holdings = account_df[
-          account_df['record_date'] == earliest_snapshot_date
-      ]
-    else:
-      latest_snapshot_date = holdings['record_date'].max()
-      holdings = holdings[holdings['record_date'] == latest_snapshot_date]
+    snapshot_date = get_snapshot_date_at_or_before(
+        snapshot_index, target_date, fallback_earliest=True
+    )
+    holdings = snapshot_index['records'].get(snapshot_date, [])
 
     fx_rate = market_price('KRW=X', target_date)
     if fx_rate is None or fx_rate <= 0:
@@ -584,7 +684,7 @@ def build_bj_account_performance(
 
     total_eval = 0.0
     total_eval_ex_fx = 0.0
-    for _, holding in holdings.iterrows():
+    for holding in holdings:
       quantity = pd.to_numeric(holding.get('quantity'), errors='coerce')
       fallback_price = pd.to_numeric(holding.get('current_price'), errors='coerce')
       quantity = float(quantity) if pd.notna(quantity) else 0.0
@@ -616,9 +716,11 @@ def build_bj_account_performance(
     selection_cumulative_profit = (
         total_eval
         - selection_start_eval
-        - signed_net_flow(cash_flows_between(
-            selection_start_date - pd.Timedelta(days=1), target_date
-        ))
+        - cash_flow_amount_between(
+            account_cash_flows,
+            selection_start_date - pd.Timedelta(days=1),
+            target_date,
+        )
         if selection_start_eval is not None else np.nan
     )
     selection_return_base = (
@@ -636,8 +738,9 @@ def build_bj_account_performance(
       period_profit_ex_fx = np.nan
       period_base_ex_fx = np.nan
     else:
-      period_flows = cash_flows_between(previous_date, target_date)
-      period_flow = signed_net_flow(period_flows)
+      period_flow = cash_flow_amount_between(
+          account_cash_flows, previous_date, target_date
+      )
       period_profit = total_eval - previous_eval - period_flow
       period_base = adjusted_return_base(
           previous_eval, previous_date, target_date
@@ -764,29 +867,6 @@ def format_ticker(t):
   return t_str
 
 
-def get_latest_price_single(ticker_symbol):
-  """개별 티커의 최신 가격을 가져옵니다."""
-  try:
-    tk = yf.Ticker(ticker_symbol)
-    fast_info = tk.fast_info
-    if hasattr(fast_info, 'last_price') and fast_info.last_price is not None:
-      if not np.isnan(fast_info.last_price) and fast_info.last_price > 0:
-        return float(fast_info.last_price)
-
-    info = tk.info
-    if 'postMarketPrice' in info and info['postMarketPrice']:
-      return float(info['postMarketPrice'])
-    if 'regularMarketPrice' in info and info['regularMarketPrice']:
-      return float(info['regularMarketPrice'])
-
-    hist = tk.history(period='5d')
-    if not hist.empty and 'Close' in hist.columns:
-      return float(hist['Close'].iloc[-1])
-  except Exception:
-    pass
-  return None
-
-
 @st.cache_data(ttl=900)
 def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
   all_tickers = list(all_tickers_tuple)
@@ -814,25 +894,6 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
       data = data.to_frame(name=all_tickers[0])
 
     data = data.bfill().ffill()
-
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    today_dt = pd.to_datetime(today_str)
-
-    latest_row = {}
-    for tk_sym in all_tickers:
-      lp = get_latest_price_single(tk_sym)
-      if lp is not None:
-        latest_row[tk_sym] = lp
-
-    if latest_row:
-      if today_dt in data.index:
-        for k, v in latest_row.items():
-          data.loc[today_dt, k] = v
-      else:
-        new_row_df = pd.DataFrame(latest_row, index=[today_dt])
-        data = pd.concat([data, new_row_df])
-        data = data.sort_index().ffill()
-
     return data
   except Exception as e:
     st.error(f'시세 데이터 수집 중 오류 발생: {e}')
@@ -849,7 +910,7 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
     return pd.DataFrame()
 
   if force_refresh:
-    st.cache_data.clear()
+    _fetch_yfinance_data.clear()
 
   return _fetch_yfinance_data(tuple(sorted(all_tickers)), start_date, end_date)
 
@@ -2131,8 +2192,12 @@ if menu in (
 
       st.write('---')
       run_button = st.button('🚀 데이터 계산 실행 (Run)')
+      refresh_market_button = st.button(
+          '🔄 시세 새로고침 후 계산',
+          help='기본 계산은 15분간 시세 캐시를 사용합니다. 이 버튼은 시세를 다시 조회합니다.',
+      )
 
-    if run_button:
+    if run_button or refresh_market_button:
       if menu == 'SUMMARY':
         st.session_state['summary_sel_bm'] = selected_bm
         st.session_state['summary_start_date'] = start_date
@@ -2202,6 +2267,38 @@ if menu in (
       filtered_pf_df = pf_df[
           pf_df['account_num'].astype(str).isin(selected_accounts)
       ].copy()
+      filtered_pf_df['record_date'] = pd.to_datetime(
+          filtered_pf_df['record_date'], errors='coerce'
+      )
+      filtered_pf_df = filtered_pf_df.dropna(subset=['record_date'])
+      portfolio_by_account = {
+          str(account_num): account_df
+          for account_num, account_df in filtered_pf_df.groupby(
+              filtered_pf_df['account_num'].astype(str), sort=False
+          )
+      }
+      initial_principal_by_account = {}
+      if not init_p_df.empty:
+        initial_principal_by_account = (
+            init_p_df.assign(
+                _account_num=init_p_df['account_num'].astype(str)
+            )
+            .groupby('_account_num')['initial_amount']
+            .sum()
+            .to_dict()
+        )
+      account_info_by_account = {
+          str(account_num): account_rows.iloc[0]
+          for account_num, account_rows in acc_info_df.groupby(
+              acc_info_df['account_num'].astype(str), sort=False
+          )
+      }
+      baseline_by_account = {
+          str(account_num): baseline_rows.iloc[0]
+          for account_num, baseline_rows in year_end_value_df.groupby(
+              year_end_value_df['account_num'].astype(str), sort=False
+          )
+      }
       record_dates = pd.to_datetime(
           filtered_pf_df['record_date'], errors='coerce'
       ).dropna()
@@ -2254,8 +2351,13 @@ if menu in (
           s_str = min(s_str, bj_history_start)
         e_str = (history_end_date + pd.Timedelta(days=2)).strftime('%Y-%m-%d')
         market_data = fetch_market_data(
-            fetch_tickers, s_str, e_str, force_refresh=True
+            fetch_tickers, s_str, e_str, force_refresh=refresh_market_button
         )
+        market_price_index = build_market_price_index(market_data)
+        last_fx_rate = lookup_market_price(
+            market_price_index, 'KRW=X', pd.Timestamp.max
+        )
+        cash_flow_index = build_cash_flow_index(cf_df)
 
       if menu == 'SUMMARY':
         target_dates = get_summary_calculation_dates(
@@ -2328,20 +2430,18 @@ if menu in (
       base_records = []
       history_eval_records = []
       for acc in selected_accounts:
-        acc_meta = filtered_pf_df[
-            filtered_pf_df['account_num'].astype(str) == acc
-        ]
+        acc_meta = account_info_by_account.get(acc)
         broker_name = (
-            acc_meta['broker'].iloc[0]
-            if (not acc_meta.empty and 'broker' in acc_meta.columns)
+            acc_meta['broker']
+            if (acc_meta is not None and 'broker' in acc_meta.index)
             else '미지정'
         )
         acc_type = (
-            acc_meta['account_type'].iloc[0]
+            acc_meta['account_type']
             if (
-                not acc_meta.empty
-                and 'account_type' in acc_meta.columns
-                and pd.notna(acc_meta['account_type'].iloc[0])
+                acc_meta is not None
+                and 'account_type' in acc_meta.index
+                and pd.notna(acc_meta['account_type'])
             )
             else '미지정'
         )
@@ -2355,30 +2455,26 @@ if menu in (
 
         whose_val = whose_mapping.get(acc, 'BJ')
 
-        init_val = (
-            init_p_df[init_p_df['account_num'].astype(str) == acc][
-                'initial_amount'
-            ].sum()
-            if not init_p_df.empty
-            else 0
-        )
+        init_val = initial_principal_by_account.get(acc, 0)
 
         item_prev_prices = {}
         item_prev_fx = {}
         item_cum_pl = {}
         item_cum_pl_ex = {}
 
-        account_pf_all = filtered_pf_df[filtered_pf_df['account_num'].astype(str) == acc].copy()
-        account_baseline = year_end_value_df[
-            year_end_value_df['account_num'].astype(str) == acc
-        ]
+        account_pf_all = portfolio_by_account.get(
+            acc, filtered_pf_df.iloc[0:0]
+        )
+        account_snapshot_index = build_snapshot_index(account_pf_all)
+        account_baseline = baseline_by_account.get(acc)
         account_performance = {}
-        if whose_val == 'BJ' and not account_baseline.empty:
-          baseline_row = account_baseline.iloc[0]
+        if whose_val == 'BJ' and account_baseline is not None:
+          baseline_row = account_baseline
           account_performance = build_bj_account_performance(
-              account_pf_all,
-              market_data,
-              cf_df,
+              acc,
+              market_price_index,
+              cash_flow_index,
+              account_snapshot_index,
               baseline_row['baseline_amount'],
               target_dates,
               end_date,
@@ -2388,9 +2484,10 @@ if menu in (
           )
         elif whose_val != 'BJ':
           account_performance = build_bj_account_performance(
-              account_pf_all,
-              market_data,
-              cf_df,
+              acc,
+              market_price_index,
+              cash_flow_index,
+              account_snapshot_index,
               0,
               target_dates,
               end_date,
@@ -2405,35 +2502,41 @@ if menu in (
           account_pf_all_sorted['currency'] = account_pf_all_sorted['currency'].map(normalize_currency)
         unique_items_df = account_pf_all_sorted.drop_duplicates(subset=['item_name', 'ticker', 'currency'])
         all_account_items = unique_items_df[['item_name', 'ticker', 'category1', 'category2', 'category3', 'category4', 'currency']].to_dict('records')
+        snapshot_item_lookups = {
+            snapshot_date: {
+                (
+                    str(row.get('item_name')),
+                    str(row.get('ticker')),
+                    normalize_currency(row.get('currency')),
+                ): row
+                for row in snapshot_records
+            }
+            for snapshot_date, snapshot_records
+            in account_snapshot_index['records'].items()
+        }
 
         for history_date in history_dates:
           history_str = history_date.strftime('%Y-%m-%d')
-          if account_pf_all.empty:
+          if account_snapshot_index['dates'].empty:
             continue
-          earliest_snapshot_date = account_pf_all['record_date'].min()
-          if history_str < earliest_snapshot_date:
+          earliest_snapshot_date = account_snapshot_index['dates'][0]
+          if history_date < earliest_snapshot_date:
             continue
-          historical_snapshots = account_pf_all[
-              account_pf_all['record_date'] <= history_str
-          ]
-          if historical_snapshots.empty:
-            continue
-          snapshot_date = historical_snapshots['record_date'].max()
-          historical_holdings = historical_snapshots[
-              historical_snapshots['record_date'] == snapshot_date
-          ]
+          historical_snapshot_date = get_snapshot_date_at_or_before(
+              account_snapshot_index, history_date,
+              fallback_earliest=False,
+          )
+          historical_holdings = account_snapshot_index['records'].get(
+              historical_snapshot_date, []
+          )
 
-          fx_rate = None
-          if 'KRW=X' in market_data.columns and not market_data.empty:
-            fx_rate = market_data['KRW=X'].asof(history_date)
+          fx_rate = lookup_market_price(
+              market_price_index, 'KRW=X', history_date
+          )
           if pd.isna(fx_rate) or fx_rate is None or fx_rate <= 0:
-            fx_values = (
-                market_data['KRW=X'].dropna()
-                if 'KRW=X' in market_data.columns else pd.Series(dtype=float)
-            )
-            fx_rate = float(fx_values.iloc[-1]) if not fx_values.empty else 1350.0
+            fx_rate = last_fx_rate if last_fx_rate is not None else 1350.0
 
-          for _, holding in historical_holdings.iterrows():
+          for holding in historical_holdings:
             quantity = pd.to_numeric(holding.get('quantity'), errors='coerce')
             quantity = float(quantity) if pd.notna(quantity) else 0.0
             if quantity == 0:
@@ -2449,15 +2552,13 @@ if menu in (
             price = 0.0
             if ticker is None:
               price = fallback_price
-            elif ticker in market_data.columns:
-              ticker_prices = market_data[ticker].dropna()
-              historical_prices = ticker_prices[
-                  ticker_prices.index <= history_date
-              ]
-              if not historical_prices.empty:
-                price = float(historical_prices.iloc[-1])
-              elif not ticker_prices.empty:
-                price = float(ticker_prices.iloc[0])
+            else:
+              market_price = lookup_market_price(
+                  market_price_index, ticker, history_date,
+                  fallback_first=True,
+              )
+              if market_price is not None:
+                price = market_price
             if pd.isna(price) or price == 0:
               price = fallback_price
 
@@ -2507,71 +2608,33 @@ if menu in (
         for t_date in target_dates:
           t_str = t_date.strftime('%Y-%m-%d')
 
-          usd_krw = None
-          if 'KRW=X' in market_data.columns and not market_data.empty:
-            if pd.to_datetime(t_str) in market_data.index:
-              usd_krw = market_data.loc[pd.to_datetime(t_str), 'KRW=X']
-            else:
-              usd_krw = market_data['KRW=X'].asof(pd.to_datetime(t_str))
-
+          usd_krw = lookup_market_price(
+              market_price_index, 'KRW=X', t_date
+          )
           if pd.isna(usd_krw) or usd_krw is None or usd_krw <= 0:
-            if (
-                'KRW=X' in market_data.columns
-                and not market_data['KRW=X'].dropna().empty
-            ):
-              usd_krw = float(market_data['KRW=X'].dropna().iloc[-1])
-            else:
-              usd_krw = 1350.0
+            usd_krw = last_fx_rate if last_fx_rate is not None else 1350.0
 
-          if not cf_df.empty:
-            acc_cf = cf_df[
-                cf_df['account_num'].map(normalize_account_num)
-                == normalize_account_num(acc)
-            ].copy()
-            acc_cf['_flow_type'] = acc_cf['flow_type'].map(
-                normalize_cash_flow_type
-            )
-            acc_cf['_trans_date'] = pd.to_datetime(
-                acc_cf['trans_date'], errors='coerce'
-            )
-            acc_cf['_amount_krw'] = acc_cf['amount'].map(
-                parse_cash_flow_amount
-            )
-            acc_cf = acc_cf[
-                (acc_cf['_trans_date'] <= pd.Timestamp(t_str))
-                & acc_cf['_amount_krw'].notna()
-            ]
-            in_flow = acc_cf.loc[
-                acc_cf['_flow_type'] == '입금', '_amount_krw'
-            ].sum()
-            out_flow = acc_cf.loc[
-                acc_cf['_flow_type'] == '출금', '_amount_krw'
-            ].sum()
-          else:
-            in_flow, out_flow = 0, 0
+          indexed_cash_flows = cash_flow_index.get(
+              normalize_account_num(acc)
+          )
+          in_flow = cash_flow_amount_through(
+              indexed_cash_flows, t_date, 'deposit'
+          )
+          out_flow = cash_flow_amount_through(
+              indexed_cash_flows, t_date, 'withdrawal'
+          )
           principal = init_val + in_flow - out_flow
 
-          acc_pf = account_pf_all[account_pf_all['record_date'] <= t_str]
-          if acc_pf.empty:
-            earliest_snapshot_date = account_pf_all['record_date'].min()
-            acc_pf = account_pf_all[
-                account_pf_all['record_date'] == earliest_snapshot_date
-            ]
-
-          current_pf = pd.DataFrame()
-          if not acc_pf.empty:
-            latest_date = acc_pf['record_date'].max()
-            current_pf = acc_pf[acc_pf['record_date'] == latest_date]
+          current_snapshot_date = get_snapshot_date_at_or_before(
+              account_snapshot_index, t_date, fallback_earliest=True
+          )
+          current_pf_dict = snapshot_item_lookups.get(
+              current_snapshot_date, {}
+          )
 
           total_acc_eval = 0
           total_acc_eval_ex_fx = 0
           item_eval_list = []
-
-          current_pf_dict = {}
-          for _, row in current_pf.iterrows():
-            row_curr = normalize_currency(row.get('currency'))
-            key = (str(row.get('item_name')), str(row.get('ticker')), row_curr)
-            current_pf_dict[key] = row
 
           for item_info in all_account_items:
             iname = item_info['item_name']
@@ -2600,13 +2663,11 @@ if menu in (
             if fmt_tk is None or pd.isna(fmt_tk):
               price = base_price if base_price > 0 else 0
             else:
-              if fmt_tk in market_data.columns and not market_data.empty:
-                if pd.to_datetime(t_str) in market_data.index:
-                  price = market_data.loc[pd.to_datetime(t_str), fmt_tk]
-                else:
-                  price = market_data[fmt_tk].asof(pd.to_datetime(t_str))
-                if (pd.isna(price) or price == 0) and not market_data[fmt_tk].dropna().empty:
-                  price = float(market_data[fmt_tk].dropna().iloc[0])
+              market_price = lookup_market_price(
+                  market_price_index, fmt_tk, t_date, fallback_first=True
+              )
+              if market_price is not None:
+                price = market_price
               if pd.isna(price) or price == 0:
                 price = base_price
 
@@ -2743,16 +2804,9 @@ if menu in (
             dates_str = []
             for t_date in target_dates:
               t_str = t_date.strftime('%Y-%m-%d')
-              if pd.to_datetime(t_str) in market_data.index:
-                p = market_data.loc[pd.to_datetime(t_str), tk]
-              else:
-                p = market_data[tk].asof(pd.to_datetime(t_str))
-
-              if (
-                  (pd.isna(p) or p == 0)
-                  and not market_data[tk].dropna().empty
-              ):
-                p = float(market_data[tk].dropna().iloc[0])
+              p = lookup_market_price(
+                  market_price_index, tk, t_date, fallback_first=True
+              )
 
               prices.append(p)
               dates_str.append(t_str)
