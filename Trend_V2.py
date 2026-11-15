@@ -5152,7 +5152,7 @@ if menu in (
         with appearance_options[1]:
           unify_chart_colors = st.checkbox(
               '범례 항목별 색상 통일',
-              help='같은 항목은 분류 기준이나 차트가 달라도 같은 색으로 표시합니다.',
+              help='같은 항목은 차트 간 기본 색상을 공유합니다. 차트별 수동 색상은 우선 적용됩니다.',
               key='daily_eval_unify_legend_colors',
           )
         manual_y_max = 0.0
@@ -5283,6 +5283,37 @@ if menu in (
               if not selected_items:
                 st.info('표시할 항목을 하나 이상 선택해 주세요.')
                 continue
+              chart_default_colors = {
+                  str(group): (
+                      shared_color_map[str(group)]
+                      if unify_chart_colors
+                      else qualitative.Plotly[
+                          index % len(qualitative.Plotly)
+                      ]
+                  )
+                  for index, group in enumerate(selected_items)
+              }
+              color_item_key = (
+                  f'daily_eval_chart_{chart_index}_color_item'
+              )
+              if st.session_state.get(color_item_key) not in selected_items:
+                st.session_state[color_item_key] = selected_items[0]
+              color_control_columns = st.columns(2)
+              with color_control_columns[0]:
+                selected_color_item = st.selectbox(
+                    '색상을 지정할 범례 항목',
+                    options=selected_items,
+                    key=color_item_key,
+                )
+              with color_control_columns[1]:
+                st.color_picker(
+                    '항목 색상',
+                    value=chart_default_colors[str(selected_color_item)],
+                    key=(
+                        f'daily_eval_chart_{chart_index}_color_'
+                        f'{selected_color_item}'
+                    ),
+                )
               chart_data = (
                   filtered_analysis_df[
                       filtered_analysis_df[dimension_column].isin(
@@ -5312,8 +5343,10 @@ if menu in (
                     chart_data[dimension_column] == group
                 ]
                 trace_color = (
-                    shared_color_map[str(group)]
-                    if unify_chart_colors else None
+                    st.session_state.get(
+                        f'daily_eval_chart_{chart_index}_color_{group}',
+                        chart_default_colors[str(group)],
+                    )
                 )
                 if chart_type == '누적 세로 막대':
                   figure.add_trace(go.Bar(
