@@ -1694,14 +1694,29 @@ if previous_menu != menu:
           if prefixes is not None
           else not key.startswith(('_', '$'))
       )
-      if matches_scope and is_persistable_widget_value(value):
+      is_editor_state = key.endswith('_data_editor') or key.endswith(
+          '_editor'
+      )
+      if (
+          matches_scope
+          and not is_editor_state
+          and is_persistable_widget_value(value)
+      ):
         saved_widget_state[key] = value
+    for editor_key in (
+        'cash_flow_data_editor',
+        'portfolio_data_editor',
+        'item_category_data_editor',
+    ):
+      saved_widget_state.pop(editor_key, None)
     st.session_state[state_key] = saved_widget_state
   if current_scope:
     saved_widget_state = st.session_state.get(
         f'_menu_widget_state_{current_scope}', {}
     )
     for key, value in saved_widget_state.items():
+      if key.endswith('_data_editor') or key.endswith('_editor'):
+        continue
       st.session_state[key] = value
   st.session_state['_active_menu'] = menu
 
@@ -2118,7 +2133,6 @@ if menu in (
       run_button = st.button('🚀 데이터 계산 실행 (Run)')
 
     if run_button:
-      st.session_state['trend_view_types'] = view_types
       if menu == 'SUMMARY':
         st.session_state['summary_sel_bm'] = selected_bm
         st.session_state['summary_start_date'] = start_date
@@ -2127,8 +2141,6 @@ if menu in (
             '%Y%m%d%H%M%S%f'
         )
       else:
-        st.session_state['trend_sel_bm'] = selected_bm
-        st.session_state['trend_freq_str'] = option_freq
         st.session_state['trend_start_date'] = start_date
         st.session_state['trend_end_date'] = end_date
       save_query_conditions(
@@ -5035,113 +5047,198 @@ if menu in (
         st.subheader('📊 일자별 총 평가 금액 항목별 분석')
         analysis_dimensions = {
             'WHOSE별': 'whose',
-            '계좌별': 'account_num',
-            '증권사별': 'broker',
             '계좌유형별': 'account_type',
+            '계좌별': 'account_num',
             'CATEGORY2별': 'category2',
             'CATEGORY4별': 'category4',
             '보유항목별': 'item_name',
         }
-        analysis_columns = st.columns([1.3, 3.2, 1.8])
-        with analysis_columns[0]:
-          selected_dimension = st.selectbox(
-              '분류 기준 선택',
-              options=list(analysis_dimensions),
-              key='daily_eval_dimension',
-          )
-        dimension_column = analysis_dimensions[selected_dimension]
         analysis_df = calc_df.copy()
-        analysis_df[dimension_column] = (
-            analysis_df[dimension_column].fillna('미분류').astype(str)
-        )
-        dimension_options = sorted(
-            analysis_df[dimension_column].dropna().unique().tolist()
-        )
-        selection_signature = (dimension_column, tuple(dimension_options))
-        if st.session_state.get('_daily_eval_selection_signature') != selection_signature:
-          st.session_state['daily_eval_groups'] = dimension_options
-          st.session_state['_daily_eval_selection_signature'] = (
-              selection_signature
+        filter_options = {
+            'whose': 'WHOSE',
+            'account_type': '계좌유형',
+            'account_num': '계좌',
+            'category2': 'CATEGORY2',
+            'category4': 'CATEGORY4',
+            'item_name': '보유 항목',
+        }
+        for column, label in filter_options.items():
+          analysis_df[column] = (
+              analysis_df[column].fillna('미분류').astype(str)
           )
-        else:
-          st.session_state['daily_eval_groups'] = [
+        analysis_df['Date'] = pd.to_datetime(
+            analysis_df['Date'], errors='coerce'
+        ).dt.strftime('%Y-%m-%d')
+        analysis_df['총평가금액'] = pd.to_numeric(
+            analysis_df['총평가금액'], errors='coerce'
+        ).fillna(0)
+
+        st.markdown('##### 🔎 모수 금액 필터')
+        filter_columns = st.columns(3)
+        selected_filters = {}
+        for index, (column, label) in enumerate(filter_options.items()):
+          options = sorted(analysis_df[column].unique().tolist())
+          key = f'daily_eval_filter_{column}'
+          st.session_state[key] = [
               value
-              for value in st.session_state.get(
-                  'daily_eval_groups', dimension_options
-              )
-              if value in dimension_options
+              for value in st.session_state.get(key, [])
+              if value in options
           ]
-        with analysis_columns[1]:
-          selected_groups = st.multiselect(
-              '표시 항목 선택',
-              options=dimension_options,
-              key='daily_eval_groups',
+          with filter_columns[index % len(filter_columns)]:
+            selected_filters[column] = st.multiselect(
+                f'{label} 필터 (미선택 시 전체)',
+                options=options,
+                key=key,
+            )
+        filtered_analysis_df = analysis_df
+        for column, selected_values in selected_filters.items():
+          if selected_values:
+            filtered_analysis_df = filtered_analysis_df[
+                filtered_analysis_df[column].isin(selected_values)
+            ]
+
+        chart_settings = st.columns([1, 2])
+        with chart_settings[0]:
+          chart_count = st.selectbox(
+              'DISPLAY 차트 수',
+              options=[1, 2, 3, 4],
+              key='daily_eval_chart_count',
           )
-        with analysis_columns[2]:
-          chart_type = st.radio(
-              '차트 유형 선택',
-              options=['누적 세로 막대', '꺾은선 그래프'],
+        with chart_settings[1]:
+          chart_layout = st.radio(
+              '차트 배치',
+              options=['좌우', '상하'],
               horizontal=True,
-              key='daily_eval_chart_type',
+              key='daily_eval_chart_layout',
           )
 
-        if not selected_groups:
-          st.info('표시할 항목을 하나 이상 선택해 주세요.')
+        if filtered_analysis_df.empty:
+          st.info('선택한 필터 조건에 해당하는 평가 데이터가 없습니다.')
         else:
-          analysis_df['Date'] = pd.to_datetime(
-              analysis_df['Date'], errors='coerce'
-          ).dt.strftime('%Y-%m-%d')
-          analysis_df['총평가금액'] = pd.to_numeric(
-              analysis_df['총평가금액'], errors='coerce'
-          ).fillna(0)
-          chart_data = (
-              analysis_df[
-                  analysis_df[dimension_column].isin(selected_groups)
-              ]
-              .groupby(['Date', dimension_column], dropna=False)[
-                  '총평가금액'
-              ]
-              .sum()
-              .reset_index()
-              .dropna(subset=['Date'])
+          chart_containers = (
+              st.columns(chart_count)
+              if chart_layout == '좌우'
+              else [st.container() for _ in range(chart_count)]
           )
-          date_order = sorted(chart_data['Date'].unique().tolist())
-          figure = go.Figure()
-          for group in selected_groups:
-            group_data = chart_data[
-                chart_data[dimension_column] == group
-            ]
-            if chart_type == '누적 세로 막대':
-              figure.add_trace(go.Bar(
-                  x=group_data['Date'],
-                  y=group_data['총평가금액'],
-                  name=str(group),
-                  hovertemplate='₩%{y:,.0f}<extra>%{fullData.name}</extra>',
-              ))
-            else:
-              figure.add_trace(go.Scatter(
-                  x=group_data['Date'],
-                  y=group_data['총평가금액'],
-                  name=str(group),
-                  mode='lines+markers',
-                  hovertemplate='₩%{y:,.0f}<extra>%{fullData.name}</extra>',
-              ))
-          figure.update_layout(
-              title=f'일자별 총 평가 금액 ({selected_dimension})',
-              barmode='stack' if chart_type == '누적 세로 막대' else None,
-              hovermode='closest',
-              height=600,
-              yaxis_title='총 평가금액 (KRW)',
-          )
-          figure.update_xaxes(
-              type='category',
-              categoryorder='array',
-              categoryarray=date_order,
-          )
-          figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
-          render_resizable_plotly_chart(
-              figure, key='daily_eval_chart'
-          )
+          for chart_index, chart_container in enumerate(
+              chart_containers, start=1
+          ):
+            with chart_container:
+              st.markdown(f'##### 분석 차트 {chart_index}')
+              control_columns = st.columns([1.5, 2.5])
+              dimension_key = (
+                  f'daily_eval_chart_{chart_index}_dimension'
+              )
+              with control_columns[0]:
+                selected_dimension = st.selectbox(
+                    '분류 기준',
+                    options=list(analysis_dimensions),
+                    key=dimension_key,
+                )
+              dimension_column = analysis_dimensions[selected_dimension]
+              dimension_options = sorted(
+                  filtered_analysis_df[dimension_column]
+                  .dropna()
+                  .unique()
+                  .tolist()
+              )
+              selected_items_key = (
+                  f'daily_eval_chart_{chart_index}_items'
+              )
+              selection_signature_key = (
+                  f'_daily_eval_chart_{chart_index}_signature'
+              )
+              selection_signature = (
+                  dimension_column,
+                  tuple(dimension_options),
+              )
+              if st.session_state.get(
+                  selection_signature_key
+              ) != selection_signature:
+                st.session_state[selected_items_key] = dimension_options
+                st.session_state[selection_signature_key] = (
+                    selection_signature
+                )
+              else:
+                st.session_state[selected_items_key] = [
+                    value
+                    for value in st.session_state.get(
+                        selected_items_key, dimension_options
+                    )
+                    if value in dimension_options
+                ]
+              with control_columns[1]:
+                selected_items = st.multiselect(
+                    'DISPLAY 항목',
+                    options=dimension_options,
+                    key=selected_items_key,
+                )
+              chart_type = st.radio(
+                  '차트 유형',
+                  options=['누적 세로 막대', '꺾은선 그래프'],
+                  horizontal=True,
+                  key=f'daily_eval_chart_{chart_index}_type',
+              )
+              if not selected_items:
+                st.info('표시할 항목을 하나 이상 선택해 주세요.')
+                continue
+              chart_data = (
+                  filtered_analysis_df[
+                      filtered_analysis_df[dimension_column].isin(
+                          selected_items
+                      )
+                  ]
+                  .groupby(
+                      ['Date', dimension_column], dropna=False
+                  )['총평가금액']
+                  .sum()
+                  .reset_index()
+                  .dropna(subset=['Date'])
+              )
+              date_order = sorted(chart_data['Date'].unique().tolist())
+              figure = go.Figure()
+              for group in selected_items:
+                group_data = chart_data[
+                    chart_data[dimension_column] == group
+                ]
+                if chart_type == '누적 세로 막대':
+                  figure.add_trace(go.Bar(
+                      x=group_data['Date'],
+                      y=group_data['총평가금액'],
+                      name=str(group),
+                      hovertemplate=(
+                          '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
+                      ),
+                  ))
+                else:
+                  figure.add_trace(go.Scatter(
+                      x=group_data['Date'],
+                      y=group_data['총평가금액'],
+                      name=str(group),
+                      mode='lines+markers',
+                      hovertemplate=(
+                          '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
+                      ),
+                  ))
+              figure.update_layout(
+                  title=f'일자별 총 평가 금액 ({selected_dimension})',
+                  barmode=(
+                      'stack'
+                      if chart_type == '누적 세로 막대' else None
+                  ),
+                  hovermode='closest',
+                  height=600,
+                  yaxis_title='총 평가금액 (KRW)',
+              )
+              figure.update_xaxes(
+                  type='category',
+                  categoryorder='array',
+                  categoryarray=date_order,
+              )
+              figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
+              render_resizable_plotly_chart(
+                  figure, key=f'daily_eval_chart_{chart_index}'
+              )
       elif active_views:
         tabs_key = 'trend_report_views'
         default_tab = st.session_state.get(tabs_key, active_views[0])
