@@ -966,6 +966,14 @@ def render_resizable_plotly_chart(fig, key):
   )
 
 
+def save_daily_eval_item_color(item_name, color_widget_key):
+  item_colors = st.session_state.get(
+      'daily_eval_shared_item_colors', {}
+  ).copy()
+  item_colors[item_name] = st.session_state[color_widget_key]
+  st.session_state['daily_eval_shared_item_colors'] = item_colors
+
+
 def get_summary_periods(as_of_date, market_sessions):
   as_of = pd.Timestamp(as_of_date).normalize()
   year_start = pd.Timestamp(as_of.year, 1, 1)
@@ -5152,7 +5160,7 @@ if menu in (
         with appearance_options[1]:
           unify_chart_colors = st.checkbox(
               '범례 항목별 색상 통일',
-              help='같은 항목은 차트 간 기본 색상을 공유합니다. 차트별 수동 색상은 우선 적용됩니다.',
+              help='같은 항목은 차트 간 기본 색상을 공유합니다. 수동으로 지정한 색상은 모든 차트에 연동됩니다.',
               key='daily_eval_unify_legend_colors',
           )
         manual_y_max = 0.0
@@ -5306,13 +5314,25 @@ if menu in (
                     key=color_item_key,
                 )
               with color_control_columns[1]:
+                selected_color_item = str(selected_color_item)
+                color_picker_key = (
+                    f'daily_eval_chart_{chart_index}_color_'
+                    f'{selected_color_item}'
+                )
+                manual_item_colors = st.session_state.get(
+                    'daily_eval_shared_item_colors', {}
+                )
+                st.session_state[color_picker_key] = (
+                    manual_item_colors.get(
+                        selected_color_item,
+                        chart_default_colors[selected_color_item],
+                    )
+                )
                 st.color_picker(
                     '항목 색상',
-                    value=chart_default_colors[str(selected_color_item)],
-                    key=(
-                        f'daily_eval_chart_{chart_index}_color_'
-                        f'{selected_color_item}'
-                    ),
+                    key=color_picker_key,
+                    on_change=save_daily_eval_item_color,
+                    args=(selected_color_item, color_picker_key),
                 )
               chart_data = (
                   filtered_analysis_df[
@@ -5342,11 +5362,11 @@ if menu in (
                 group_data = chart_data[
                     chart_data[dimension_column] == group
                 ]
-                trace_color = (
-                    st.session_state.get(
-                        f'daily_eval_chart_{chart_index}_color_{group}',
-                        chart_default_colors[str(group)],
-                    )
+                manual_item_colors = st.session_state.get(
+                    'daily_eval_shared_item_colors', {}
+                )
+                trace_color = manual_item_colors.get(
+                    str(group), chart_default_colors[str(group)]
                 )
                 if chart_type == '누적 세로 막대':
                   figure.add_trace(go.Bar(
