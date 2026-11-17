@@ -1104,10 +1104,14 @@ def get_selected_owner_date_pairs():
             continue
 
         date_key = f"select_date_{owner}"
+        persistent_date_key = f"_selected_date_{owner}"
         selected_date = st.session_state.get(date_key)
         if selected_date is None or str(selected_date) not in dates:
+            selected_date = st.session_state.get(persistent_date_key)
+        if selected_date is None or str(selected_date) not in dates:
             selected_date = dates[0]
-            st.session_state[date_key] = selected_date
+        st.session_state[date_key] = selected_date
+        st.session_state[persistent_date_key] = selected_date
         owner_date_pairs.append((str(owner), str(selected_date)))
     return list(dict.fromkeys(owner_date_pairs))
 
