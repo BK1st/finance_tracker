@@ -880,9 +880,10 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
         end=end_date,
         progress=False,
         ignore_tz=True,
+        auto_adjust=False,
     )
     if df.empty:
-      return pd.DataFrame()
+      raise ValueError('Yahoo Finance에서 시세 데이터를 받지 못했습니다.')
 
     if 'Close' in df:
       data = df['Close']
@@ -894,11 +895,10 @@ def _fetch_yfinance_data(all_tickers_tuple, start_date, end_date):
     if isinstance(data, pd.Series):
       data = data.to_frame(name=all_tickers[0])
 
-    data = data.bfill().ffill()
+    data = data.ffill()
     return data
   except Exception as e:
-    st.error(f'시세 데이터 수집 중 오류 발생: {e}')
-    return pd.DataFrame()
+    raise RuntimeError(f'시세 데이터 수집 중 오류 발생: {e}') from e
 
 
 def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
@@ -913,7 +913,13 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
   if force_refresh:
     _fetch_yfinance_data.clear()
 
-  return _fetch_yfinance_data(tuple(sorted(all_tickers)), start_date, end_date)
+  try:
+    return _fetch_yfinance_data(
+        tuple(sorted(all_tickers)), start_date, end_date
+    )
+  except RuntimeError as e:
+    st.error(str(e))
+    return pd.DataFrame()
 
 
 # -----------------------------------------------------------------------------
@@ -2363,6 +2369,21 @@ if menu in (
             fetch_tickers, s_str, e_str, force_refresh=refresh_market_button
         )
         market_price_index = build_market_price_index(market_data)
+        missing_tickers = sorted(
+            {
+                ticker
+                for raw_ticker in fetch_tickers
+                for ticker in [format_ticker(raw_ticker)]
+                if ticker and ticker not in market_price_index
+            }
+        )
+        if missing_tickers:
+          st.warning(
+              f'{len(missing_tickers)}개 티커의 시세를 받지 못해 저장된 평가가격을 '
+              '사용할 수 있습니다. 티커와 거래소 코드를 확인해 주세요: '
+              + ', '.join(missing_tickers[:10])
+              + (' 등' if len(missing_tickers) > 10 else '')
+          )
         last_fx_rate = lookup_market_price(
             market_price_index, 'KRW=X', pd.Timestamp.max
         )
@@ -2563,8 +2584,7 @@ if menu in (
               price = fallback_price
             else:
               market_price = lookup_market_price(
-                  market_price_index, ticker, history_date,
-                  fallback_first=True,
+                  market_price_index, ticker, history_date
               )
               if market_price is not None:
                 price = market_price
@@ -2673,7 +2693,7 @@ if menu in (
               price = base_price if base_price > 0 else 0
             else:
               market_price = lookup_market_price(
-                  market_price_index, fmt_tk, t_date, fallback_first=True
+                  market_price_index, fmt_tk, t_date
               )
               if market_price is not None:
                 price = market_price
@@ -2814,7 +2834,7 @@ if menu in (
             for t_date in target_dates:
               t_str = t_date.strftime('%Y-%m-%d')
               p = lookup_market_price(
-                  market_price_index, tk, t_date, fallback_first=True
+                  market_price_index, tk, t_date
               )
 
               prices.append(p)
@@ -2822,10 +2842,13 @@ if menu in (
 
             bm_df = (
                 pd.DataFrame({'Date_str': dates_str, 'Close': prices})
-                .bfill()
                 .ffill()
             )
-          init_p = bm_df['Close'].iloc[0] if len(bm_df) > 0 else 0
+          valid_benchmark_prices = bm_df['Close'].dropna()
+          init_p = (
+              valid_benchmark_prices.iloc[0]
+              if not valid_benchmark_prices.empty else 0
+          )
 
           bm_df['주기별 수익률'] = bm_df['Close'].pct_change() * 100
           bm_df['기간 누적 수익률'] = np.where(
