@@ -922,6 +922,82 @@ def fetch_market_data(tickers, start_date, end_date, force_refresh=False):
     return pd.DataFrame()
 
 
+@st.cache_data(ttl=60)
+def _fetch_us_intraday_prices(tickers_tuple):
+  tickers = list(tickers_tuple)
+  if not tickers:
+    return {}
+  try:
+    data = yf.download(
+        tickers,
+        period='1d',
+        interval='1m',
+        group_by='ticker',
+        auto_adjust=False,
+        prepost=True,
+        progress=False,
+        ignore_tz=True,
+    )
+    if data.empty:
+      return {}
+
+    close_data = None
+    if isinstance(data.columns, pd.MultiIndex):
+      for level in range(data.columns.nlevels):
+        if 'Close' in data.columns.get_level_values(level):
+          close_data = data.xs('Close', axis=1, level=level)
+          break
+    elif 'Close' in data.columns:
+      close_data = data['Close']
+    if close_data is None:
+      return {}
+    if isinstance(close_data, pd.Series):
+      close_data = close_data.to_frame(name=tickers[0])
+
+    prices = {}
+    for ticker in tickers:
+      if ticker not in close_data.columns:
+        continue
+      series = pd.to_numeric(close_data[ticker], errors='coerce').dropna()
+      if not series.empty and float(series.iloc[-1]) > 0:
+        prices[ticker] = float(series.iloc[-1])
+    return prices
+  except Exception as e:
+    raise RuntimeError(f'미국 장중 시세 수집 중 오류 발생: {e}') from e
+
+
+def fetch_us_intraday_prices(tickers, force_refresh=False):
+  normalized_tickers = tuple(sorted(set(ticker for ticker in tickers if ticker)))
+  if force_refresh:
+    _fetch_us_intraday_prices.clear()
+  return _fetch_us_intraday_prices(normalized_tickers)
+
+
+def overlay_market_prices(price_index, live_prices, target_date):
+  quote_date = np.datetime64(pd.Timestamp(target_date).normalize(), 'ns')
+  for ticker, price in live_prices.items():
+    ticker_data = price_index.get(ticker)
+    if ticker_data is None:
+      price_index[ticker] = {
+          'dates': np.array([quote_date], dtype='datetime64[ns]'),
+          'values': np.array([price], dtype=float),
+      }
+      continue
+
+    dates = ticker_data['dates']
+    values = ticker_data['values']
+    position = np.searchsorted(dates, quote_date)
+    if position < len(dates) and dates[position] == quote_date:
+      values = values.copy()
+      values[position] = price
+    elif position == len(dates):
+      dates = np.append(dates, quote_date)
+      values = np.append(values, price)
+    else:
+      continue
+    price_index[ticker] = {'dates': dates, 'values': values}
+
+
 # -----------------------------------------------------------------------------
 # 3. Plotly 레이아웃 및 범주 헬퍼 함수
 # -----------------------------------------------------------------------------
@@ -2330,6 +2406,17 @@ if menu in (
       unique_tickers = filtered_pf_df['ticker'].dropna().unique().tolist()
       fetch_tickers = list(unique_tickers) + list(bm_ticker_map.values())
       fetch_tickers.extend(summary_benchmark_map.values())
+      live_us_tickers = set()
+      for ticker_value, currency in filtered_pf_df[
+          ['ticker', 'currency']
+      ].drop_duplicates().itertuples(index=False, name=None):
+        ticker = format_ticker(ticker_value)
+        if (
+            normalize_currency(currency) == 'USD'
+            and ticker
+            and not ticker.endswith(('.KS', '.KQ'))
+        ):
+          live_us_tickers.add(ticker)
       selected_bj_accounts = [
           account for account in selected_accounts
           if whose_mapping.get(account) == 'BJ'
@@ -2384,6 +2471,38 @@ if menu in (
               + ', '.join(missing_tickers[:10])
               + (' 등' if len(missing_tickers) > 10 else '')
           )
+        if (
+            live_us_tickers
+            and pd.Timestamp(end_date).date() == date.today()
+        ):
+          live_quote_failed = False
+          try:
+            live_prices = fetch_us_intraday_prices(
+                live_us_tickers, force_refresh=refresh_market_button
+            )
+          except RuntimeError as e:
+            st.warning(str(e))
+            live_prices = {}
+            live_quote_failed = True
+
+          if live_prices:
+            overlay_market_prices(
+                market_price_index, live_prices, end_date
+            )
+            missing_live_tickers = sorted(
+                live_us_tickers.difference(live_prices)
+            )
+            if missing_live_tickers:
+              st.warning(
+                  f'{len(missing_live_tickers)}개 미국 종목의 최신 장중 시세를 '
+                  '받지 못해 일봉 종가를 사용합니다: '
+                  + ', '.join(missing_live_tickers[:10])
+                  + (' 등' if len(missing_live_tickers) > 10 else '')
+              )
+          elif not live_quote_failed:
+            st.info(
+                '미국 장중 시세가 없어 선택일의 최신 일봉 종가를 사용합니다.'
+            )
         last_fx_rate = lookup_market_price(
             market_price_index, 'KRW=X', pd.Timestamp.max
         )
