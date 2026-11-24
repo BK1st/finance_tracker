@@ -5421,7 +5421,11 @@ if menu in (
                 )
               chart_type = st.radio(
                   '차트 유형',
-                  options=['누적 세로 막대', '꺾은선 그래프'],
+                  options=[
+                      '누적 세로 막대',
+                      '그룹형 세로 막대',
+                      '꺾은선 그래프',
+                  ],
                   horizontal=True,
                   key=f'daily_eval_chart_{chart_index}_type',
               )
@@ -5510,7 +5514,7 @@ if menu in (
                 trace_color = manual_item_colors.get(
                     str(group), chart_default_colors[str(group)]
                 )
-                if chart_type == '누적 세로 막대':
+                if chart_type in ('누적 세로 막대', '그룹형 세로 막대'):
                   figure.add_trace(go.Bar(
                       x=group_data['Date'],
                       y=group_data['총평가금액'],
@@ -5539,7 +5543,10 @@ if menu in (
                   title=f'일자별 총 평가 금액 ({selected_dimension})',
                   barmode=(
                       'stack'
-                      if chart_type == '누적 세로 막대' else None
+                      if chart_type == '누적 세로 막대'
+                      else 'group'
+                      if chart_type == '그룹형 세로 막대'
+                      else None
                   ),
                   hovermode='closest',
                   height=600,
