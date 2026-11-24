@@ -2371,10 +2371,6 @@ elif menu == "일별/시점별 보유 현황 분석":
                             eval_p = ticker_eval_prices.get(f_ticker)
                             if eval_p is None or eval_p <= 0:
                                 eval_p = curr_p
-                            else:
-                                sub_df.at[idx, "current_price"] = eval_p
-                                sub_df.at[idx, "평가액(원)"] = eval_p * qty * ex_r
-                                sub_df.at[idx, "평가손익(원)"] = sub_df.at[idx, "평가액(원)"] - sub_df.at[idx, "매입총액(원)"]
 
                             base_price = ticker_base_prices.get(f_ticker)
                             if eval_p and base_price and float(base_price) > 0:
