@@ -3701,12 +3701,33 @@ if menu in (
             .max()
             if not history_eval_df.empty else pd.Series(dtype=float)
         )
+        report_group_peaks = (
+            grp_agg_summary.groupby(
+                ['Date', group_col], dropna=False
+            )['총평가금액']
+            .sum()
+            .groupby(level=1, dropna=False)
+            .max()
+        )
+        history_group_peaks = pd.concat(
+            [
+                history_group_peaks.rename('history'),
+                report_group_peaks.rename('report'),
+            ],
+            axis=1,
+        ).max(axis=1)
         history_total_peak = (
             history_eval_df.groupby('Date')['_history_eval']
             .sum()
             .max()
             if not history_eval_df.empty else np.nan
         )
+        report_total_peak = (
+            grp_agg_summary.groupby('Date')['총평가금액'].sum().max()
+        )
+        history_total_peak = pd.Series(
+            [history_total_peak, report_total_peak], dtype=float
+        ).max()
 
         summary_table_data = []
         total_eval_sum = 0
@@ -4761,6 +4782,27 @@ if menu in (
             history_eval_df.groupby('Date')['_history_eval'].sum().max()
             if not history_eval_df.empty else np.nan
         )
+        report_whose_peaks = (
+            agg_whose_summary.groupby(
+                ['Date', 'whose'], dropna=False
+            )['총평가금액']
+            .sum()
+            .groupby(level=1, dropna=False)
+            .max()
+        )
+        history_whose_peaks = pd.concat(
+            [
+                history_whose_peaks.rename('history'),
+                report_whose_peaks.rename('report'),
+            ],
+            axis=1,
+        ).max(axis=1)
+        report_total_peak = (
+            agg_whose_summary.groupby('Date')['총평가금액'].sum().max()
+        )
+        history_total_peak = pd.Series(
+            [history_total_peak, report_total_peak], dtype=float
+        ).max()
 
         whose_summary_data = []
         total_eval_sum = 0
