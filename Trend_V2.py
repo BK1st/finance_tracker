@@ -2693,8 +2693,8 @@ if menu in (
               account_snapshot_index, history_date,
               fallback_earliest=False,
           )
-          historical_holdings = account_snapshot_index['records'].get(
-              historical_snapshot_date, []
+          historical_pf_dict = snapshot_item_lookups.get(
+              historical_snapshot_date, {}
           )
 
           fx_rate = lookup_market_price(
@@ -2703,19 +2703,27 @@ if menu in (
           if pd.isna(fx_rate) or fx_rate is None or fx_rate <= 0:
             fx_rate = last_fx_rate if last_fx_rate is not None else 1350.0
 
-          for holding in historical_holdings:
-            quantity = pd.to_numeric(holding.get('quantity'), errors='coerce')
-            quantity = float(quantity) if pd.notna(quantity) else 0.0
+          for item_info in all_account_items:
+            iname = item_info['item_name']
+            ticker_value = item_info['ticker']
+            currency = normalize_currency(item_info['currency'])
+            item_key = (str(iname), str(ticker_value), currency)
+            if item_key in historical_pf_dict:
+              row = historical_pf_dict[item_key]
+              quantity = (
+                  row.get('quantity', 0)
+                  if pd.notna(row.get('quantity')) else 0
+              )
+              fallback_price = (
+                  row.get('current_price', 0)
+                  if pd.notna(row.get('current_price')) else 0
+              )
+            else:
+              quantity = 0
+              fallback_price = 0
             if quantity == 0:
               continue
-            currency = normalize_currency(holding.get('currency'))
-            fallback_price = pd.to_numeric(
-                holding.get('current_price'), errors='coerce'
-            )
-            fallback_price = (
-                float(fallback_price) if pd.notna(fallback_price) else 0.0
-            )
-            ticker = format_ticker(holding.get('ticker'))
+            ticker = format_ticker(ticker_value)
             price = 0.0
             if ticker is None:
               price = fallback_price
@@ -2728,14 +2736,14 @@ if menu in (
             if pd.isna(price) or price == 0:
               price = fallback_price
 
-            category2 = normalize_filter_value(
-                holding.get('category2'), '미분류'
-            )
             category1 = normalize_filter_value(
-                holding.get('category1'), '미분류'
+                item_info.get('category1'), '미분류'
+            )
+            category2 = normalize_filter_value(
+                item_info.get('category2'), '미분류'
             )
             category4 = normalize_filter_value(
-                holding.get('category4'), '미분류'
+                item_info.get('category4'), '미분류'
             )
             if (
                 category1 not in selected_category1
@@ -2744,9 +2752,9 @@ if menu in (
             ):
               continue
             item_name = get_display_item_name(
-                holding.get('item_name'),
+                iname,
                 currency,
-                holding.get('category1'),
+                item_info.get('category1'),
                 category4,
             )
             local_value = quantity * price
