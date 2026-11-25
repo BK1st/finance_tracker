@@ -1035,17 +1035,23 @@ def build_legend_config(mode_str):
     return dict(), False, dict(t=120, b=50, l=10, r=20)
 
 
-def render_resizable_plotly_chart(fig, key):
-  st.plotly_chart(
-      fig,
-      use_container_width=True,
-      key=key,
-      config={
+def render_resizable_plotly_chart(
+    fig, key, on_select=None, selection_mode=None
+):
+  chart_options = {
+      'use_container_width': True,
+      'key': key,
+      'config': {
           'responsive': True,
           'displayModeBar': True,
           'displaylogo': False,
       },
-  )
+  }
+  if on_select is not None:
+    chart_options['on_select'] = on_select
+  if selection_mode is not None:
+    chart_options['selection_mode'] = selection_mode
+  return st.plotly_chart(fig, **chart_options)
 
 
 def save_daily_eval_item_color(item_name, color_widget_key):
@@ -2742,6 +2748,9 @@ if menu in (
             category2 = normalize_filter_value(
                 item_info.get('category2'), '미분류'
             )
+            category3 = normalize_filter_value(
+                item_info.get('category3'), '미분류'
+            )
             category4 = normalize_filter_value(
                 item_info.get('category4'), '미분류'
             )
@@ -2774,6 +2783,7 @@ if menu in (
                 'account_type': acc_type,
                 'category1': category1,
                 'category2': category2,
+                'category3': category3,
                 'category4': category4,
                 'item_name': item_name,
                 'whose': whose_val,
@@ -2820,6 +2830,7 @@ if menu in (
             tk = item_info['ticker']
             cat2 = normalize_filter_value(item_info.get('category2'), '미분류')
             cat1 = normalize_filter_value(item_info.get('category1'), '미분류')
+            cat3 = normalize_filter_value(item_info.get('category3'), '미분류')
             cat4 = normalize_filter_value(item_info.get('category4'), '미분류')
             curr = normalize_currency(item_info['currency'])
             key = (str(iname), str(tk), curr)
@@ -2889,9 +2900,9 @@ if menu in (
 
             if qty > 0 or abs(cum_pl) > 1e-5:
               item_eval_list.append((
-                  display_iname, cat1, cat2, cat4, item_eval, item_eval_ex,
-                  item_eval_bj_ex_fx, cum_pl, cum_pl_ex, period_pl,
-                  period_pl_bj_ex_fx, item_return, qty,
+                  display_iname, cat1, cat2, cat3, cat4, item_eval,
+                  item_eval_ex, item_eval_bj_ex_fx, cum_pl, cum_pl_ex,
+                  period_pl, period_pl_bj_ex_fx, item_return, qty,
               ))
 
           item_count = len(item_eval_list)
@@ -2900,10 +2911,10 @@ if menu in (
               for item in item_eval_list
               if item[1] in selected_category1
               and item[2] in selected_category2
-              and item[3] in selected_category4
+              and item[4] in selected_category4
           ]
           for (
-              item_name, cat1, cat2, cat4, item_eval, item_eval_ex,
+              item_name, cat1, cat2, cat3, cat4, item_eval, item_eval_ex,
               item_eval_bj_ex_fx, cum_pl, cum_pl_ex, period_pl,
               period_pl_bj_ex_fx, item_ret, qty,
           ) in item_eval_list:
@@ -2928,6 +2939,7 @@ if menu in (
                 'account_type': acc_type,
                 'category1': cat1,
                 'category2': cat2,
+                'category3': cat3,
                 'category4': cat4,
                 'item_name': item_name,
                 'whose': whose_val,
@@ -5338,8 +5350,15 @@ if menu in (
             '계좌별': 'account_num',
             'CATEGORY1별': 'category1',
             'CATEGORY2별': 'category2',
+            'CATEGORY3별': 'category3',
             'CATEGORY4별': 'category4',
             '보유항목별': 'item_name',
+        }
+        drilldown_dimensions = {
+            'category1': ('CATEGORY2별', 'category2'),
+            'category2': ('CATEGORY3별', 'category3'),
+            'category3': ('CATEGORY4별', 'category4'),
+            'category4': ('보유항목별', 'item_name'),
         }
         analysis_df = calc_df.copy()
         filter_options = {
@@ -5351,7 +5370,7 @@ if menu in (
             'category4': 'CATEGORY4',
             'item_name': '보유 항목',
         }
-        for column, label in filter_options.items():
+        for column in set(filter_options) | set(analysis_dimensions.values()):
           analysis_df[column] = (
               analysis_df[column].fillna('미분류').astype(str)
           )
@@ -5645,21 +5664,178 @@ if menu in (
                   categoryarray=date_order,
               )
               figure.update_yaxes(tickprefix='₩', tickformat=',.0f')
-              chart_figures.append(
-                  (chart_container, chart_index, figure)
+              selection_signature = (
+                  dimension_column,
+                  tuple(selected_items),
+                  tuple(
+                      (
+                          column,
+                          tuple(
+                              st.session_state.get(
+                                  f'daily_eval_chart_{chart_index}_filter_{column}',
+                                  [],
+                              )
+                          ),
+                      )
+                      for column in filter_options
+                  ),
               )
+              selection_token = abs(hash(selection_signature))
+              chart_figures.append((
+                  chart_container,
+                  chart_index,
+                  figure,
+                  filtered_analysis_df,
+                  dimension_column,
+                  selected_items,
+                  selection_token,
+              ))
           if unify_chart_y_axis and chart_figures:
             shared_y_max = (
                 manual_y_max
                 if manual_y_max > 0
                 else max(max(chart_max_values, default=0.0), 1.0)
             )
-            for _, _, figure in chart_figures:
+            for _, _, figure, *_ in chart_figures:
               figure.update_yaxes(range=[0, shared_y_max])
-          for chart_container, chart_index, figure in chart_figures:
+          for (
+              chart_container,
+              chart_index,
+              figure,
+              filtered_analysis_df,
+              dimension_column,
+              selected_items,
+              selection_token,
+          ) in chart_figures:
             with chart_container:
+              can_drill_down = dimension_column in drilldown_dimensions
+              chart_event = render_resizable_plotly_chart(
+                  figure,
+                  key=(
+                      f'daily_eval_chart_{chart_index}_'
+                      f'{selection_token}'
+                  ),
+                  on_select='rerun' if can_drill_down else None,
+                  selection_mode='points' if can_drill_down else None,
+              )
+              if not can_drill_down:
+                continue
+              selected_parent = None
+              chart_selection = (
+                  getattr(chart_event, 'selection', None)
+                  if chart_event is not None else None
+              )
+              selection_points = getattr(
+                  chart_selection, 'points', []
+              )
+              for point in selection_points:
+                try:
+                  curve_number = int(point.get('curve_number'))
+                except (TypeError, ValueError):
+                  continue
+                if 0 <= curve_number < len(selected_items):
+                  selected_parent = selected_items[curve_number]
+                  break
+              if selected_parent is None:
+                st.caption(
+                    '차트의 항목을 클릭하면 하위 분류 차트가 표시됩니다.'
+                )
+                continue
+
+              child_label, child_column = drilldown_dimensions[
+                  dimension_column
+              ]
+              child_source = filtered_analysis_df[
+                  filtered_analysis_df[dimension_column] == selected_parent
+              ]
+              child_data = (
+                  child_source.groupby(
+                      ['Date', child_column], dropna=False
+                  )['총평가금액']
+                  .sum()
+                  .reset_index()
+                  .dropna(subset=['Date'])
+              )
+              child_options = sorted(
+                  child_data[child_column].dropna().unique().tolist()
+              )
+              if child_data.empty:
+                continue
+
+              st.markdown(
+                  f'###### {selected_parent} → {child_label} 하위 분석'
+              )
+              child_figure = go.Figure()
+              for child_item in child_options:
+                child_group = child_data[
+                    child_data[child_column] == child_item
+                ]
+                child_color = (
+                    shared_color_map.get(str(child_item))
+                    if unify_chart_colors
+                    else None
+                )
+                if chart_type in (
+                    '누적 세로 막대',
+                    '그룹형 세로 막대',
+                ):
+                  child_figure.add_trace(go.Bar(
+                      x=child_group['Date'],
+                      y=child_group['총평가금액'],
+                      name=str(child_item),
+                      marker_color=child_color,
+                      hovertemplate=(
+                          '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
+                      ),
+                  ))
+                else:
+                  child_figure.add_trace(go.Scatter(
+                      x=child_group['Date'],
+                      y=child_group['총평가금액'],
+                      name=str(child_item),
+                      mode='lines+markers',
+                      marker_color=child_color,
+                      line_color=child_color,
+                      hovertemplate=(
+                          '₩%{y:,.0f}<extra>%{fullData.name}</extra>'
+                      ),
+                  ))
+              child_legend_config, child_show_legend, child_margin = (
+                  build_legend_config(legend_position)
+              )
+              child_figure.update_layout(
+                  title=f'일자별 총 평가 금액 ({child_label})',
+                  barmode=(
+                      'stack'
+                      if chart_type == '누적 세로 막대'
+                      else 'group'
+                      if chart_type == '그룹형 세로 막대'
+                      else None
+                  ),
+                  hovermode='closest',
+                  height=500,
+                  yaxis_title='총평가금액 (KRW)',
+                  legend=child_legend_config,
+                  showlegend=child_show_legend,
+                  margin=child_margin,
+              )
+              child_date_order = sorted(
+                  child_data['Date'].unique().tolist()
+              )
+              child_figure.update_xaxes(
+                  type='category',
+                  categoryorder='array',
+                  categoryarray=child_date_order,
+              )
+              child_figure.update_yaxes(
+                  tickprefix='₩', tickformat=',.0f'
+              )
               render_resizable_plotly_chart(
-                  figure, key=f'daily_eval_chart_{chart_index}'
+                  child_figure,
+                  key=(
+                      f'daily_eval_chart_{chart_index}_drilldown_'
+                      f'{selection_token}'
+                  ),
               )
       elif active_views:
         tabs_key = 'trend_report_views'
