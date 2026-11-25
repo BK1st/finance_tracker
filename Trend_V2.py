@@ -1878,6 +1878,7 @@ def save_active_query_conditions(page):
   value_map = {
       'trend_sel_whose': 'whose',
       'trend_sel_account_types': 'account_types',
+      'trend_sel_category1': 'category1',
       'trend_sel_category2': 'category2',
       'trend_sel_category4': 'category4',
       'trend_sel_accs': 'accounts',
@@ -1920,6 +1921,7 @@ elif st.session_state.get('_active_query_page') != query_page:
     restored_values = {
         'trend_sel_whose': 'whose',
         'trend_sel_account_types': 'account_types',
+        'trend_sel_category1': 'category1',
         'trend_sel_category2': 'category2',
         'trend_sel_category4': 'category4',
         'trend_sel_accs': 'accounts',
@@ -2034,6 +2036,7 @@ if menu in (
         '계좌별',
         '증권사(Broker)별',
         '계좌유형별',
+        'Category 1별',
         'Category 2별',
         'Category 4별',
         '보유항목별',
@@ -2070,6 +2073,9 @@ if menu in (
         .copy()
     )
     item_inventory_df['account_num'] = item_inventory_df['account_num'].astype(str)
+    item_inventory_df['category1_filter'] = item_inventory_df['category1'].map(
+        lambda value: normalize_filter_value(value, '미분류')
+    )
     item_inventory_df['category2_filter'] = item_inventory_df['category2'].map(
         lambda value: normalize_filter_value(value, '미분류')
     )
@@ -2091,6 +2097,7 @@ if menu in (
         normalize_filter_value(value, '미지정')
         for value in whose_accounts_df['account_type']
     })
+    category1_options = sorted(whose_items_df['category1_filter'].unique().tolist())
     category2_options = sorted(whose_items_df['category2_filter'].unique().tolist())
     category4_options = sorted(whose_items_df['category4_filter'].unique().tolist())
 
@@ -2102,12 +2109,14 @@ if menu in (
         and not restore_saved_filters
     ):
       st.session_state['trend_sel_account_types'] = account_type_options
+      st.session_state['trend_sel_category1'] = category1_options
       st.session_state['trend_sel_category2'] = category2_options
       st.session_state['trend_sel_category4'] = category4_options
     st.session_state['_trend_filter_whose_sig'] = whose_sig
 
     filter_options = {
         'trend_sel_account_types': account_type_options,
+        'trend_sel_category1': category1_options,
         'trend_sel_category2': category2_options,
         'trend_sel_category4': category4_options,
     }
@@ -2115,7 +2124,7 @@ if menu in (
       selected_values = st.session_state.get(key, options)
       st.session_state[key] = [value for value in selected_values if value in options]
 
-    filter_cols = st.columns(3)
+    filter_cols = st.columns(4)
     with filter_cols[0]:
       selected_account_types = st.multiselect(
           '계좌유형 필터',
@@ -2123,12 +2132,18 @@ if menu in (
           key='trend_sel_account_types',
       )
     with filter_cols[1]:
+      selected_category1 = st.multiselect(
+          'Category 1 필터',
+          options=category1_options,
+          key='trend_sel_category1',
+      )
+    with filter_cols[2]:
       selected_category2 = st.multiselect(
           'Category 2 필터',
           options=category2_options,
           key='trend_sel_category2',
       )
-    with filter_cols[2]:
+    with filter_cols[3]:
       selected_category4 = st.multiselect(
           'Category 4 필터',
           options=category4_options,
@@ -2136,7 +2151,8 @@ if menu in (
       )
 
     matching_items_df = whose_items_df[
-        whose_items_df['category2_filter'].isin(selected_category2)
+        whose_items_df['category1_filter'].isin(selected_category1)
+        & whose_items_df['category2_filter'].isin(selected_category2)
         & whose_items_df['category4_filter'].isin(selected_category4)
     ]
     eligible_accounts = set(matching_items_df['account_num'])
@@ -2173,6 +2189,7 @@ if menu in (
     account_filter_sig = (
         whose_sig,
         tuple(selected_account_types),
+        tuple(selected_category1),
         tuple(selected_category2),
         tuple(selected_category4),
     )
@@ -2304,6 +2321,7 @@ if menu in (
           {
               'whose': list(selected_whose),
               'account_types': list(selected_account_types),
+              'category1': list(selected_category1),
               'category2': list(selected_category2),
               'category4': list(selected_category4),
               'accounts': list(selected_acc_labels),
@@ -2713,11 +2731,15 @@ if menu in (
             category2 = normalize_filter_value(
                 holding.get('category2'), '미분류'
             )
+            category1 = normalize_filter_value(
+                holding.get('category1'), '미분류'
+            )
             category4 = normalize_filter_value(
                 holding.get('category4'), '미분류'
             )
             if (
-                category2 not in selected_category2
+                category1 not in selected_category1
+                or category2 not in selected_category2
                 or category4 not in selected_category4
             ):
               continue
@@ -2742,6 +2764,7 @@ if menu in (
                 'account_num': acc_label,
                 'broker': broker_name,
                 'account_type': acc_type,
+                'category1': category1,
                 'category2': category2,
                 'category4': category4,
                 'item_name': item_name,
@@ -2788,6 +2811,7 @@ if menu in (
             iname = item_info['item_name']
             tk = item_info['ticker']
             cat2 = normalize_filter_value(item_info.get('category2'), '미분류')
+            cat1 = normalize_filter_value(item_info.get('category1'), '미분류')
             cat4 = normalize_filter_value(item_info.get('category4'), '미분류')
             curr = normalize_currency(item_info['currency'])
             key = (str(iname), str(tk), curr)
@@ -2857,7 +2881,7 @@ if menu in (
 
             if qty > 0 or abs(cum_pl) > 1e-5:
               item_eval_list.append((
-                  display_iname, cat2, cat4, item_eval, item_eval_ex,
+                  display_iname, cat1, cat2, cat4, item_eval, item_eval_ex,
                   item_eval_bj_ex_fx, cum_pl, cum_pl_ex, period_pl,
                   period_pl_bj_ex_fx, item_return, qty,
               ))
@@ -2866,10 +2890,12 @@ if menu in (
           item_eval_list = [
               item
               for item in item_eval_list
-              if item[1] in selected_category2 and item[2] in selected_category4
+              if item[1] in selected_category1
+              and item[2] in selected_category2
+              and item[3] in selected_category4
           ]
           for (
-              item_name, cat2, cat4, item_eval, item_eval_ex,
+              item_name, cat1, cat2, cat4, item_eval, item_eval_ex,
               item_eval_bj_ex_fx, cum_pl, cum_pl_ex, period_pl,
               period_pl_bj_ex_fx, item_ret, qty,
           ) in item_eval_list:
@@ -2892,6 +2918,7 @@ if menu in (
                 'account_num': acc_label,
                 'broker': broker_name,
                 'account_type': acc_type,
+                'category1': cat1,
                 'category2': cat2,
                 'category4': cat4,
                 'item_name': item_name,
@@ -3148,7 +3175,10 @@ if menu in (
             df_curr['평가손익'] = df_curr['평가손익_ex_fx']
             df_curr['총평가금액'] = df_curr['총평가금액_ex_fx']
             if (
-                group_col in ['account_num', 'broker', 'account_type', 'category2']
+                group_col in [
+                    'account_num', 'broker', 'account_type',
+                    'category1', 'category2',
+                ]
                 and '총평가금액_bj_ex_fx' in df_curr.columns
             ):
               bj_mask = df_curr['whose'] == 'BJ'
@@ -3485,7 +3515,7 @@ if menu in (
                 inplace=True,
             )
 
-          elif group_col == 'category2':
+          elif group_col in ['category1', 'category2']:
             category2_period_col = (
                 '주기별 평가손익_bj_ex_fx'
                 if use_ex_fx
@@ -3587,7 +3617,7 @@ if menu in (
               'account_num', 'broker', 'account_type'
           ] and '주기기준액' in grp_agg.columns:
             grp_agg['합산기준액'] = grp_agg['주기기준액']
-          elif group_col == 'category2':
+          elif group_col in ['category1', 'category2']:
             grp_agg['합산기준액'] = grp_agg['prev_eval'].where(
                 grp_agg['prev_eval'] > 0, grp_agg['period_start_base']
             )
@@ -3650,7 +3680,8 @@ if menu in (
             history_eval_df,
             use_ex_fx=ex_summary,
             use_bj_fixed_fx=group_col in [
-                'account_num', 'broker', 'account_type', 'category2'
+                'account_num', 'broker', 'account_type',
+                'category1', 'category2',
             ],
         )
         history_group_peaks = (
@@ -3674,7 +3705,7 @@ if menu in (
         total_pl_sum = 0
         total_bj_year_base_sum = 0
         show_bj_year_columns = group_col not in [
-            'category2', 'category4', 'item_name'
+            'category1', 'category2', 'category4', 'item_name'
         ]
 
         for grp in groups:
@@ -5164,6 +5195,7 @@ if menu in (
             '계좌별': 'account_num',
             '증권사별': 'broker',
             '계좌유형별': 'account_type',
+            'Category 1별': 'category1',
             'Category 2별': 'category2',
             'Category 4별': 'category4',
             '보유 항목별': 'item_name'
@@ -5254,6 +5286,7 @@ if menu in (
             'WHOSE별': 'whose',
             '계좌유형별': 'account_type',
             '계좌별': 'account_num',
+            'CATEGORY1별': 'category1',
             'CATEGORY2별': 'category2',
             'CATEGORY4별': 'category4',
             '보유항목별': 'item_name',
@@ -5263,6 +5296,7 @@ if menu in (
             'whose': 'WHOSE',
             'account_type': '계좌유형',
             'account_num': '계좌',
+            'category1': 'CATEGORY1',
             'category2': 'CATEGORY2',
             'category4': 'CATEGORY4',
             'item_name': '보유 항목',
@@ -5594,6 +5628,8 @@ if menu in (
               draw_group_summary_charts(calc_df, 'broker', '증권사별')
             elif v_type == '계좌유형별':
               draw_group_summary_charts(calc_df, 'account_type', '계좌유형별')
+            elif v_type == 'Category 1별':
+              draw_group_summary_charts(calc_df, 'category1', 'Category 1별')
             elif v_type == 'Category 2별':
               draw_group_summary_charts(calc_df, 'category2', 'Category 2별')
             elif v_type == 'Category 4별':
