@@ -5760,35 +5760,77 @@ if menu in (
                   f'daily_eval_chart_{chart_index}_drilldown_dimension_'
                   f'{selection_token}'
               )
-              if st.session_state.get(drilldown_key) not in drilldown_options:
-                st.session_state[drilldown_key] = (
+              selected_drilldown_dimensions = st.session_state.get(
+                  drilldown_key,
+                  [default_drilldown_dimensions.get(
+                      dimension_column, 'CATEGORY1별'
+                  )],
+              )
+              if isinstance(selected_drilldown_dimensions, str):
+                selected_drilldown_dimensions = [
+                    selected_drilldown_dimensions
+                ]
+              selected_drilldown_dimensions = [
+                  label
+                  for label in selected_drilldown_dimensions
+                  if label in drilldown_options
+              ]
+              if not selected_drilldown_dimensions:
+                selected_drilldown_dimensions = [
                     default_drilldown_dimensions.get(
                         dimension_column, 'CATEGORY1별'
                     )
-                )
-              child_label = st.selectbox(
-                  '선택 항목 재분류 기준',
+                ]
+              st.session_state[drilldown_key] = (
+                  selected_drilldown_dimensions
+              )
+              child_labels = st.multiselect(
+                  '선택 항목 재분류 기준 (여러 개 선택 가능)',
                   options=list(drilldown_options),
                   key=drilldown_key,
               )
-              child_column = drilldown_options[child_label]
+              if not child_labels:
+                st.info('재분류 기준을 하나 이상 선택해 주세요.')
+                continue
+              child_columns = [
+                  drilldown_options[label] for label in child_labels
+              ]
               child_source = filtered_analysis_df[
                   filtered_analysis_df[dimension_column] == selected_parent
               ]
               child_data = (
                   child_source.groupby(
-                      ['Date', child_column], dropna=False
+                      ['Date', *child_columns], dropna=False
                   )['총평가금액']
                   .sum()
                   .reset_index()
                   .dropna(subset=['Date'])
               )
+              child_group_column = '_drilldown_group'
+              if len(child_columns) == 1:
+                child_data[child_group_column] = child_data[
+                    child_columns[0]
+                ].astype(str)
+              else:
+                child_data[child_group_column] = child_data.apply(
+                    lambda row: ' · '.join(
+                        f'{label}: {row[column]}'
+                        for label, column in zip(
+                            child_labels, child_columns
+                        )
+                    ),
+                    axis=1,
+                )
               child_options = sorted(
-                  child_data[child_column].dropna().unique().tolist()
+                  child_data[child_group_column]
+                  .dropna()
+                  .unique()
+                  .tolist()
               )
               if child_data.empty:
                 continue
 
+              child_label = ' + '.join(child_labels)
               st.markdown(
                   f'###### {selected_parent} → {child_label} 하위 분석'
               )
@@ -5833,7 +5875,7 @@ if menu in (
               child_figure = go.Figure()
               for child_item in child_options:
                 child_group = child_data[
-                    child_data[child_column] == child_item
+                    child_data[child_group_column] == child_item
                 ]
                 child_color = (
                     shared_color_map.get(str(child_item))
