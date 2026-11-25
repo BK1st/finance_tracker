@@ -5791,6 +5791,44 @@ if menu in (
               st.markdown(
                   f'###### {selected_parent} → {child_label} 하위 분석'
               )
+              child_chart_type_options = [
+                  '누적 세로 막대',
+                  '그룹형 세로 막대',
+                  '꺾은선 그래프',
+              ]
+              child_chart_type_key = (
+                  f'daily_eval_chart_{chart_index}_drilldown_type_'
+                  f'{selection_token}'
+              )
+              if st.session_state.get(
+                  child_chart_type_key
+              ) not in child_chart_type_options:
+                st.session_state[child_chart_type_key] = chart_type
+              child_legend_key = (
+                  f'daily_eval_chart_{chart_index}_drilldown_legend_'
+                  f'{selection_token}'
+              )
+              child_legend_options = ['하단 배치', '우측 배치', '숨김']
+              if st.session_state.get(
+                  child_legend_key
+              ) not in child_legend_options:
+                st.session_state[child_legend_key] = legend_position
+
+              child_control_columns = st.columns([2, 1])
+              with child_control_columns[0]:
+                child_chart_type = st.radio(
+                    '하위 차트 유형',
+                    options=child_chart_type_options,
+                    horizontal=True,
+                    key=child_chart_type_key,
+                )
+              with child_control_columns[1]:
+                child_legend_position = st.selectbox(
+                    '하위 차트 범례 위치',
+                    options=child_legend_options,
+                    key=child_legend_key,
+                )
+
               child_figure = go.Figure()
               for child_item in child_options:
                 child_group = child_data[
@@ -5801,7 +5839,7 @@ if menu in (
                     if unify_chart_colors
                     else None
                 )
-                if chart_type in (
+                if child_chart_type in (
                     '누적 세로 막대',
                     '그룹형 세로 막대',
                 ):
@@ -5827,15 +5865,15 @@ if menu in (
                       ),
                   ))
               child_legend_config, child_show_legend, child_margin = (
-                  build_legend_config(legend_position)
+                  build_legend_config(child_legend_position)
               )
               child_figure.update_layout(
                   title=f'일자별 총 평가 금액 ({child_label})',
                   barmode=(
                       'stack'
-                      if chart_type == '누적 세로 막대'
+                      if child_chart_type == '누적 세로 막대'
                       else 'group'
-                      if chart_type == '그룹형 세로 막대'
+                      if child_chart_type == '그룹형 세로 막대'
                       else None
                   ),
                   hovermode='closest',
