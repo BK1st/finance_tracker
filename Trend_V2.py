@@ -5806,48 +5806,23 @@ if menu in (
                   key=drilldown_key,
               )
               child_column = drilldown_options[child_label]
-              parent_dimension_label = next(
-                  label
-                  for label, column in analysis_dimensions.items()
-                  if column == dimension_column
-              )
               child_source = filtered_analysis_df[
                   filtered_analysis_df[dimension_column].isin(
                       selected_parents
                   )
               ]
-              child_group_columns = ['Date']
-              if (
-                  len(selected_parents) > 1
-                  and dimension_column != child_column
-              ):
-                child_group_columns.append(dimension_column)
-              if child_column not in child_group_columns:
-                child_group_columns.append(child_column)
               child_data = (
                   child_source.groupby(
-                      child_group_columns, dropna=False
+                      ['Date', child_column], dropna=False
                   )['총평가금액']
                   .sum()
                   .reset_index()
                   .dropna(subset=['Date'])
               )
               child_group_column = '_drilldown_group'
-              if len(selected_parents) == 1:
-                child_data[child_group_column] = child_data[
+              child_data[child_group_column] = child_data[
                   child_column
-                ].astype(str)
-              else:
-                child_data[child_group_column] = child_data.apply(
-                  lambda row: (
-                      f'{parent_dimension_label}: '
-                      f'{row[dimension_column]} · '
-                      f'{child_label}: {row[child_column]}'
-                  )
-                  if dimension_column != child_column
-                  else str(row[child_column]),
-                  axis=1,
-                )
+              ].astype(str)
               child_options = sorted(
                   child_data[child_group_column]
                   .dropna()
