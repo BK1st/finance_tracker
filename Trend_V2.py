@@ -5365,6 +5365,7 @@ if menu in (
             'item_name': '계좌별',
         }
         drilldown_options = {
+            'WHOSE별': 'whose',
             '계좌유형별': 'account_type',
             '계좌별': 'account_num',
             'CATEGORY1별': 'category1',
