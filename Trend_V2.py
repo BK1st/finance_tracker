@@ -5354,11 +5354,24 @@ if menu in (
             'CATEGORY4별': 'category4',
             '보유항목별': 'item_name',
         }
-        drilldown_dimensions = {
-            'category1': ('CATEGORY2별', 'category2'),
-            'category2': ('CATEGORY3별', 'category3'),
-            'category3': ('CATEGORY4별', 'category4'),
-            'category4': ('보유항목별', 'item_name'),
+        default_drilldown_dimensions = {
+            'whose': '계좌유형별',
+            'account_type': '계좌별',
+            'account_num': 'CATEGORY1별',
+            'category1': 'CATEGORY2별',
+            'category2': 'CATEGORY3별',
+            'category3': 'CATEGORY4별',
+            'category4': '보유항목별',
+            'item_name': '계좌별',
+        }
+        drilldown_options = {
+            '계좌유형별': 'account_type',
+            '계좌별': 'account_num',
+            'CATEGORY1별': 'category1',
+            'CATEGORY2별': 'category2',
+            'CATEGORY3별': 'category3',
+            'CATEGORY4별': 'category4',
+            '보유항목별': 'item_name',
         }
         analysis_df = calc_df.copy()
         filter_options = {
@@ -5708,7 +5721,7 @@ if menu in (
               selection_token,
           ) in chart_figures:
             with chart_container:
-              can_drill_down = dimension_column in drilldown_dimensions
+              can_drill_down = dimension_column in analysis_dimensions.values()
               chart_event = render_resizable_plotly_chart(
                   figure,
                   key=(
@@ -5738,13 +5751,26 @@ if menu in (
                   break
               if selected_parent is None:
                 st.caption(
-                    '차트의 항목을 클릭하면 하위 분류 차트가 표시됩니다.'
+                    '차트의 데이터 점을 클릭하면 재분류 기준을 선택할 수 있습니다.'
                 )
                 continue
 
-              child_label, child_column = drilldown_dimensions[
-                  dimension_column
-              ]
+              drilldown_key = (
+                  f'daily_eval_chart_{chart_index}_drilldown_dimension_'
+                  f'{selection_token}'
+              )
+              if st.session_state.get(drilldown_key) not in drilldown_options:
+                st.session_state[drilldown_key] = (
+                    default_drilldown_dimensions.get(
+                        dimension_column, 'CATEGORY1별'
+                    )
+                )
+              child_label = st.selectbox(
+                  '선택 항목 재분류 기준',
+                  options=list(drilldown_options),
+                  key=drilldown_key,
+              )
+              child_column = drilldown_options[child_label]
               child_source = filtered_analysis_df[
                   filtered_analysis_df[dimension_column] == selected_parent
               ]
