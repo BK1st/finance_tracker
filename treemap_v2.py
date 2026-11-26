@@ -24,9 +24,24 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+_treemap_source_dir = os.path.dirname(os.path.abspath(__file__))
+_treemap_component_path = os.path.join(
+    _treemap_source_dir, "treemap_component"
+)
+if not os.path.isfile(os.path.join(_treemap_component_path, "index.html")):
+    _treemap_component_path = os.path.abspath(
+        os.path.join(_treemap_source_dir, "..", "..", "treemap_component")
+    )
+if not os.path.isfile(os.path.join(_treemap_component_path, "index.html")):
+    st.error(
+        "트리맵 컴포넌트 파일이 없습니다. "
+        "앱 스크립트와 함께 treemap_component/index.html도 배포해 주세요."
+    )
+    st.stop()
+
 TREEMAP_COMPONENT = components.declare_component(
     "portfolio_clickable_treemap",
-    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "treemap_component"),
+    path=_treemap_component_path,
 )
 
 # ---------------------------------------------------------
