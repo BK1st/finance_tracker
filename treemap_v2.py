@@ -2586,6 +2586,7 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             ids, labels, parents, values = [], [], [], []
             custom_rates, custom_prices, custom_profits, custom_shares = [], [], [], []
+            custom_quantities = []
 
             ids.append("Root")
             labels.append(view_root_label)
@@ -2595,6 +2596,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             custom_prices.append("-")
             custom_profits.append(total_row_profit)
             custom_shares.append(100.0)
+            custom_quantities.append("-")
 
             built_nodes = set(["Root"])
             treemap_chart_nodes = {}
@@ -2622,6 +2624,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                             grp_eval = sub_grp["평가액(원)"].sum()
                             grp_buy = sub_grp["매입총액(원)"].sum()
                             grp_profit = sub_grp["선택기준_평가손익(원)"].sum()
+                            grp_quantity = pd.to_numeric(sub_grp["quantity"], errors="coerce").fillna(0).sum()
                             
                             if color_option == "총 누적 수익률 (%)":
                                 grp_rate = (grp_profit / grp_buy * 100) if grp_buy != 0 else 0.0
@@ -2676,6 +2679,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                                 else 0.0
                             )
                             custom_shares.append(group_share)
+                            custom_quantities.append(f"{grp_quantity:,.4f}".rstrip("0").rstrip("."))
                             chart_node = treemap_chart_nodes.setdefault(
                                 current_id_path, {}
                             )
@@ -2726,6 +2730,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             base_texttemplate = (
                 "<b>%{label}</b><br>"
                 "<span style='font-size: 12px;'>현재가 %{customdata[1]}</span><br>"
+                "<span style='font-size: 12px;'>보유 수량 %{customdata[5]}</span><br>"
                 "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
                 "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
             )
@@ -2767,6 +2772,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                             custom_profits,
                             [f"{rate:+,.2f}%" for rate in custom_rates],
                             custom_shares,
+                            custom_quantities,
                         )
                     ),
                     texttemplate=text_templates,
