@@ -3643,14 +3643,19 @@ if menu in (
         all_groups = grp_agg_def[group_col].unique()
         groups = group_order + [g for g in all_groups if g not in group_order]
 
+        show_group_drawdown = group_col in ['account_num', 'account_type']
         st.markdown(f'### 📋 [{prefix}] 항목별 최종 핵심지표 요약 표')
-        st.caption(
+        summary_caption = (
             '수익률·손익은 0 기준으로 양수는 녹색, 음수는 적색으로 표시합니다. '
             '평가금액·점유율은 파란색으로 표시하고, 같은 지표 단위 안에서 값이 클수록 '
-            '배경색이 진해집니다. 역대 고점대비 하락은 전체 합산·WHOSE별·계좌별·'
-            '계좌유형별에만 표시하고, 저장된 기간의 최고 일별 평가액과 종료일 평가액을 '
-            '입출금 보정 없이 비교합니다.'
+            '배경색이 진해집니다.'
         )
+        if show_group_drawdown:
+          summary_caption += (
+              ' 역대 고점대비 하락은 저장된 기간의 최고 일별 평가액과 '
+              '종료일 평가액을 입출금 보정 없이 비교합니다.'
+          )
+        st.caption(summary_caption)
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         show_bj_ex_fx_estimate = ex_summary
         bj_year_profit_label = (
@@ -3725,7 +3730,6 @@ if menu in (
             [history_total_peak, report_total_peak], dtype=float
         ).max()
 
-        show_group_drawdown = group_col in ['account_num', 'account_type']
         summary_table_data = []
         total_eval_sum = 0
         total_pl_sum = 0
@@ -3776,10 +3780,11 @@ if menu in (
                 '선택구간 누적 평가 손익 (원)': final_p_loss,
                 '최종 기말 평가 금액 (원)': final_eval,
                 '선택구간 누적 수익률 (%)': final_ret,
-                '고점 대비 하락 금액 (원)': drawdown_amount,
-                '고점 대비 하락률 (%)': drawdown_rate,
                 '_eval': final_eval,
             }
+            if show_group_drawdown:
+              summary_row['고점 대비 하락 금액 (원)'] = drawdown_amount
+              summary_row['고점 대비 하락률 (%)'] = drawdown_rate
             if show_bj_year_columns:
               summary_row[bj_year_profit_label] = final_bj_year_profit
               summary_row[bj_year_return_label] = final_bj_year_return
@@ -3811,23 +3816,25 @@ if menu in (
               '최종 기말 평가 금액 (원)': np.nan,
               '점유율 (%)': np.nan,
               '선택구간 누적 수익률 (%)': benchmark_return,
-              '고점 대비 하락 금액 (원)': np.nan,
-              '고점 대비 하락률 (%)': np.nan,
           })
+          if show_group_drawdown:
+            summary_table_data[-1]['고점 대비 하락 금액 (원)'] = np.nan
+            summary_table_data[-1]['고점 대비 하락률 (%)'] = np.nan
 
         total_ret = calculate_combined_cumulative_return(grp_agg_summary)
-        total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
-            total_eval_sum, history_total_peak
-        )
         total_summary_row = {
             prefix: '전체 합산',
             '선택구간 누적 평가 손익 (원)': total_pl_sum,
             '최종 기말 평가 금액 (원)': total_eval_sum,
             '선택구간 누적 수익률 (%)': total_ret,
-            '고점 대비 하락 금액 (원)': total_drawdown_amount,
-            '고점 대비 하락률 (%)': total_drawdown_rate,
             '점유율 (%)': 100.0 if total_eval_sum > 0 else 0.0,
         }
+        if show_group_drawdown:
+          total_drawdown_amount, total_drawdown_rate = calculate_drawdown(
+              total_eval_sum, history_total_peak
+          )
+          total_summary_row['고점 대비 하락 금액 (원)'] = total_drawdown_amount
+          total_summary_row['고점 대비 하락률 (%)'] = total_drawdown_rate
         if show_bj_year_columns:
           total_summary_row[bj_year_profit_label] = total_bj_year_profit
           total_summary_row[bj_year_return_label] = total_bj_year_return
@@ -3840,9 +3847,12 @@ if menu in (
             '최종 기말 평가 금액 (원)',
             '점유율 (%)',
             '선택구간 누적 수익률 (%)',
-            '고점 대비 하락 금액 (원)',
-            '고점 대비 하락률 (%)',
         ]
+        if show_group_drawdown:
+          cols.extend([
+              '고점 대비 하락 금액 (원)',
+              '고점 대비 하락률 (%)',
+          ])
         if show_bj_year_columns:
           cols.extend([bj_year_profit_label, bj_year_return_label])
         summary_df = summary_df[[c for c in cols if c in summary_df.columns]]
