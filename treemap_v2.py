@@ -568,13 +568,13 @@ def render_expandable_tree_table(rows, profit_col_label, rate_col_label):
   table.tree-table tr.tree-parent:hover {{ background: #e2edff; }}
   table.tree-table tr.tree-hidden {{ display: none; }}
   .caret {{
-    display: inline-block; width: 18px; color: #174ea6; font-size: 12px;
+    display: inline-block; width: 18px; color: #174ea6; font-size: 14px;
     font-weight: 700;
     user-select: none;
   }}
   @media (max-width: 700px) {{
     table.tree-table {{ font-size: 13px; }}
-    table.tree-table th {{ padding: 9px 10px; font-size: 12px; }}
+    table.tree-table th {{ padding: 9px 10px; font-size: 14px; }}
     table.tree-table td {{ padding: 9px 10px; }}
   }}
 </style>
@@ -2729,8 +2729,8 @@ elif menu == "일별/시점별 보유 현황 분석":
 
             base_texttemplate = (
                 "<b>%{label}</b><br>"
-                "<span style='font-size: 12px;'>현재가 %{customdata[1]}</span><br>"
-                "<span style='font-size: 12px;'>보유 수량 %{customdata[5]}</span><br>"
+                "<span style='font-size: 14px;'>현재가 %{customdata[1]}</span><br>"
+                "<span style='font-size: 14px;'>보유 수량 %{customdata[5]}</span><br>"
                 "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
                 "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
             )
@@ -2781,6 +2781,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                         "<span style='font-size: 15px;'>"
                         "• 평가금액: ₩%{value:,.0f}<br>"
                         "• 현재가: %{customdata[1]}<br>"
+                        "보유 수량: %{customdata[5]}<br>"
                         f"• {profit_col_label}: ₩%{{customdata[2]:,.0f}}<br>"
                         f"• {rate_col_label}: %{{customdata[3]}}<br>"
                         "• 선택 화면 대비 점유율: %{percentRoot:.2%}<br>"
