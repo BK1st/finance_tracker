@@ -2571,7 +2571,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             st.markdown("")
 
             ids, labels, parents, values = [], [], [], []
-            custom_rates, custom_prices, custom_profits = [], [], []
+            custom_rates, custom_prices, custom_profits, custom_shares = [], [], [], []
 
             ids.append("Root")
             labels.append(view_root_label)
@@ -2580,6 +2580,7 @@ elif menu == "일별/시점별 보유 현황 분석":
             custom_rates.append(total_row_rate)
             custom_prices.append("-")
             custom_profits.append(total_row_profit)
+            custom_shares.append(100.0)
 
             built_nodes = set(["Root"])
             treemap_chart_nodes = {}
@@ -2653,6 +2654,12 @@ elif menu == "일별/시점별 보유 현황 분석":
                             custom_rates.append(grp_rate)
                             custom_prices.append(disp_price)
                             custom_profits.append(grp_profit)
+                            group_share = (
+                                grp_eval / active_total_eval * 100
+                                if active_total_eval != 0
+                                else 0.0
+                            )
+                            custom_shares.append(group_share)
                             if depth == len(active_group_cols) - 1:
                                 leaf_tickers = (
                                     sub_grp["formatted_ticker"]
@@ -2694,6 +2701,23 @@ elif menu == "일별/시점별 보유 현황 분석":
             else:
                 dynamic_range = [-min(max_abs_val, 40.0), min(max_abs_val, 40.0)]
 
+            base_texttemplate = (
+                "<b>%{label}</b><br>"
+                "<span style='font-size: 12px;'>현재가 %{customdata[1]}</span><br>"
+                "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
+                "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
+            )
+            text_templates = [
+                (
+                    base_texttemplate
+                    + "<br><span style='font-size: 15px; color: #FFE082;'>"
+                    + "<b>전체 점유율 %{customdata[4]:.2f}%</b></span>"
+                    if share >= 2.0
+                    else base_texttemplate
+                )
+                for share in custom_shares
+            ]
+
             fig_treemap = go.Figure(
                 go.Treemap(
                     ids=ids,
@@ -2720,14 +2744,10 @@ elif menu == "일별/시점별 보유 현황 분석":
                             custom_prices,
                             custom_profits,
                             [f"{rate:+,.2f}%" for rate in custom_rates],
+                            custom_shares,
                         )
                     ),
-                    texttemplate=(
-                        "<b>%{label}</b><br>"
-                        "<span style='font-size: 12px;'>현재가 %{customdata[1]}</span><br>"
-                        "<span style='font-size: 16px;'><b>₩%{value:,.0f}</b></span><br>"
-                        "<span style='font-size: 14px;'><b>%{customdata[3]}</b></span>"
-                    ),
+                    texttemplate=text_templates,
                     hovertemplate=(
                         "<span style='font-size: 18px;'><b>%{label}</b></span><br>"
                         "<span style='font-size: 15px;'>"
