@@ -1155,7 +1155,6 @@ def get_history_evaluation_values(
 def calculate_drawdown(current_value, peak_value):
   if (
       pd.isna(current_value)
-      or current_value <= 0
       or pd.isna(peak_value)
       or peak_value <= 0
   ):
@@ -1300,8 +1299,8 @@ def render_summary_page(
       '수익률·손익은 0 기준으로 양수는 녹색, 음수는 적색으로 표시하고, '
       '평가금액·점유율은 파란색으로 표시합니다. 색의 농도는 표 안의 같은 지표 단위 '
       '공통 기준이며, 숫자값 기준 정렬이 가능합니다. '
-      '고점대비 하락은 저장된 전체 기간의 날짜별 합산 평가액 고점과 비교하며, '
-      '현재 평가액이 0원 이하인 경우에는 표시하지 않습니다. '
+      '역대 고점대비 하락은 전체 합산·WHOSE·계좌·계좌유형 표에만 표시합니다. '
+      '저장된 기간의 최고 일별 평가액과 현재 평가액을 입출금 보정 없이 비교합니다. '
       '현금성 자산의 수익률·평가손익은 표시하지 않습니다.'
   )
   use_ex_fx = st.toggle(
@@ -1420,29 +1419,6 @@ def render_summary_page(
     end_price = float(end_prices.iloc[-1]['Close'])
     return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
 
-  def benchmark_drawdown_rate(label):
-    prices = benchmark_data.get(label)
-    if prices is None or prices.empty:
-      return np.nan
-    price_series = prices.copy()
-    price_series['Date'] = pd.to_datetime(
-        price_series['Date_str'], errors='coerce'
-    ).dt.normalize()
-    price_series['Close'] = pd.to_numeric(
-        price_series['Close'], errors='coerce'
-    )
-    price_series = price_series.dropna(subset=['Date', 'Close']).sort_values(
-        'Date'
-    )
-    price_series = price_series[
-        price_series['Date'] <= pd.Timestamp(as_of_date).normalize()
-    ]
-    if price_series.empty:
-      return np.nan
-    current_price = float(price_series.iloc[-1]['Close'])
-    peak_price = float(price_series['Close'].max())
-    return calculate_drawdown(current_price, peak_price)[1]
-
   layout_columns = st.selectbox(
       '표 Layout 열 수 (조회된 데이터에 적용)',
       options=[1, 2, 3],
@@ -1464,6 +1440,9 @@ def render_summary_page(
     current = latest_rows.groupby(group_column, dropna=False)[
         '_summary_eval'
     ].sum()
+    show_drawdown = group_column in (
+        'whose', 'account_num', 'account_type', '_owner_total'
+    )
     drawdown_history = history_data
     if group_column == '_owner_total':
       if 'whose' in history_data.columns:
@@ -1473,7 +1452,7 @@ def render_summary_page(
         drawdown_history[group_column] = 'BJ+SH 전체 합산'
       else:
         drawdown_history = pd.DataFrame()
-    if (
+    if show_drawdown and (
         not drawdown_history.empty
         and group_column in drawdown_history.columns
         and 'Date' in drawdown_history.columns
@@ -1494,15 +1473,17 @@ def render_summary_page(
 
     table_rows = {}
     for group, value in current.items():
-      drawdown_amount, drawdown_rate = calculate_drawdown(
-          value, peak_by_group.get(group, np.nan)
-      )
-      table_rows[str(group)] = {
+      row = {
           label: str(group),
           '평가금액 (원)': float(value),
-          '고점 대비 하락 금액 (원)': drawdown_amount,
-          '고점 대비 하락률 (%)': drawdown_rate,
       }
+      if show_drawdown:
+        drawdown_amount, drawdown_rate = calculate_drawdown(
+            value, peak_by_group.get(group, np.nan)
+        )
+        row['고점 대비 하락 금액 (원)'] = drawdown_amount
+        row['고점 대비 하락률 (%)'] = drawdown_rate
+      table_rows[str(group)] = row
 
     for period_label, period_start, period_end in period_windows:
       cutoff = period_start - pd.Timedelta(days=1)
@@ -1590,11 +1571,10 @@ def render_summary_page(
         row = {
             label: benchmark_label,
             '평가금액 (원)': np.nan,
-            '고점 대비 하락 금액 (원)': np.nan,
-            '고점 대비 하락률 (%)': benchmark_drawdown_rate(
-                benchmark_label
-            ),
         }
+        if show_drawdown:
+          row['고점 대비 하락 금액 (원)'] = np.nan
+          row['고점 대비 하락률 (%)'] = np.nan
         for period_label, period_start, period_end in period_windows:
           row[f'평가손익 ({period_label}) (원)'] = np.nan
           row[f'수익률 ({period_label}) (%)'] = benchmark_return(
@@ -1613,9 +1593,12 @@ def render_summary_page(
     columns = [
         label,
         '평가금액 (원)',
-        '고점 대비 하락 금액 (원)',
-        '고점 대비 하락률 (%)',
     ]
+    if show_drawdown:
+      columns.extend([
+          '고점 대비 하락 금액 (원)',
+          '고점 대비 하락률 (%)',
+      ])
     columns.extend(
         f'수익률 ({period_label}) (%)'
         for period_label, _, _ in period_windows
@@ -3664,8 +3647,9 @@ if menu in (
         st.caption(
             '수익률·손익은 0 기준으로 양수는 녹색, 음수는 적색으로 표시합니다. '
             '평가금액·점유율은 파란색으로 표시하고, 같은 지표 단위 안에서 값이 클수록 '
-            '배경색이 진해집니다. 고점 대비 하락은 저장된 전체 기간의 최고 평가액과 '
-            '선택한 종료일 평가액을 비교하며, 음수는 고점 아래임을 뜻합니다.'
+            '배경색이 진해집니다. 역대 고점대비 하락은 전체 합산·WHOSE별·계좌별·'
+            '계좌유형별에만 표시하고, 저장된 기간의 최고 일별 평가액과 종료일 평가액을 '
+            '입출금 보정 없이 비교합니다.'
         )
         ex_summary = st.toggle('🔀 환차손 제외 결과로 보기', key=f'ex_summary_{prefix}')
         show_bj_ex_fx_estimate = ex_summary
@@ -3741,6 +3725,7 @@ if menu in (
             [history_total_peak, report_total_peak], dtype=float
         ).max()
 
+        show_group_drawdown = group_col in ['account_num', 'account_type']
         summary_table_data = []
         total_eval_sum = 0
         total_pl_sum = 0
@@ -3761,9 +3746,12 @@ if menu in (
               
             final_ret = sub['선택기간 누적 수익률'].iloc[-1]
             peak_eval = history_group_peaks.get(grp, np.nan)
-            drawdown_amount, drawdown_rate = calculate_drawdown(
-                final_eval, peak_eval
-            )
+            if show_group_drawdown:
+              drawdown_amount, drawdown_rate = calculate_drawdown(
+                  final_eval, peak_eval
+              )
+            else:
+              drawdown_amount = drawdown_rate = np.nan
 
             final_bj_year_profit = (
                 sub['BJ 올해 누적손익'].iloc[-1]
@@ -3937,35 +3925,6 @@ if menu in (
                     })
                     .copy()
                 )
-                holding_history = history_eval_df[
-                    history_eval_df['category4'] == selected_category
-                ]
-                holding_peaks = (
-                    holding_history.groupby(
-                        ['Date', 'item_name'], dropna=False
-                    )['_history_eval']
-                    .sum()
-                    .groupby(level=1, dropna=False)
-                    .max()
-                    if not holding_history.empty
-                    else pd.Series(dtype=float)
-                )
-                holdings_summary['_all_time_peak'] = holdings_summary[
-                    '보유종목'
-                ].map(holding_peaks)
-                valid_drawdown = (
-                    (holdings_summary['최종 기말 평가 금액 (원)'] > 0)
-                    & (holdings_summary['_all_time_peak'] > 0)
-                )
-                holdings_summary['고점 대비 하락 금액 (원)'] = (
-                    holdings_summary['최종 기말 평가 금액 (원)']
-                    - holdings_summary['_all_time_peak']
-                ).where(valid_drawdown)
-                holdings_summary['고점 대비 하락률 (%)'] = (
-                    holdings_summary['고점 대비 하락 금액 (원)']
-                    / holdings_summary['_all_time_peak']
-                    * 100
-                ).where(valid_drawdown)
                 holdings_summary['점유율 (%)'] = np.where(
                     total_eval_sum > 0,
                     holdings_summary['최종 기말 평가 금액 (원)']
@@ -3983,8 +3942,6 @@ if menu in (
                         '최종 기말 평가 금액 (원)',
                         '점유율 (%)',
                         '선택구간 누적 수익률 (%)',
-                        '고점 대비 하락 금액 (원)',
-                        '고점 대비 하락률 (%)',
                     ]
                 ]
                 holdings_summary_table, holdings_column_config = (
@@ -4802,6 +4759,9 @@ if menu in (
             .groupby(level=1, dropna=False)
             .max()
         )
+        report_total_peak = (
+            agg_whose_summary.groupby('Date')['총평가금액'].sum().max()
+        )
         history_whose_peaks = pd.concat(
             [
                 history_whose_peaks.rename('history'),
@@ -4809,9 +4769,6 @@ if menu in (
             ],
             axis=1,
         ).max(axis=1)
-        report_total_peak = (
-            agg_whose_summary.groupby('Date')['총평가금액'].sum().max()
-        )
         history_total_peak = pd.Series(
             [history_total_peak, report_total_peak], dtype=float
         ).max()
@@ -4924,8 +4881,8 @@ if menu in (
         )
         st.caption(
             '합산 수익률은 기간별 수익손익과 기준액을 합산해 복리 계산합니다. '
-            '고점 대비 하락은 저장된 전체 기간의 최고 평가액과 선택한 종료일 '
-            '평가액을 비교합니다.'
+            '고점대비 하락은 WHOSE별 및 전체 합산 행에 표시하며, 저장된 기간의 최고 '
+            '일별 평가액과 종료일 평가액을 입출금 보정 없이 비교합니다.'
         )
         st.dataframe(
             whose_summary_table,
