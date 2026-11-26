@@ -1054,6 +1054,188 @@ def render_resizable_plotly_chart(
   return st.plotly_chart(fig, **chart_options)
 
 
+def get_trend_display_dates(start_date, end_date, frequency):
+  date_range = pd.date_range(start=start_date, end=end_date)
+  if frequency == '일간 (주말 제외)':
+    display_dates = date_range[date_range.dayofweek < 5]
+  elif frequency == '주간 (매주 토요일)':
+    display_dates = date_range[date_range.dayofweek == 5]
+  elif frequency == '월간 (매달 말일)':
+    display_dates = date_range[date_range.is_month_end]
+  elif frequency == '연간 (매년 말일)':
+    display_dates = date_range[date_range.is_year_end]
+  else:
+    display_dates = date_range
+  return pd.DatetimeIndex(
+      sorted(set(display_dates).union({pd.Timestamp(end_date)}))
+  )
+
+
+def resample_trend_chart_data(calc_df, frequency, start_date, end_date):
+  if calc_df.empty or frequency == '일간 (매일)':
+    return calc_df.copy()
+
+  display_dates = get_trend_display_dates(start_date, end_date, frequency)
+  if display_dates.empty:
+    return calc_df.iloc[0:0].copy()
+
+  source = calc_df.copy()
+  source_dates = pd.to_datetime(source['Date'], errors='coerce').dt.normalize()
+  valid_dates = source_dates.notna().to_numpy()
+  target_positions = np.zeros(len(source), dtype=int)
+  target_positions[valid_dates] = display_dates.searchsorted(
+      source_dates[valid_dates], side='left'
+  )
+  valid_rows = valid_dates & (target_positions < len(display_dates))
+  source = source.iloc[np.flatnonzero(valid_rows)].copy()
+  source['_display_end'] = display_dates.take(
+      target_positions[valid_rows]
+  ).strftime('%Y-%m-%d')
+
+  identity_columns = [
+      column for column in [
+          'account_num',
+          'broker',
+          'account_type',
+          'category1',
+          'category2',
+          'category3',
+          'category4',
+          'item_name',
+          'whose',
+      ]
+      if column in source.columns
+  ]
+  period_keys = identity_columns + ['_display_end']
+  sum_columns = [
+      column for column in [
+          '주기별 평가손익',
+          '주기별 평가손익_ex_fx',
+          '주기별 평가손익_bj_ex_fx',
+      ]
+      if column in source.columns
+  ]
+  groupby_options = {'dropna': False}
+  period_metrics = source.groupby(
+      period_keys, **groupby_options
+  )[sum_columns].sum(min_count=1).reset_index()
+
+  def compound_return(values):
+    numeric_values = pd.to_numeric(values, errors='coerce').dropna()
+    if numeric_values.empty:
+      return np.nan
+    return ((1 + numeric_values / 100).prod() - 1) * 100
+
+  if '주기별 수익률' in source.columns:
+    period_returns = (
+        source.groupby(period_keys, **groupby_options)['주기별 수익률']
+        .agg(compound_return)
+        .reset_index(name='_period_return')
+    )
+    period_metrics = period_metrics.merge(
+        period_returns, on=period_keys, how='left'
+    )
+
+  display_df = (
+      source.sort_values('Date')
+      .groupby(period_keys, **groupby_options)
+      .tail(1)
+      .merge(period_metrics, on=period_keys, how='left', suffixes=('', '_period'))
+  )
+  for column in sum_columns:
+    period_column = f'{column}_period'
+    if period_column in display_df.columns:
+      display_df[column] = display_df[period_column]
+      display_df = display_df.drop(columns=period_column)
+  if '_period_return' in display_df.columns:
+    display_df['주기별 수익률'] = display_df['_period_return']
+    display_df = display_df.drop(columns='_period_return')
+
+  account_profit_base_pairs = [
+      ('계좌기준_주기손익', '계좌기준_주기기준액'),
+      ('계좌기준_주기손익_ex_fx', '계좌기준_주기기준액_ex_fx'),
+  ]
+  account_profit_base_pairs = [
+      pair for pair in account_profit_base_pairs
+      if pair[0] in source.columns and pair[1] in source.columns
+  ]
+  if account_profit_base_pairs and 'account_num' in source.columns:
+    account_source = source.drop_duplicates(
+        subset=['Date', 'account_num']
+    )
+    account_period_records = []
+    for (account_num, display_end), account_period in account_source.groupby(
+        ['account_num', '_display_end'], **groupby_options
+    ):
+      record = {
+          'account_num': account_num,
+          '_display_end': display_end,
+      }
+      for profit_column, base_column in account_profit_base_pairs:
+        profits = pd.to_numeric(
+            account_period[profit_column], errors='coerce'
+        )
+        bases = pd.to_numeric(
+            account_period[base_column], errors='coerce'
+        )
+        period_profit = profits.sum(min_count=1)
+        daily_returns = (profits / bases * 100).where(bases > 0)
+        period_return = compound_return(daily_returns)
+        valid_bases = bases[bases > 0]
+        period_base = (
+            period_profit / (period_return / 100)
+            if pd.notna(period_profit)
+            and pd.notna(period_return)
+            and abs(period_return) > 1e-12
+            else valid_bases.iloc[0] if not valid_bases.empty else np.nan
+        )
+        record[profit_column] = period_profit
+        record[base_column] = period_base
+      account_period_records.append(record)
+
+    account_period_metrics = pd.DataFrame(account_period_records)
+    if not account_period_metrics.empty:
+      display_df = display_df.merge(
+          account_period_metrics,
+          on=['account_num', '_display_end'],
+          how='left',
+          suffixes=('', '_period'),
+      )
+      for profit_column, base_column in account_profit_base_pairs:
+        for column in (profit_column, base_column):
+          period_column = f'{column}_period'
+          if period_column in display_df.columns:
+            display_df[column] = display_df[period_column]
+            display_df = display_df.drop(columns=period_column)
+
+  display_df['Date'] = display_df['_display_end']
+  return display_df.drop(columns='_display_end').reset_index(drop=True)
+
+
+def resample_trend_benchmarks(bm_calc_dict, frequency, start_date, end_date):
+  display_dates = get_trend_display_dates(start_date, end_date, frequency)
+  display_date_strings = set(display_dates.strftime('%Y-%m-%d'))
+  resampled = {}
+  for benchmark, benchmark_df in bm_calc_dict.items():
+    if benchmark_df.empty:
+      resampled[benchmark] = benchmark_df.copy()
+      continue
+    benchmark_df = benchmark_df.copy()
+    benchmark_df = benchmark_df[
+        benchmark_df['Date_str'].isin(display_date_strings)
+    ].copy()
+    benchmark_df['주기별 수익률'] = benchmark_df['Close'].pct_change() * 100
+    valid_prices = benchmark_df['Close'].dropna()
+    initial_price = valid_prices.iloc[0] if not valid_prices.empty else 0
+    benchmark_df['기간 누적 수익률'] = np.where(
+        initial_price > 0,
+        ((benchmark_df['Close'] - initial_price) / initial_price) * 100,
+        0,
+    )
+    resampled[benchmark] = benchmark_df.reset_index(drop=True)
+  return resampled
+
+
 def save_daily_eval_item_color(item_name, color_widget_key):
   item_colors = st.session_state.get(
       'daily_eval_shared_item_colors', {}
@@ -2046,6 +2228,12 @@ if menu in (
         '월간 (매달 말일)',
         '연간 (매년 말일)',
     ]
+    saved_freq = st.session_state.get(
+        'trend_freq_str', '일간 (주말 제외)'
+    )
+    if saved_freq not in freq_options:
+      saved_freq = '일간 (주말 제외)'
+    st.session_state['trend_freq_str'] = saved_freq
     bm_options = ['미국 SPY', '미국 QQQ', '한국 KOSPI', 'KRW/USD 환율']
 
     all_view_types = [
@@ -2231,6 +2419,7 @@ if menu in (
     )
     st.session_state['_query_condition_restore_pending'] = False
 
+    option_freq = '일간 (매일)'
     with st.container():
       if menu == 'SUMMARY':
         st.info(
@@ -2239,7 +2428,6 @@ if menu in (
         )
         view_types = st.session_state.get('trend_view_types', all_view_types)
         selected_bm = list(summary_benchmark_map)
-        option_freq = '일간 (매일)'
       else:
         st.session_state.setdefault('trend_view_types', all_view_types)
         saved_benchmarks = st.session_state.get(
@@ -2253,9 +2441,7 @@ if menu in (
         if not trend_benchmark_default:
           trend_benchmark_default = bm_options
         st.session_state['trend_sel_bm'] = trend_benchmark_default
-        f_col1, f_col2 = st.columns([3, 3])
-
-        with f_col1:
+        with st.container():
           view_types = st.multiselect(
               '표시할 트렌드 관점 선택',
               options=all_view_types,
@@ -2266,19 +2452,6 @@ if menu in (
               options=bm_options,
               key='trend_sel_bm',
               help='선택한 벤치마크 지수의 수익률 트렌드가 표시됩니다.',
-          )
-
-        with f_col2:
-          saved_freq = st.session_state.get(
-              'trend_freq_str', '일간 (주말 제외)'
-          )
-          if saved_freq not in freq_options:
-            saved_freq = '일간 (주말 제외)'
-          st.session_state['trend_freq_str'] = saved_freq
-          option_freq = st.selectbox(
-              '트렌드 주기 선택',
-              options=freq_options,
-              key='trend_freq_str',
           )
 
       d_col1, d_col2 = st.columns(2)
@@ -2344,7 +2517,9 @@ if menu in (
               'accounts': list(selected_acc_labels),
               'view_types': list(view_types),
               'benchmarks': list(selected_bm),
-              'frequency': option_freq,
+              'frequency': st.session_state.get(
+                  'trend_freq_str', '일간 (주말 제외)'
+              ),
               'start_date': start_date.isoformat(),
               'end_date': end_date.isoformat(),
           },
@@ -2375,16 +2550,8 @@ if menu in (
 
       if menu == 'SUMMARY':
         target_dates = pd.DatetimeIndex([pd.Timestamp(end_date)])
-      elif option_freq == '일간 (매일)':
-        target_dates = full_date_range
-      elif option_freq == '일간 (주말 제외)':
-        target_dates = full_date_range[full_date_range.dayofweek < 5]
-      elif option_freq == '주간 (매주 토요일)':
-        target_dates = full_date_range[full_date_range.dayofweek == 5]
-      elif option_freq == '월간 (매달 말일)':
-        target_dates = full_date_range[full_date_range.is_month_end]
       else:
-        target_dates = full_date_range[full_date_range.is_year_end]
+        target_dates = full_date_range
 
       target_dates = pd.DatetimeIndex(
           sorted(list(set(target_dates).union({pd.to_datetime(end_date)})))
@@ -3067,6 +3234,8 @@ if menu in (
             trend_index_drawdown_rates
         )
       st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
+      if result_prefix == 'trend':
+        st.session_state['trend_calc_is_daily'] = True
       st.session_state[f'{result_prefix}_history_eval_df'] = pd.DataFrame(
           history_eval_records
       )
@@ -3100,6 +3269,34 @@ if menu in (
     ):
       calc_df = st.session_state['trend_calc_df']
       bm_calc_dict = st.session_state.get('trend_bm_calc', {})
+      if st.session_state.get('trend_calc_is_daily', False):
+        display_frequency = st.selectbox(
+            '차트 표시 주기 (계산된 데이터에서 변경 · 재조회 없음)',
+            options=freq_options,
+            key='trend_freq_str',
+            help='계산 시 저장한 일간 데이터를 사용합니다. 주기를 바꿔도 시세를 다시 조회하지 않습니다.',
+        )
+        calc_start_date = st.session_state.get(
+            'trend_start_date', start_date
+        )
+        calc_end_date = st.session_state.get('trend_end_date', end_date)
+        calc_df = resample_trend_chart_data(
+            calc_df,
+            display_frequency,
+            calc_start_date,
+            calc_end_date,
+        )
+        bm_calc_dict = resample_trend_benchmarks(
+            bm_calc_dict,
+            display_frequency,
+            calc_start_date,
+            calc_end_date,
+        )
+      else:
+        st.info(
+            '이전 계산 결과에는 일간 원본이 저장되어 있지 않습니다. '
+            '주기 변경 기능을 사용하려면 데이터 계산을 한 번 다시 실행해 주세요.'
+        )
       active_views = st.session_state.get('trend_view_types', all_view_types)
 
       layout_setting = '1열 (기존 세로 배치)'
