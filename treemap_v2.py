@@ -24,6 +24,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+TREEMAP_COMPONENT = components.declare_component(
+    "portfolio_clickable_treemap",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "treemap_component"),
+)
+
 # ---------------------------------------------------------
 # DB 및 백업 설정
 # ---------------------------------------------------------
@@ -635,44 +640,12 @@ def render_clickable_treemap(fig, chart_nodes, height=700):
             f"{quote(ticker, safe='.-^=')}/chart/"
         )
 
-    figure_json = json.dumps(
-        json.loads(fig.to_json()), ensure_ascii=False
-    ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    ticker_urls_json = json.dumps(
-        ticker_urls, ensure_ascii=False
-    ).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    html_doc = """
-<!doctype html>
-<html>
-<head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <style>
-    html, body, #treemap { width: 100%; height: 100%; margin: 0; }
-  </style>
-</head>
-<body>
-  <div id="treemap"></div>
-  <script>
-    const figure = """ + figure_json + """;
-    const tickerUrls = """ + ticker_urls_json + """;
-    const chart = document.getElementById("treemap");
-    Plotly.newPlot(chart, figure.data, figure.layout, {
-      responsive: true,
-      displayModeBar: false
-    }).then(() => {
-      chart.on("plotly_click", (event) => {
-        const point = event.points && event.points[0];
-        const url = point && tickerUrls[point.id];
-        if (url) window.open(url, "_blank", "noopener,noreferrer");
-      });
-      new ResizeObserver(() => Plotly.Plots.resize(chart)).observe(chart);
-    });
-  </script>
-</body>
-</html>
-"""
-    components.html(html_doc, height=height, scrolling=False)
+    return TREEMAP_COMPONENT(
+        figure=json.loads(fig.to_json()),
+        ticker_urls=ticker_urls,
+        height=height,
+        key="portfolio_clickable_treemap",
+    )
 
 
 # ---------------------------------------------------------
@@ -1903,6 +1876,27 @@ if menu == "자산 입력 및 관리":
 # 메뉴 2: 일별/시점별 보유 현황 분석
 # ---------------------------------------------------------
 elif menu == "일별/시점별 보유 현황 분석":
+    chart_click = st.session_state.get("portfolio_clickable_treemap")
+    if isinstance(chart_click, dict):
+        click_event_id = chart_click.get("event_id")
+        last_click_state_key = "_treemap_last_processed_chart_click"
+        if (
+            click_event_id
+            and click_event_id != st.session_state.get(last_click_state_key)
+        ):
+            st.session_state[last_click_state_key] = click_event_id
+            clicked_node_id = chart_click.get("id")
+            if clicked_node_id == "Root":
+                clicked_drill_path = "🌐 전체 (Root - 100% 점유)"
+            else:
+                clicked_drill_path = st.session_state.get(
+                    "_treemap_chart_drilldown_paths", {}
+                ).get(clicked_node_id)
+            if clicked_drill_path:
+                st.session_state["treemap_drilldown_selector"] = (
+                    clicked_drill_path
+                )
+
     st.header("🔍 시점별 자산 보유 현황")
     conn = get_connection()
     try:
@@ -2431,17 +2425,21 @@ elif menu == "일별/시점별 보유 현황 분석":
             col_drill1, col_drill2 = st.columns([2.5, 1.5])
             with col_drill1:
                 selected_drill_path = st.selectbox(
-                    "🔍 TREEMAP 계층 드릴다운 / 하위 분류 화면 선택 (상단 표 100% 점유 연동)",
+                    "🔍 TREEMAP 계층 드릴다운 / 하위 분류 화면 선택 (그림에서 타일 클릭 가능)",
                     options=path_options,
                     key="treemap_drilldown_selector"
                 )
             with col_drill2:
-                st.caption("💡 특정 하위 분류를 선택하면 해당 분류의 총액을 100% 점유율로 자동 계산하여 상단 표와 Treemap이 완벽하게 연동됩니다.")
+                st.caption(
+                    "💡 그림의 타일을 클릭하면 해당 범위가 100% 기준으로 다시 계산됩니다. "
+                    "보유 종목의 Yahoo Finance 차트는 Ctrl/⌘+클릭으로 열 수 있습니다."
+                )
 
             if selected_drill_path == "🌐 전체 (Root - 100% 점유)":
                 filtered_df = sub_df.copy()
                 view_root_label = "🌐 전체 총합"
                 active_group_cols = group_cols
+                drilldown_prefix_parts = []
             else:
                 path_parts = [p.strip() for p in selected_drill_path.split(">")]
                 filter_mask = pd.Series(True, index=sub_df.index)
@@ -2451,6 +2449,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 filtered_df = sub_df[filter_mask].copy()
                 view_root_label = f"🎯 [{selected_drill_path}] 총합"
                 active_group_cols = group_cols[len(path_parts):]
+                drilldown_prefix_parts = path_parts
 
             active_total_eval = filtered_df["평가액(원)"].sum()
 
@@ -2589,9 +2588,11 @@ elif menu == "일별/시점별 보유 현황 분석":
                 for idx_row, row in filtered_df.iterrows():
                     current_parent = "Root"
                     current_id_path = ""
+                    current_path_parts = []
                     
                     for depth, col in enumerate(active_group_cols):
                         val_str = str(row[col])
+                        current_path_parts.append(val_str)
                         current_id_path = f"{current_id_path} > {val_str}" if current_id_path else val_str
                         
                         if current_id_path not in built_nodes:
@@ -2660,6 +2661,12 @@ elif menu == "일별/시점별 보유 현황 분석":
                                 else 0.0
                             )
                             custom_shares.append(group_share)
+                            chart_node = treemap_chart_nodes.setdefault(
+                                current_id_path, {}
+                            )
+                            chart_node["drilldown_path"] = " > ".join(
+                                drilldown_prefix_parts + current_path_parts
+                            )
                             if depth == len(active_group_cols) - 1:
                                 leaf_tickers = (
                                     sub_grp["formatted_ticker"]
@@ -2675,7 +2682,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                                     .unique()
                                     .tolist()
                                 )
-                                treemap_chart_nodes[current_id_path] = {
+                                chart_node.update({
                                     "label": val_str,
                                     "ticker": (
                                         leaf_tickers[0]
@@ -2687,7 +2694,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                                         if len(leaf_currencies) == 1
                                         else None
                                     ),
-                                }
+                                })
 
                         current_parent = current_id_path
 
@@ -2778,10 +2785,42 @@ elif menu == "일별/시점별 보유 현황 분석":
             )
 
             st.caption(
-                "보유 종목 타일을 클릭하면 Yahoo Finance 차트가 새 탭에서 열립니다. "
-                "분류 타일 또는 실제 시장 티커가 없는 항목은 열리지 않습니다."
+                "타일 클릭 시 해당 범위가 100% 기준으로 다시 계산됩니다. "
+                "보유 종목의 Yahoo Finance 차트는 Ctrl/⌘+클릭으로 열 수 있습니다."
             )
-            render_clickable_treemap(fig_treemap, treemap_chart_nodes)
+            st.session_state["_treemap_chart_drilldown_paths"] = {
+                node_id: node["drilldown_path"]
+                for node_id, node in treemap_chart_nodes.items()
+            }
+            chart_click = render_clickable_treemap(
+                fig_treemap, treemap_chart_nodes
+            )
+            if isinstance(chart_click, dict):
+                click_event_id = chart_click.get("event_id")
+                last_click_state_key = "_treemap_last_processed_chart_click"
+                if (
+                    click_event_id
+                    and click_event_id
+                    != st.session_state.get(last_click_state_key)
+                ):
+                    st.session_state[last_click_state_key] = click_event_id
+                    clicked_node_id = chart_click.get("id")
+                    if clicked_node_id == "Root":
+                        clicked_drill_path = path_options[0]
+                    else:
+                        clicked_drill_path = (
+                            treemap_chart_nodes.get(clicked_node_id, {}).get(
+                                "drilldown_path"
+                            )
+                        )
+                    if (
+                        clicked_drill_path in path_options
+                        and clicked_drill_path != selected_drill_path
+                    ):
+                        st.session_state["treemap_drilldown_selector"] = (
+                            clicked_drill_path
+                        )
+                        st.rerun()
 
             treemap_preferences = load_treemap_user_preferences(
                 logged_in_username
