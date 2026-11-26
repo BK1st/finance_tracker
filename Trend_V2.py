@@ -1163,6 +1163,15 @@ def calculate_drawdown(current_value, peak_value):
   return amount, amount / peak_value * 100
 
 
+def calculate_price_drawdown_rate(prices):
+  valid_prices = pd.to_numeric(prices, errors='coerce').dropna()
+  if valid_prices.empty:
+    return np.nan
+  return calculate_drawdown(
+      float(valid_prices.iloc[-1]), float(valid_prices.max())
+  )[1]
+
+
 def style_trend_report_table(table):
   numeric_columns = table.select_dtypes(include='number').columns
   column_config = {}
@@ -1419,6 +1428,23 @@ def render_summary_page(
     end_price = float(end_prices.iloc[-1]['Close'])
     return (end_price / start_price - 1) * 100 if start_price > 0 else np.nan
 
+  def benchmark_drawdown_rate(label):
+    prices = benchmark_data.get(label)
+    if prices is None or prices.empty:
+      return np.nan
+    price_data = prices.copy()
+    price_data['Date'] = pd.to_datetime(
+        price_data['Date_str'], errors='coerce'
+    ).dt.normalize()
+    price_data['Close'] = pd.to_numeric(
+        price_data['Close'], errors='coerce'
+    )
+    price_data = price_data.dropna(subset=['Date', 'Close']).sort_values('Date')
+    price_data = price_data[
+        price_data['Date'] <= pd.Timestamp(as_of_date).normalize()
+    ]
+    return calculate_price_drawdown_rate(price_data['Close'])
+
   layout_columns = st.selectbox(
       '표 Layout 열 수 (조회된 데이터에 적용)',
       options=[1, 2, 3],
@@ -1574,7 +1600,9 @@ def render_summary_page(
         }
         if show_drawdown:
           row['고점 대비 하락 금액 (원)'] = np.nan
-          row['고점 대비 하락률 (%)'] = np.nan
+          row['고점 대비 하락률 (%)'] = benchmark_drawdown_rate(
+              benchmark_label
+          )
         for period_label, period_start, period_end in period_windows:
           row[f'평가손익 ({period_label}) (원)'] = np.nan
           row[f'수익률 ({period_label}) (%)'] = benchmark_return(
@@ -3006,15 +3034,23 @@ if menu in (
           bm_calc_dict[bm_label] = bm_df
 
       trend_index_returns = {}
+      trend_index_drawdown_rates = {}
       if menu != 'SUMMARY':
         for benchmark_label, ticker in summary_benchmark_map.items():
           index_return = np.nan
+          drawdown_rate = np.nan
           if ticker in market_data.columns and not market_data.empty:
             prices = pd.to_numeric(
                 market_data[ticker], errors='coerce'
             ).dropna().sort_index()
             start_price = prices.asof(pd.Timestamp(start_date))
             end_price = prices.asof(pd.Timestamp(end_date))
+            prices_through_end = prices[
+                prices.index <= pd.Timestamp(end_date)
+            ]
+            drawdown_rate = calculate_price_drawdown_rate(
+                prices_through_end
+            )
             if (
                 pd.notna(start_price)
                 and pd.notna(end_price)
@@ -3022,10 +3058,14 @@ if menu in (
             ):
               index_return = (end_price / start_price - 1) * 100
           trend_index_returns[benchmark_label] = index_return
+          trend_index_drawdown_rates[benchmark_label] = drawdown_rate
 
       result_prefix = 'summary' if menu == 'SUMMARY' else 'trend'
       if result_prefix == 'trend':
         st.session_state['trend_index_returns'] = trend_index_returns
+        st.session_state['trend_index_drawdown_rates'] = (
+            trend_index_drawdown_rates
+        )
       st.session_state[f'{result_prefix}_calc_df'] = pd.DataFrame(base_records)
       st.session_state[f'{result_prefix}_history_eval_df'] = pd.DataFrame(
           history_eval_records
@@ -3810,16 +3850,19 @@ if menu in (
         for benchmark_label, benchmark_return in st.session_state.get(
             'trend_index_returns', {}
         ).items():
-          summary_table_data.append({
+          benchmark_row = {
               prefix: benchmark_label,
               '선택구간 누적 평가 손익 (원)': np.nan,
               '최종 기말 평가 금액 (원)': np.nan,
               '점유율 (%)': np.nan,
               '선택구간 누적 수익률 (%)': benchmark_return,
-          })
+          }
           if show_group_drawdown:
-            summary_table_data[-1]['고점 대비 하락 금액 (원)'] = np.nan
-            summary_table_data[-1]['고점 대비 하락률 (%)'] = np.nan
+            benchmark_row['고점 대비 하락 금액 (원)'] = np.nan
+            benchmark_row['고점 대비 하락률 (%)'] = st.session_state.get(
+                'trend_index_drawdown_rates', {}
+            ).get(benchmark_label, np.nan)
+          summary_table_data.append(benchmark_row)
 
         total_ret = calculate_combined_cumulative_return(grp_agg_summary)
         total_summary_row = {
@@ -4842,7 +4885,9 @@ if menu in (
               '점유율 (%)': np.nan,
               '선택구간 누적 수익률 (%)': benchmark_return,
               '고점 대비 하락 금액 (원)': np.nan,
-              '고점 대비 하락률 (%)': np.nan,
+              '고점 대비 하락률 (%)': st.session_state.get(
+                  'trend_index_drawdown_rates', {}
+              ).get(benchmark_label, np.nan),
               bj_year_profit_label: np.nan,
               bj_year_return_label: np.nan,
           })
