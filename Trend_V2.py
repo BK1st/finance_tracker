@@ -3377,6 +3377,67 @@ if menu in (
 
           st.write('---')
 
+        category4_holdings_by_date = {}
+        if group_col == 'category4':
+          holdings_source = raw_df.copy()
+          holdings_source['_chart_date'] = pd.to_datetime(
+              holdings_source['Date'], errors='coerce'
+          ).dt.strftime('%Y-%m-%d')
+          holdings_source['총평가금액'] = pd.to_numeric(
+              holdings_source['총평가금액'], errors='coerce'
+          )
+          holdings_source = holdings_source[
+              holdings_source['총평가금액'].gt(0)
+              & ~holdings_source['item_name']
+              .astype(str)
+              .str.contains('현금', na=False)
+          ].dropna(subset=['_chart_date', 'category4', 'item_name'])
+          holding_values = (
+              holdings_source.groupby(
+                  ['_chart_date', 'category4', 'item_name'],
+                  dropna=False,
+              )['총평가금액']
+              .sum()
+              .reset_index()
+          )
+          for (chart_date, category), category_holdings in (
+              holding_values.groupby(
+                  ['_chart_date', 'category4'], dropna=False
+              )
+          ):
+            category_holdings = category_holdings.sort_values(
+                '총평가금액', ascending=False
+            )
+            item_lines = [
+                f"{row['item_name']} ({row['총평가금액']:,.0f}원)"
+                for _, row in category_holdings.head(12).iterrows()
+            ]
+            remaining_count = len(category_holdings) - len(item_lines)
+            if remaining_count:
+              item_lines.append(f'외 {remaining_count}종')
+            category4_holdings_by_date[(chart_date, category)] = (
+                '<br>'.join(item_lines)
+            )
+
+        def category4_hover_values(chart_dates, category):
+          if group_col != 'category4':
+            return None
+          return [
+              category4_holdings_by_date.get(
+                  (chart_date, category), '해당 날짜 보유 종목 없음'
+              )
+              for chart_date in chart_dates
+          ]
+
+        def category4_hovertemplate(default_template, category):
+          if group_col != 'category4':
+            return default_template
+          return (
+              f'<b>{category}</b><br>%{{x}}<br>{default_template}'
+              '<br><b>보유 종목 (평가액 상위 12)</b>'
+              '<br>%{customdata}<extra></extra>'
+          )
+
         def get_grp_agg(use_ex_fx):
           df_curr = raw_df.copy()
           if use_ex_fx and '원금_ex_fx' in df_curr.columns:
@@ -4229,7 +4290,12 @@ if menu in (
                   y=sub['선택구간 누적손익'],
                   name=f'{grp}',
                   mode='lines+markers',
-                  hovertemplate='%{y:,.0f} 원',
+                  customdata=category4_hover_values(
+                      sub['Chart_Date'], grp
+                  ),
+                  hovertemplate=category4_hovertemplate(
+                      '%{y:,.0f} 원', grp
+                  ),
               )
           )
 
@@ -4267,7 +4333,16 @@ if menu in (
           )
           fig_period_p.add_trace(
               go.Bar(
-                  x=sub['Chart_Date'], y=sub['주기별 평가손익'], name=str(grp)
+                  x=sub['Chart_Date'],
+                  y=sub['주기별 평가손익'],
+                  name=str(grp),
+                  customdata=category4_hover_values(
+                      sub['Chart_Date'], grp
+                  ),
+                  hovertemplate=(
+                      category4_hovertemplate('%{y:,.0f} 원', grp)
+                      if group_col == 'category4' else None
+                  ),
               )
           )
 
@@ -4310,7 +4385,12 @@ if menu in (
                   x=sub['Chart_Date'],
                   y=sub['주기별 수익률'],
                   name=str(grp),
-                  hovertemplate='%{y:.2f}%',
+                  customdata=category4_hover_values(
+                      sub['Chart_Date'], grp
+                  ),
+                  hovertemplate=category4_hovertemplate(
+                      '%{y:.2f}%', grp
+                  ),
               )
           )
 
@@ -4375,7 +4455,12 @@ if menu in (
                   y=sub['선택구간 누적손익'],
                   name=f'[손익] {grp}',
                   opacity=0.7,
-                  hovertemplate='%{y:,.0f} 원',
+                  customdata=category4_hover_values(
+                      sub['Chart_Date'], grp
+                  ),
+                  hovertemplate=category4_hovertemplate(
+                      '%{y:,.0f} 원', grp
+                  ),
               ),
               secondary_y=True,
           )
@@ -4388,7 +4473,12 @@ if menu in (
                   y=sub['선택기간 누적 수익률'],
                   name=f'[수익률] {grp}',
                   mode='lines+markers',
-                  hovertemplate='%{y:.2f}%',
+                  customdata=category4_hover_values(
+                      sub['Chart_Date'], grp
+                  ),
+                  hovertemplate=category4_hovertemplate(
+                      '%{y:.2f}%', grp
+                  ),
               ),
               secondary_y=False,
           )
