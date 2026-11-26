@@ -1047,6 +1047,7 @@ TREND_FREQUENCY_OPTIONS = [
 def render_resizable_plotly_chart(
     fig, key, on_select=None, selection_mode=None
 ):
+  frequency = None
   if (
       st.session_state.get('trend_calc_is_daily', False)
       and get_plotly_date_range(fig) is not None
@@ -1061,7 +1062,10 @@ def render_resizable_plotly_chart(
         options=TREND_FREQUENCY_OPTIONS,
         index=TREND_FREQUENCY_OPTIONS.index(default_frequency),
         key=f'{key}_display_frequency',
-        help='이 차트의 표시 주기만 바꾸며, 계산 데이터는 다시 조회하지 않습니다.',
+        help=(
+            '이 차트의 표시 주기만 바꿉니다. 데이터 점을 클릭하면 '
+            '해당 그룹의 보유종목별 손익 또는 수익률을 볼 수 있습니다.'
+        ),
     )
     if frequency != '일간 (매일)':
       query_start = st.session_state.get('trend_start_date')
@@ -1072,6 +1076,14 @@ def render_resizable_plotly_chart(
           fig, frequency, query_start, query_end
       )
 
+  has_item_details = (
+      frequency is not None
+      and any(
+          isinstance(trace.meta, dict)
+          and 'item_detail_group_col' in trace.meta
+          for trace in fig.data
+      )
+  )
   chart_options = {
       'use_container_width': True,
       'key': key,
@@ -1081,11 +1093,19 @@ def render_resizable_plotly_chart(
           'displaylogo': False,
       },
   }
-  if on_select is not None:
+  if has_item_details:
+    chart_options['on_select'] = 'rerun'
+    chart_options['selection_mode'] = 'points'
+  elif on_select is not None:
     chart_options['on_select'] = on_select
-  if selection_mode is not None:
+  if not has_item_details and selection_mode is not None:
     chart_options['selection_mode'] = selection_mode
-  return st.plotly_chart(fig, **chart_options)
+  chart_event = st.plotly_chart(fig, **chart_options)
+  if has_item_details:
+    show_item_details_for_chart_point(
+        fig, chart_event, frequency
+    )
+  return chart_event
 
 
 def get_trend_display_dates(start_date, end_date, frequency):
@@ -1232,6 +1252,241 @@ def resample_plotly_figure(fig, frequency, start_date, end_date):
       categoryorder='array', categoryarray=display_labels
   )
   return figure
+
+
+def create_item_detail_meta(group_col, group_value, metric, use_ex_fx=False):
+  if group_col not in {
+      'whose', 'account_num', 'account_type', 'category2', 'category4'
+  }:
+    return None
+  return {
+      'item_detail_group_col': group_col,
+      'item_detail_group_value': str(group_value),
+      'item_detail_metric': metric,
+      'item_detail_use_ex_fx': bool(use_ex_fx),
+  }
+
+
+def show_item_details_for_chart_point(fig, chart_event, frequency):
+  if chart_event is None:
+    return
+  selection = getattr(chart_event, 'selection', None)
+  points = getattr(selection, 'points', [])
+  if not points:
+    return
+
+  raw_df = st.session_state.get('trend_calc_df')
+  if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+    return
+
+  for point in reversed(points):
+    try:
+      curve_number = int(point.get('curve_number'))
+    except (TypeError, ValueError):
+      continue
+    if not 0 <= curve_number < len(fig.data):
+      continue
+    trace = fig.data[curve_number]
+    metadata = trace.meta
+    if not isinstance(metadata, dict):
+      continue
+
+    selected_date_value = point.get('x')
+    if selected_date_value is None:
+      try:
+        point_index = int(
+            point.get('point_index', point.get('point_number'))
+        )
+      except (TypeError, ValueError):
+        continue
+      trace_dates = list(trace.x) if trace.x is not None else []
+      if not 0 <= point_index < len(trace_dates):
+        continue
+      selected_date_value = trace_dates[point_index]
+    try:
+      selected_date = pd.Timestamp(selected_date_value).normalize()
+    except (TypeError, ValueError):
+      continue
+
+    group_col = metadata['item_detail_group_col']
+    if group_col not in raw_df.columns:
+      continue
+    group_value = metadata['item_detail_group_value']
+    group_rows = raw_df[
+        raw_df[group_col].astype(str) == group_value
+    ].copy()
+    if group_rows.empty:
+      continue
+
+    start_date = st.session_state.get('trend_start_date')
+    end_date = st.session_state.get('trend_end_date')
+    if start_date is None or end_date is None:
+      date_range = get_plotly_date_range(fig)
+      if date_range is None:
+        continue
+      start_date, end_date = date_range
+    start_timestamp = pd.Timestamp(start_date).normalize()
+    end_timestamp = pd.Timestamp(end_date).normalize()
+    display_dates = get_trend_display_dates(
+        start_timestamp, end_timestamp, frequency
+    )
+    display_index = display_dates.get_indexer([selected_date])[0]
+    if display_index < 0:
+      display_index = int(
+          display_dates.searchsorted(selected_date, side='left')
+      )
+      display_index = min(display_index, len(display_dates) - 1)
+      selected_date = display_dates[display_index]
+    period_start = (
+        display_dates[display_index - 1]
+        if display_index > 0
+        else start_timestamp - pd.Timedelta(days=1)
+    )
+
+    group_rows['_detail_date'] = pd.to_datetime(
+        group_rows['Date'], errors='coerce'
+    ).dt.normalize()
+    group_rows['총평가금액'] = pd.to_numeric(
+        group_rows['총평가금액'], errors='coerce'
+    )
+    if metadata.get('item_detail_use_ex_fx', False):
+      period_profit_column = (
+          '주기별 평가손익_ex_fx'
+          if '주기별 평가손익_ex_fx' in group_rows.columns
+          else '주기별 평가손익'
+      )
+      group_rows['_detail_period_profit'] = pd.to_numeric(
+          group_rows[period_profit_column], errors='coerce'
+      )
+      if (
+          'whose' in group_rows.columns
+          and '주기별 평가손익_bj_ex_fx' in group_rows.columns
+      ):
+        bj_rows = group_rows['whose'] == 'BJ'
+        group_rows.loc[bj_rows, '_detail_period_profit'] = pd.to_numeric(
+            group_rows.loc[bj_rows, '주기별 평가손익_bj_ex_fx'],
+            errors='coerce',
+        )
+    else:
+      group_rows['_detail_period_profit'] = pd.to_numeric(
+          group_rows['주기별 평가손익'], errors='coerce'
+      )
+    group_rows['_detail_return'] = pd.to_numeric(
+        group_rows['주기별 수익률'], errors='coerce'
+    )
+    group_rows = group_rows[
+        ~group_rows['item_name'].astype(str).str.contains('현금', na=False)
+    ].dropna(subset=['_detail_date', 'item_name'])
+
+    snapshot_dates = group_rows.loc[
+        (group_rows['_detail_date'] > period_start)
+        & (group_rows['_detail_date'] <= selected_date),
+        '_detail_date',
+    ]
+    if snapshot_dates.empty:
+      continue
+    snapshot_date = snapshot_dates.max()
+    end_rows = group_rows[group_rows['_detail_date'] == snapshot_date]
+    active_items = (
+        end_rows.loc[end_rows['총평가금액'] > 0, 'item_name']
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+    if not active_items:
+      st.info(
+          f'[{group_value}] {selected_date:%Y-%m-%d} 기준 보유종목이 없습니다.'
+      )
+      return
+
+    item_daily = (
+        group_rows[group_rows['item_name'].astype(str).isin(active_items)]
+        .groupby(['_detail_date', 'item_name'], dropna=False)
+        .agg({
+            '_detail_period_profit': lambda values: values.sum(min_count=1),
+            '_detail_return': 'mean',
+        })
+        .reset_index()
+    )
+    period_rows = item_daily[
+        (item_daily['_detail_date'] > period_start)
+        & (item_daily['_detail_date'] <= selected_date)
+    ]
+    cumulative_rows = item_daily[
+        (item_daily['_detail_date'] >= start_timestamp)
+        & (item_daily['_detail_date'] <= selected_date)
+    ]
+
+    def compound_item_return(values):
+      returns = pd.to_numeric(values, errors='coerce').dropna()
+      if returns.empty:
+        return np.nan
+      return ((1 + returns / 100).prod() - 1) * 100
+
+    metric = metadata['item_detail_metric']
+    metric_labels = {
+        'period_profit': '기간 평가손익',
+        'cumulative_profit': '조회 구간 누적 평가손익',
+        'period_return': '기간 수익률',
+        'cumulative_return': '조회 구간 누적 수익률',
+    }
+    if metric not in metric_labels:
+      continue
+
+    detail_rows = []
+    for item_name in active_items:
+      item_period = period_rows[
+          period_rows['item_name'].astype(str) == item_name
+      ]
+      item_cumulative = cumulative_rows[
+          cumulative_rows['item_name'].astype(str) == item_name
+      ]
+      if metric == 'period_profit':
+        value = item_period['_detail_period_profit'].sum(min_count=1)
+      elif metric == 'cumulative_profit':
+        value = item_cumulative['_detail_period_profit'].sum(min_count=1)
+      elif metric == 'period_return':
+        value = compound_item_return(item_period['_detail_return'])
+      else:
+        value = compound_item_return(item_cumulative['_detail_return'])
+      if pd.isna(value):
+        continue
+      formatted_value = (
+          f'{value:,.0f}원'
+          if metric in ('period_profit', 'cumulative_profit')
+          else f'{value:.2f}%'
+      )
+      detail_rows.append({
+          '보유종목': item_name,
+          metric_labels[metric]: formatted_value,
+          '_sort_value': abs(value),
+      })
+
+    if not detail_rows:
+      st.info('선택한 차트 지표에 표시할 보유종목 데이터가 없습니다.')
+      return
+    detail_df = (
+        pd.DataFrame(detail_rows)
+        .sort_values('_sort_value', ascending=False)
+        .drop(columns='_sort_value')
+        .reset_index(drop=True)
+    )
+    fx_suffix = (
+        ' (환차손 제외)'
+        if metadata.get('item_detail_use_ex_fx', False) else ''
+    )
+    st.markdown(
+        f"##### [{group_value}] {selected_date:%Y-%m-%d} "
+        f"{metric_labels[metric]}{fx_suffix} · 보유종목별"
+    )
+    st.dataframe(
+        detail_df,
+        use_container_width=True,
+        hide_index=True,
+        height=320,
+    )
+    return
 
 
 def save_daily_eval_item_color(item_name, color_widget_key):
@@ -3377,67 +3632,6 @@ if menu in (
 
           st.write('---')
 
-        category4_holdings_by_date = {}
-        if group_col == 'category4':
-          holdings_source = raw_df.copy()
-          holdings_source['_chart_date'] = pd.to_datetime(
-              holdings_source['Date'], errors='coerce'
-          ).dt.strftime('%Y-%m-%d')
-          holdings_source['총평가금액'] = pd.to_numeric(
-              holdings_source['총평가금액'], errors='coerce'
-          )
-          holdings_source = holdings_source[
-              holdings_source['총평가금액'].gt(0)
-              & ~holdings_source['item_name']
-              .astype(str)
-              .str.contains('현금', na=False)
-          ].dropna(subset=['_chart_date', 'category4', 'item_name'])
-          holding_values = (
-              holdings_source.groupby(
-                  ['_chart_date', 'category4', 'item_name'],
-                  dropna=False,
-              )['총평가금액']
-              .sum()
-              .reset_index()
-          )
-          for (chart_date, category), category_holdings in (
-              holding_values.groupby(
-                  ['_chart_date', 'category4'], dropna=False
-              )
-          ):
-            category_holdings = category_holdings.sort_values(
-                '총평가금액', ascending=False
-            )
-            item_lines = [
-                f"{row['item_name']} ({row['총평가금액']:,.0f}원)"
-                for _, row in category_holdings.head(12).iterrows()
-            ]
-            remaining_count = len(category_holdings) - len(item_lines)
-            if remaining_count:
-              item_lines.append(f'외 {remaining_count}종')
-            category4_holdings_by_date[(chart_date, category)] = (
-                '<br>'.join(item_lines)
-            )
-
-        def category4_hover_values(chart_dates, category):
-          if group_col != 'category4':
-            return None
-          return [
-              category4_holdings_by_date.get(
-                  (chart_date, category), '해당 날짜 보유 종목 없음'
-              )
-              for chart_date in chart_dates
-          ]
-
-        def category4_hovertemplate(default_template, category):
-          if group_col != 'category4':
-            return default_template
-          return (
-              f'<b>{category}</b><br>%{{x}}<br>{default_template}'
-              '<br><b>보유 종목 (평가액 상위 12)</b>'
-              '<br>%{customdata}<extra></extra>'
-          )
-
         def get_grp_agg(use_ex_fx):
           df_curr = raw_df.copy()
           if use_ex_fx and '원금_ex_fx' in df_curr.columns:
@@ -4290,12 +4484,10 @@ if menu in (
                   y=sub['선택구간 누적손익'],
                   name=f'{grp}',
                   mode='lines+markers',
-                  customdata=category4_hover_values(
-                      sub['Chart_Date'], grp
+                  meta=create_item_detail_meta(
+                      group_col, grp, 'cumulative_profit', ex_g1
                   ),
-                  hovertemplate=category4_hovertemplate(
-                      '%{y:,.0f} 원', grp
-                  ),
+                  hovertemplate='%{y:,.0f} 원',
               )
           )
 
@@ -4336,12 +4528,8 @@ if menu in (
                   x=sub['Chart_Date'],
                   y=sub['주기별 평가손익'],
                   name=str(grp),
-                  customdata=category4_hover_values(
-                      sub['Chart_Date'], grp
-                  ),
-                  hovertemplate=(
-                      category4_hovertemplate('%{y:,.0f} 원', grp)
-                      if group_col == 'category4' else None
+                  meta=create_item_detail_meta(
+                      group_col, grp, 'period_profit', ex_g2
                   ),
               )
           )
@@ -4385,12 +4573,10 @@ if menu in (
                   x=sub['Chart_Date'],
                   y=sub['주기별 수익률'],
                   name=str(grp),
-                  customdata=category4_hover_values(
-                      sub['Chart_Date'], grp
+                  meta=create_item_detail_meta(
+                      group_col, grp, 'period_return', ex_g3
                   ),
-                  hovertemplate=category4_hovertemplate(
-                      '%{y:.2f}%', grp
-                  ),
+                  hovertemplate='%{y:.2f}%',
               )
           )
 
@@ -4455,12 +4641,10 @@ if menu in (
                   y=sub['선택구간 누적손익'],
                   name=f'[손익] {grp}',
                   opacity=0.7,
-                  customdata=category4_hover_values(
-                      sub['Chart_Date'], grp
+                  meta=create_item_detail_meta(
+                      group_col, grp, 'cumulative_profit', ex_g4
                   ),
-                  hovertemplate=category4_hovertemplate(
-                      '%{y:,.0f} 원', grp
-                  ),
+                  hovertemplate='%{y:,.0f} 원',
               ),
               secondary_y=True,
           )
@@ -4473,12 +4657,10 @@ if menu in (
                   y=sub['선택기간 누적 수익률'],
                   name=f'[수익률] {grp}',
                   mode='lines+markers',
-                  customdata=category4_hover_values(
-                      sub['Chart_Date'], grp
+                  meta=create_item_detail_meta(
+                      group_col, grp, 'cumulative_return', ex_g4
                   ),
-                  hovertemplate=category4_hovertemplate(
-                      '%{y:.2f}%', grp
-                  ),
+                  hovertemplate='%{y:.2f}%',
               ),
               secondary_y=False,
           )
@@ -5315,6 +5497,9 @@ if menu in (
                   x=sub['Chart_Date'],
                   y=sub['주기별 평가손익'],
                   name=f'주기별 평가손익 ({w})',
+                  meta=create_item_detail_meta(
+                      'whose', w, 'period_profit', ex_w2
+                  ),
               ),
               secondary_y=False,
           )
@@ -5326,6 +5511,9 @@ if menu in (
                   y=sub['선택구간 누적손익'],
                   name=f'선택구간 누적손익 ({w})',
                   mode='lines+markers',
+                  meta=create_item_detail_meta(
+                      'whose', w, 'cumulative_profit', ex_w2
+                  ),
               ),
               secondary_y=True,
           )
@@ -5377,6 +5565,9 @@ if menu in (
                   name=f'구간별 누적수익률 (%) ({w})',
                   mode='lines+markers',
                   hovertemplate='%{y:.2f}%',
+                  meta=create_item_detail_meta(
+                      'whose', w, 'cumulative_return', ex_w3
+                  ),
               )
           )
         for bm_name, bm_df in bm_calc_dict.items():
@@ -5438,6 +5629,9 @@ if menu in (
                   y=sub['주기별 수익률'],
                   name=f'주기별 수익률 (%) ({w})',
                   hovertemplate='%{y:.2f}%',
+                  meta=create_item_detail_meta(
+                      'whose', w, 'period_return', ex_w4
+                  ),
               )
           )
         for bm_name, bm_df in bm_calc_dict.items():
