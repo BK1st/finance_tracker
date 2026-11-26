@@ -2711,7 +2711,7 @@ elif menu == "일별/시점별 보유 현황 분석":
                 (
                     base_texttemplate
                     + "<br><span style='font-size: 15px; color: #FFE082;'>"
-                    + "<b>전체 점유율 %{customdata[4]:.2f}%</b></span>"
+                    + "<b>%{customdata[4]:.2f}%</b></span>"
                     if share >= 2.0
                     else base_texttemplate
                 )
