@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    html, body, #treemap { width: 100%; height: 100%; margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="treemap"></div>
+  <script>
+    const chart = document.getElementById("treemap");
+    let tickerUrls = {};
+    let clickCounter = 0;
+    let clickHandlerBound = false;
+    let resizeObserver = null;
+
+    function sendStreamlitMessage(type, payload) {
+      window.parent.postMessage({
+        isStreamlitMessage: true,
+        type,
+        ...payload
+      }, "*");
+    }
+
+    function renderChart(args) {
+      tickerUrls = args.ticker_urls || {};
+      const figure = args.figure;
+      const height = Number(args.height) || 700;
+      const renderPlot = chart.data
+        ? Plotly.react(chart, figure.data, figure.layout, {
+            responsive: true,
+            displayModeBar: false
+          })
+        : Plotly.newPlot(chart, figure.data, figure.layout, {
+            responsive: true,
+            displayModeBar: false
+          });
+
+      renderPlot.then(() => {
+        if (!clickHandlerBound) {
+          chart.on("plotly_click", (event) => {
+            const point = event.points && event.points[0];
+            if (!point || typeof point.id !== "string") return;
+
+            const modifierPressed = event.event
+              && (event.event.ctrlKey || event.event.metaKey);
+            const tickerUrl = tickerUrls[point.id];
+            if (modifierPressed && tickerUrl) {
+              window.open(tickerUrl, "_blank", "noopener,noreferrer");
+              return;
+            }
+
+            clickCounter += 1;
+            sendStreamlitMessage("streamlit:setComponentValue", {
+              value: {
+                id: point.id,
+                event_id: `${Date.now()}-${clickCounter}`
+              },
+              dataType: "json"
+            });
+          });
+          clickHandlerBound = true;
+        }
+
+        sendStreamlitMessage("streamlit:setFrameHeight", { height });
+        if (!resizeObserver) {
+          resizeObserver = new ResizeObserver(() => Plotly.Plots.resize(chart));
+          resizeObserver.observe(chart);
+        }
+      });
+    }
+
+    window.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "streamlit:render") {
+        renderChart(event.data.args || {});
+      }
+    });
+
+    sendStreamlitMessage("streamlit:componentReady", { apiVersion: 1 });
+  </script>
+</body>
+</html>
