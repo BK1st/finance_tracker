@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import io
+import html
 import json
 import re
 import unicodedata
@@ -1063,8 +1064,8 @@ def render_resizable_plotly_chart(
         index=TREND_FREQUENCY_OPTIONS.index(default_frequency),
         key=f'{key}_display_frequency',
         help=(
-            '이 차트의 표시 주기만 바꿉니다. 데이터 점을 클릭하면 '
-            '해당 그룹의 보유종목별 손익 또는 수익률을 볼 수 있습니다.'
+            '이 차트의 표시 주기만 바꿉니다. 데이터 점에 마우스를 '
+            '올리면 해당 그룹의 보유종목별 손익 또는 수익률을 봅니다.'
         ),
     )
     if frequency != '일간 (매일)':
@@ -1084,6 +1085,8 @@ def render_resizable_plotly_chart(
           for trace in fig.data
       )
   )
+  if has_item_details:
+    add_item_details_to_hover(fig, frequency)
   chart_options = {
       'use_container_width': True,
       'key': key,
@@ -1093,18 +1096,11 @@ def render_resizable_plotly_chart(
           'displaylogo': False,
       },
   }
-  if has_item_details:
-    chart_options['on_select'] = 'rerun'
-    chart_options['selection_mode'] = 'points'
-  elif on_select is not None:
+  if not has_item_details and on_select is not None:
     chart_options['on_select'] = on_select
   if not has_item_details and selection_mode is not None:
     chart_options['selection_mode'] = selection_mode
   chart_event = st.plotly_chart(fig, **chart_options)
-  if has_item_details:
-    show_item_details_for_chart_point(
-        fig, chart_event, frequency
-    )
   return chart_event
 
 
@@ -1487,6 +1483,240 @@ def show_item_details_for_chart_point(fig, chart_event, frequency):
         height=320,
     )
     return
+
+
+def add_item_details_to_hover(fig, frequency):
+  raw_df = st.session_state.get('trend_calc_df')
+  if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+    return
+
+  start_date = st.session_state.get('trend_start_date')
+  end_date = st.session_state.get('trend_end_date')
+  if start_date is None or end_date is None:
+    date_range = get_plotly_date_range(fig)
+    if date_range is None:
+      return
+    start_date, end_date = date_range
+  start_timestamp = pd.Timestamp(start_date).normalize()
+  end_timestamp = pd.Timestamp(end_date).normalize()
+  display_dates = get_trend_display_dates(
+      start_timestamp, end_timestamp, frequency
+  )
+
+  cache_context = (
+      id(raw_df),
+      start_timestamp.isoformat(),
+      end_timestamp.isoformat(),
+      frequency,
+  )
+  cached = st.session_state.get('_trend_item_detail_hover_cache')
+  if not isinstance(cached, dict) or cached.get('context') != cache_context:
+    cached = {'context': cache_context, 'values': {}}
+    st.session_state['_trend_item_detail_hover_cache'] = cached
+
+  for trace in fig.data:
+    metadata = trace.meta
+    if not isinstance(metadata, dict):
+      continue
+    group_col = metadata['item_detail_group_col']
+    group_value = metadata['item_detail_group_value']
+    metric = metadata['item_detail_metric']
+    use_ex_fx = metadata.get('item_detail_use_ex_fx', False)
+    metric_label = (
+        '수익률'
+        if metric in ('period_return', 'cumulative_return')
+        else '평가손익'
+    )
+    cache_key = (group_col, group_value, metric, bool(use_ex_fx))
+    hover_by_date = cached['values'].get(cache_key)
+    if hover_by_date is None:
+      required_columns = {
+          group_col,
+          'Date',
+          'item_name',
+          '총평가금액',
+          '주기별 평가손익',
+          '주기별 수익률',
+      }
+      if not required_columns.issubset(raw_df.columns):
+        continue
+
+      group_rows = raw_df.loc[
+          raw_df[group_col].astype(str) == group_value,
+          list(required_columns),
+      ].copy()
+      if group_rows.empty:
+        continue
+      group_rows['_detail_date'] = pd.to_datetime(
+          group_rows['Date'], errors='coerce'
+      ).dt.normalize()
+      group_rows['_detail_eval'] = pd.to_numeric(
+          group_rows['총평가금액'], errors='coerce'
+      )
+      if use_ex_fx:
+        period_profit_column = (
+            '주기별 평가손익_ex_fx'
+            if '주기별 평가손익_ex_fx' in raw_df.columns
+            else '주기별 평가손익'
+        )
+        group_rows['_detail_period_profit'] = pd.to_numeric(
+            raw_df.loc[group_rows.index, period_profit_column],
+            errors='coerce',
+        )
+        if (
+            'whose' in raw_df.columns
+            and '주기별 평가손익_bj_ex_fx' in raw_df.columns
+        ):
+          bj_rows = raw_df.loc[group_rows.index, 'whose'] == 'BJ'
+          group_rows.loc[bj_rows, '_detail_period_profit'] = pd.to_numeric(
+              raw_df.loc[
+                  group_rows.index[bj_rows],
+                  '주기별 평가손익_bj_ex_fx',
+              ],
+              errors='coerce',
+          )
+      else:
+        group_rows['_detail_period_profit'] = pd.to_numeric(
+            raw_df.loc[group_rows.index, '주기별 평가손익'],
+            errors='coerce',
+        )
+      group_rows['_detail_return'] = pd.to_numeric(
+          raw_df.loc[group_rows.index, '주기별 수익률'],
+          errors='coerce',
+      )
+      group_rows = group_rows[
+          group_rows['_detail_date'].between(
+              start_timestamp, end_timestamp
+          )
+          & group_rows['item_name'].notna()
+          & ~group_rows['item_name'].astype(str).str.contains(
+              '현금', na=False
+          )
+      ].copy()
+      if group_rows.empty:
+        continue
+      group_rows['_detail_item'] = group_rows['item_name'].astype(str)
+      period_indices = display_dates.searchsorted(
+          pd.DatetimeIndex(group_rows['_detail_date']), side='left'
+      )
+      valid_periods = period_indices < len(display_dates)
+      group_rows = group_rows.loc[valid_periods].copy()
+      if group_rows.empty:
+        continue
+      group_rows['_period_index'] = period_indices[valid_periods]
+
+      daily_grouped = group_rows.groupby(
+          ['_detail_date', '_period_index', '_detail_item'],
+          dropna=False,
+      )
+      daily_items = daily_grouped.agg(
+          _detail_eval=('_detail_eval', 'sum'),
+          _detail_return=('_detail_return', 'mean'),
+      ).join(
+          daily_grouped['_detail_period_profit']
+          .sum(min_count=1)
+          .rename('_detail_period_profit')
+      ).reset_index()
+      last_period_dates = daily_items.groupby(
+          '_period_index'
+      )['_detail_date'].transform('max')
+      active_items = daily_items[
+          (daily_items['_detail_date'] == last_period_dates)
+          & (daily_items['_detail_eval'] > 0)
+      ]
+      active_by_period = (
+          active_items.groupby('_period_index')['_detail_item']
+          .apply(list)
+          .to_dict()
+      )
+
+      daily_items['_return_factor'] = (
+          1 + daily_items['_detail_return'] / 100
+      )
+      period_grouped = daily_items.groupby(
+          ['_period_index', '_detail_item'], dropna=False
+      )
+      period_items = pd.DataFrame({
+          '_detail_period_profit': (
+              period_grouped['_detail_period_profit'].sum(min_count=1)
+          ),
+          '_return_factor': period_grouped['_return_factor'].prod(
+              min_count=1
+          ),
+      }).reset_index()
+      period_items['_detail_return'] = (
+          period_items['_return_factor'] - 1
+      ) * 100
+      period_items = period_items.sort_values(
+          ['_detail_item', '_period_index']
+      )
+      period_items['_cumulative_profit'] = (
+          period_items.groupby('_detail_item')[
+              '_detail_period_profit'
+          ].cumsum()
+      )
+      period_items['_cumulative_return'] = (
+          (period_items.groupby('_detail_item')['_return_factor'].cumprod()
+           - 1)
+          * 100
+      )
+      metric_column = {
+          'period_profit': '_detail_period_profit',
+          'period_return': '_detail_return',
+          'cumulative_profit': '_cumulative_profit',
+          'cumulative_return': '_cumulative_return',
+      }.get(metric)
+      if metric_column is None:
+        continue
+      value_by_period_item = period_items.set_index(
+          ['_period_index', '_detail_item']
+      )[metric_column].to_dict()
+
+      hover_by_date = {}
+      for period_index, display_date in enumerate(display_dates):
+        detail_rows = []
+        for item_name in active_by_period.get(period_index, []):
+          value = value_by_period_item.get((period_index, item_name))
+          if pd.isna(value):
+            continue
+          detail_rows.append((item_name, float(value)))
+        detail_rows.sort(key=lambda row: abs(row[1]), reverse=True)
+        lines = [
+            f'{html.escape(item_name)}: '
+            f'{value:,.0f}원' if metric_label == '평가손익'
+            else f'{html.escape(item_name)}: {value:.2f}%'
+            for item_name, value in detail_rows[:10]
+        ]
+        if len(detail_rows) > 10:
+          lines.append(f'외 {len(detail_rows) - 10}종')
+        hover_by_date[display_date.strftime('%Y-%m-%d')] = (
+            '<br>'.join(lines) if lines else '보유 종목별 지표 없음'
+        )
+      cached['values'][cache_key] = hover_by_date
+
+    point_dates = pd.to_datetime(
+        list(trace.x) if trace.x is not None else [],
+        errors='coerce',
+    )
+    trace.customdata = [
+        hover_by_date.get(
+            pd.Timestamp(point_date).strftime('%Y-%m-%d'),
+            '보유 종목별 지표 없음',
+        )
+        if pd.notna(point_date) else '보유 종목별 지표 없음'
+        for point_date in point_dates
+    ]
+    value_format = (
+        '%{y:.2f}%'
+        if metric in ('period_return', 'cumulative_return')
+        else '%{y:,.0f}원'
+    )
+    trace.hovertemplate = (
+        f'%{{x}}<br>{value_format}<br>'
+        f'<b>보유 종목별 {metric_label} (절댓값 상위 10)</b><br>'
+        '%{customdata}'
+        f'<extra>{html.escape(str(trace.name or ""))}</extra>'
+    )
 
 
 def save_daily_eval_item_color(item_name, color_widget_key):
